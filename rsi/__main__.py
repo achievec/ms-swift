@@ -3,8 +3,33 @@
 import os
 
 import uvicorn
+from fastapi.responses import HTMLResponse
 
 from rsi.app import create_app
+
+_SWIFT_UI_FALLBACK = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>SWIFT Web-UI</title>
+  <style>
+    body { margin: 0; font-family: "Source Sans Pro", ui-sans-serif, system-ui, sans-serif; background: #fff; color: #27272a; }
+    main { max-width: 720px; margin: 48px auto; padding: 0 20px; }
+    a.back { color: #2563eb; }
+    code { background: #f4f4f5; padding: 2px 6px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>SWIFT Web-UI</h1>
+    <p>原生页面的地址是 <a href="/swift-ui/"><code>http://127.0.0.1:7860/swift-ui/</code></a>，和 RSI 闭环同一个进程、同一个端口。</p>
+    <p>当前环境没有加载到 swift（通常还没装 torch / transformers），所以这里还不是训练表单。装好依赖后，这个地址会打开原来的 LLM预训练/微调、人类对齐、GRPO、推理、导出、评测、采样。</p>
+    <p>也可以先停止 RSI（<code>./run.sh stop</code>），再运行 <code>swift web-ui</code>。它默认也是 <code>http://127.0.0.1:7860/</code>。两边不要同时占用这个端口。</p>
+    <p><a class="back" href="/">返回 RSI 闭环</a></p>
+  </main>
+</body>
+</html>
+"""
 
 
 def resolve_server():
@@ -28,7 +53,13 @@ def mount_swift_ui(app) -> bool:
     except Exception as exc:
         app.state.swift_ui = False
         app.state.swift_ui_error = str(exc)
-        print(f'swift web-ui 未挂载（{exc}）。RSI 闭环仍使用本页面；原训练页请先停止本服务再运行 swift web-ui（同一默认端口）。')
+
+        @app.get('/swift-ui', response_class=HTMLResponse)
+        @app.get('/swift-ui/', response_class=HTMLResponse)
+        def swift_ui_unavailable():
+            return _SWIFT_UI_FALLBACK
+
+        print(f'swift web-ui 未挂载（{exc}）。入口仍是 /swift-ui/ ；装好 swift 依赖后这里会换成原生表单。')
         return False
     app.state.swift_ui = True
     print('SWIFT Web-UI 已挂在 /swift-ui ，RSI 闭环仍是默认页面。')

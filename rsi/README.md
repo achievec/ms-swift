@@ -52,7 +52,7 @@ Then:
 
 Re-running an earlier stage keeps the old audit row and marks later stages in that round as 已作废.
 
-`WEBUI_PORT` (or `RSI_PORT`) changes the port. `WEBUI_SERVER` (or `RSI_HOST`) changes the bind address. The default is http://127.0.0.1:7860/ , the same port as `swift web-ui`. Do not run both at once. The header tab **RSI闭环** is this page. The other tabs (LLM预训练/微调, LLM人类对齐, LLM GRPO, LLM推理, LLM导出, LLM评测, LLM采样) are the original Web-UI: when torch is installed they open at `/swift-ui` on this same process; otherwise stop `./run.sh` and run `swift web-ui`. State (SQLite, uploads, mock checkpoints) lives in `rsi/workspace/`, or in `$RSI_HOME`.
+`WEBUI_PORT` (or `RSI_PORT`) changes the port. `WEBUI_SERVER` (or `RSI_HOST`) changes the bind address. The default is http://127.0.0.1:7860/ , the same port as `swift web-ui`. Do not run both at once. The header button **打开 SWIFT Web-UI** goes to http://127.0.0.1:7860/swift-ui/ on this same process. When torch is installed that path is the original Gradio pages (LLM预训练/微调, LLM人类对齐, LLM GRPO, LLM推理, LLM导出, LLM评测, LLM采样). Otherwise the page explains that `swift web-ui` uses this same port after `./run.sh stop`. State (SQLite, uploads, mock checkpoints) lives in `rsi/workspace/`, or in `$RSI_HOME`.
 
 ```bash
 pytest rsi/tests -q

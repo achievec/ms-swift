@@ -343,7 +343,9 @@ function render() {
   if (!state.view) {
     main.innerHTML = `<div class="empty"><h1>从一轮可点击的后训练闭环开始</h1>
       <p>行业里常见的迭代是：场景 SFT 建立行为，评测做门禁，在线 RL（这里默认 GRPO）用奖励把策略从 SFT 上再推进一步，只有胜出的检查点才能当下一轮基座，最后用 OpenAI 兼容接口接走。</p>
-      <p>左边新建实验。没有 GPU 时全程走 Mock，SQLite 里仍能看到每一步的参数和日志。</p></div>`;
+      <p>左边新建实验。没有 GPU 时全程走 Mock，SQLite 里仍能看到每一步的参数和日志。</p>
+      <p><a class="webui-jump" href="/swift-ui/">打开 SWIFT Web-UI</a></p>
+      <p class="muted">同一端口 7860 上的原生页面：LLM预训练/微调、人类对齐、GRPO、推理、导出、评测、采样。</p></div>`;
     return;
   }
   const view = state.view;
@@ -532,26 +534,17 @@ function applyModelMatch(input) {
 }
 
 function showProduct(id) {
+  if (id !== 'rsi') {
+    window.location.href = '/swift-ui/';
+    return;
+  }
   document.querySelectorAll('#product-tabs button').forEach((button) => {
     button.classList.toggle('active', button.dataset.product === id);
   });
   const shell = document.getElementById('rsi-shell');
   const panel = document.getElementById('swift-panel');
-  if (id === 'rsi') {
-    shell.hidden = false;
-    panel.hidden = true;
-    return;
-  }
-  shell.hidden = true;
-  panel.hidden = false;
-  document.getElementById('swift-panel-title').textContent = PRODUCT_TITLES[id] || id;
-  const body = document.getElementById('swift-panel-body');
-  const title = PRODUCT_TITLES[id] || id;
-  if (state.swiftUi) {
-    body.innerHTML = `<p class="muted">「${escapeHtml(title)}」在同一端口的原 Gradio Web-UI 里。RSI 闭环仍是默认页面，点「RSI闭环」回到这套界面。</p><iframe class="swift-frame" src="/swift-ui/" title="SWIFT Web-UI"></iframe>`;
-    return;
-  }
-  body.innerHTML = `<p>「${escapeHtml(title)}」是 ms-swift 默认 Web-UI 的原页面。RSI 闭环保持现在这套界面，并占用默认端口 <b>7860</b>。</p><p class="muted">当前进程没有挂上 Gradio 表单（通常是还没装 torch）。要打开原来的训练 / 对齐 / GRPO / 推理 / 导出 / 评测 / 采样页，先 <span class="mono">./run.sh stop</span>，再运行 <span class="mono">swift web-ui</span>。两边共用 7860，不要同时启动。装好 swift 依赖后，这些标签会在同一进程的 /swift-ui 打开原表单。</p>`;
+  if (shell) shell.hidden = false;
+  if (panel) panel.hidden = true;
 }
 
 document.addEventListener('focusin', (event) => {
