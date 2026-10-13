@@ -2,6 +2,7 @@
 """Stage machine for one RSI run: data → SFT → eval → RL → eval → promote → next round."""
 import json
 import re
+import shlex
 import threading
 import uuid
 from pathlib import Path
@@ -43,6 +44,56 @@ def _loads(text, fallback=None):
     return json.loads(text)
 
 
+def _coerce_flag(value: str):
+    lower = value.lower()
+    if lower in {'true', 'false'}:
+        return lower == 'true'
+    if re.fullmatch(r'[-+]?\d+', value):
+        return int(value)
+    return value
+
+
+def _parse_extra(raw: str) -> dict:
+    """Web-UI「更多参数」 accepts JSON, ``--flag value``, or a YAML mapping."""
+    text = raw.strip()
+    if text.startswith('{'):
+        try:
+            loaded = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise PipelineError(f'更多参数的 JSON 无法解析：{exc}') from exc
+        if not isinstance(loaded, dict):
+            raise PipelineError('更多参数的 JSON 必须是对象')
+        return loaded
+    if text.startswith('--'):
+        try:
+            tokens = shlex.split(text)
+        except ValueError as exc:
+            raise PipelineError(f'更多参数的命令行无法解析：{exc}') from exc
+        parsed = {}
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if not token.startswith('--') or token == '--':
+                raise PipelineError(f'更多参数里无法识别：{token}')
+            key = token[2:].replace('-', '_')
+            if index + 1 >= len(tokens) or tokens[index + 1].startswith('--'):
+                parsed[key] = True
+                index += 1
+                continue
+            parsed[key] = _coerce_flag(tokens[index + 1])
+            index += 2
+        return parsed
+    try:
+        loaded = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise PipelineError(f'额外 YAML 无法解析：{exc}') from exc
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise PipelineError('额外 YAML 必须是键值映射')
+    return loaded
+
+
 def _merge(defaults: dict, user: dict) -> dict:
     incoming = dict(user or {})
     extra_yaml = incoming.pop('extra_yaml', None)
@@ -52,15 +103,7 @@ def _merge(defaults: dict, user: dict) -> dict:
             continue
         merged[key] = value
     if extra_yaml and str(extra_yaml).strip():
-        try:
-            loaded = yaml.safe_load(extra_yaml)
-        except yaml.YAMLError as exc:
-            raise PipelineError(f'额外 YAML 无法解析：{exc}') from exc
-        if loaded is None:
-            loaded = {}
-        if not isinstance(loaded, dict):
-            raise PipelineError('额外 YAML 必须是键值映射')
-        for key, value in loaded.items():
+        for key, value in _parse_extra(str(extra_yaml)).items():
             if value is not None:
                 merged[key] = value
         merged['extra_yaml'] = extra_yaml
@@ -121,7 +164,7 @@ class Pipeline:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def create_run(self, name: str, scenario: str, base_model: str) -> dict:
+    def create_run(self, name: str, scenario: str, base_model: str, model_meta: dict | None = None) -> dict:
         name = (name or '').strip()
         scenario = (scenario or '').strip()
         base_model = (base_model or '').strip()
@@ -133,7 +176,36 @@ class Pipeline:
             raise PipelineError('基座模型需要 1 到 300 个字符')
         run_id = uuid.uuid4().hex[:8]
         self.store.create_run(run_id, name, scenario, base_model)
+        keep = {}
+        for key in ('template', 'model_type', 'system'):
+            value = (model_meta or {}).get(key)
+            if isinstance(value, str) and value.strip():
+                keep[key] = value.strip()
+        if keep:
+            path = self.home / 'runs' / run_id / 'meta.json'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(keep, ensure_ascii=False), encoding='utf-8')
         return self.view(run_id)
+
+    def _read_meta(self, run_id: str) -> dict:
+        path = self.home / 'runs' / run_id / 'meta.json'
+        if not path.is_file():
+            return {}
+        try:
+            loaded = json.loads(path.read_text(encoding='utf-8'))
+        except json.JSONDecodeError:
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+    def _fill_model_meta(self, preset: dict, model_id: str, fallback: str | None = None) -> None:
+        from rsi.webui_catalog import match_model
+        meta = match_model(model_id or '') or match_model(fallback or '')
+        if not meta:
+            return
+        if not preset.get('model_type') and meta.get('model_type'):
+            preset['model_type'] = meta['model_type']
+        if not preset.get('template') and meta.get('template'):
+            preset['template'] = meta['template']
 
     def list_runs(self) -> list:
         return self.store.list_runs()
@@ -218,6 +290,11 @@ class Pipeline:
         data_params, data_result = self._data_context(run['id'], rnd['round_index'])
         if stage == 'sft':
             preset['model'] = rnd['base_model']
+            saved = self._read_meta(run['id'])
+            for key in ('system', 'template', 'model_type'):
+                if saved.get(key) not in (None, ''):
+                    preset[key] = saved[key]
+            self._fill_model_meta(preset, preset.get('model'), run.get('base_model'))
             if data_result.get('dataset'):
                 preset['dataset'] = data_result['dataset']
             for key in ('max_length', 'split_dataset_ratio', 'dataset_num_proc', 'dataloader_num_workers',
@@ -230,6 +307,11 @@ class Pipeline:
         if stage == 'rl':
             sft_ckpt = self.store.active_checkpoint(run['id'], rnd['round_index'], 'sft')
             preset['model'] = sft_ckpt['path'] if sft_ckpt else ''
+            saved = self._read_meta(run['id'])
+            for key in ('template', 'model_type'):
+                if saved.get(key) not in (None, ''):
+                    preset[key] = saved[key]
+            self._fill_model_meta(preset, preset.get('model'), run.get('base_model'))
             if data_result.get('dataset'):
                 preset['dataset'] = data_result['dataset']
             preset['output_dir'] = str(self.stage_dir(run['id'], rnd['round_index'], 'rl'))
@@ -240,6 +322,11 @@ class Pipeline:
             kind = 'sft' if stage == 'sft_eval' else 'rl'
             checkpoint = self.store.active_checkpoint(run['id'], rnd['round_index'], kind)
             preset['model'] = checkpoint['path'] if checkpoint else ''
+            saved = self._read_meta(run['id'])
+            for key in ('template', 'model_type'):
+                if saved.get(key) not in (None, ''):
+                    preset[key] = saved[key]
+            self._fill_model_meta(preset, preset.get('model'), run.get('base_model'))
             preset['eval_output_dir'] = str(self.stage_dir(run['id'], rnd['round_index'], stage) / 'eval_output')
             preset['custom_eval_config'] = _resolve_existing(preset.get('custom_eval_config'))
             return preset
@@ -255,6 +342,11 @@ class Pipeline:
             if promo:
                 preset['model'] = promo['promoted_checkpoint']
                 preset['served_model_name'] = _slug(run['name'], promo['round_index'], promo['promoted_kind'])
+            saved = self._read_meta(run['id'])
+            for key in ('template', 'model_type'):
+                if saved.get(key) not in (None, ''):
+                    preset[key] = saved[key]
+            self._fill_model_meta(preset, preset.get('model'), run.get('base_model'))
             return preset
         return preset
 

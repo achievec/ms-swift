@@ -4,7 +4,7 @@ Click-through recursive self-improvement on top of ms-swift:
 
 **data → SFT → SFT eval → online RL → RL eval → promote → next round → OpenAI-compatible serve**
 
-The UI speaks Chinese. Parameter names match the existing Gradio Web-UI and the `swift sft` / `swift rlhf` / `swift eval` / `swift deploy` CLIs. ms-swift itself is not modified; this app shells out to it only when you ask.
+The UI speaks Chinese and is the first tab of the ms-swift Gradio Web-UI. Labels, dropdowns, and help text follow that Web-UI (`模型id或路径(--model)`, `模型类型(--model_type)`, `模型Prompt模板类型(--template)`, and the same pattern on the other stages). Training code is unchanged; a real run shells out to `swift sft` / `swift rlhf` / `swift eval` / `swift deploy` only when you ask.
 
 Default mode is **mock**. No GPU, no model download, no EvalScope. A deterministic score, a checkpoint directory, and an audit row are written so the whole loop can be clicked through on a laptop. Point the same forms at a real A100 later by changing one environment variable.
 
@@ -27,11 +27,17 @@ pip install -r rsi/requirements.txt
 python -m rsi
 ```
 
-Open http://127.0.0.1:8765
+Open http://127.0.0.1:7860
+
+That is the same port as `swift web-ui`. One Gradio app, several tabs. **RSI闭环** is the default tab. The other tabs are the existing Web-UI pages: LLM预训练/微调, LLM人类对齐, LLM GRPO, LLM推理, LLM导出, LLM评测, LLM采样. Do not start a second server on 8765.
+
+On a machine that has the ms-swift dependencies (including torch), `python -m rsi` and `swift web-ui` build that same tab set. If torch is not installed, the RSI tab still opens on 7860 and the other tab names explain that the original forms appear once swift imports.
+
+`WEBUI_PORT` (or `RSI_PORT`) changes the port. `WEBUI_SERVER` (or `RSI_HOST`) changes the bind address. The default host is `127.0.0.1`.
 
 Then:
 
-1. **新建实验**. The default base is `Qwen/Qwen2.5-7B-Instruct` and the scenario is an internal IT helpdesk.
+1. **新建实验**. The model block is the Web-UI accordion **模型设置**: `模型id或路径(--model)` is a searchable dropdown of the same model ids (default `Qwen/Qwen2.5-7B-Instruct`, including the 14B / 32B / 72B instruct ids). Choosing one fills `模型类型(--model_type)` and `模型Prompt模板类型(--template)` (`qwen2` and `qwen2_5` for that default). A checkpoint path can still be typed. The scenario is an internal IT helpdesk.
 2. **数据**. Leave the bundled `itops_mix.jsonl` selected (ms-swift `messages` plus a `solution` field for GRPO). Click 校验格式, then 运行本阶段. You can also pick a public id such as `modelscope/gsm8k`, upload a jsonl, or type a local path.
 3. **SFT**. The form is the A100 preset (`swift sft`, LoRA, bf16). Run it. The log shows the command that real training would execute, and a mock `checkpoint-final/args.json` is written.
 4. **SFT 评测**, **在线 RL** (`swift rlhf --rlhf_type grpo`, vLLM colocate), **RL 评测**. Same pattern.
@@ -41,7 +47,7 @@ Then:
 
 Re-running an earlier stage keeps the old audit row and marks later stages in that round as 已作废.
 
-Override the port with `RSI_PORT` and the bind address with `RSI_HOST`. State (SQLite, uploads, mock checkpoints) lives in `rsi/workspace/`, or in `$RSI_HOME`.
+State (SQLite, uploads, mock checkpoints) lives in `rsi/workspace/`, or in `$RSI_HOME`.
 
 ```bash
 pytest rsi/tests -q
@@ -73,7 +79,7 @@ A `solution` or `answer` field is kept for GRPO, including rows that only have a
 
 `MsSwiftBackend` runs the recorded command with `subprocess` and marks the step failed if swift exits non-zero. Training steps return immediately in the UI and finish when the process exits; refresh the audit while a job is running. Serving with `RSI_SERVE_BACKEND=swift` launches `swift deploy` in the background. Mock serving is an in-process OpenAI-compatible server, which is what `pytest` talks to.
 
-Install ms-swift and a GPU stack on the training machine the usual way (`pip install -e .` from this repo, plus the CUDA extras you need). This RSI app does not import `swift`, so the UI keeps working on a box that only has the packages in `rsi/requirements.txt`.
+Install ms-swift and a GPU stack on the training machine the usual way (`pip install -e .` from this repo, plus the CUDA extras you need). The RSI package does not import torch itself. `python -m rsi` tries to open the full Web-UI and, if that import fails, still serves the RSI tab on port 7860.
 
 ## Hardware this preset is for
 
@@ -89,7 +95,7 @@ The numbers in `rsi/configs/a100_80g.yaml` are the form defaults:
 - `dataset_num_proc=8` and `dataloader_num_workers=4` leave cores for vLLM on an 18-core machine.
 - Deploy after promotion uses `infer_backend=vllm` and can take most of the GPU (`vllm_gpu_memory_utilization=0.9`) because training is finished.
 
-Any other swift flag can be added in the YAML box on each stage. Those keys are appended to the CLI and override the form.
+Any other swift flag can be added in **更多参数**, the same box as the Web-UI: JSON, `--flag value`, or a YAML mapping. Those keys override the form and are appended to the CLI.
 
 ## Audit
 
@@ -98,7 +104,11 @@ SQLite tables `runs`, `rounds`, `steps`, `checkpoints`, and `services` record ea
 ## Layout
 
 ```
-rsi/app.py            FastAPI + static UI
+rsi/gradio_app.py     RSI闭环 Gradio tab (default page on port 7860)
+rsi/webui_catalog.py  model / template / dataset ids parsed from the Web-UI registries
+rsi/webui_labels.py   Web-UI Chinese labels and help text
+swift/ui/app.py       inserts the RSI tab in front of the existing Web-UI tabs
+rsi/app.py            FastAPI JSON API used by the tests
 rsi/pipeline.py       stage order and promotion
 rsi/backends.py       MockBackend, MsSwiftBackend
 rsi/serving.py        mock OpenAI server

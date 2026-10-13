@@ -104,10 +104,11 @@ function fieldValue(field, values) {
 
 function renderField(field, values) {
   const value = fieldValue(field, values);
-  const help = `${escapeHtml(field.help || '')} ${field.arg ? `<code>${escapeHtml(field.arg)}</code>` : ''}`;
+  const title = field.arg ? `${field.label}(${field.arg})` : field.label;
+  const help = escapeHtml(field.help || '');
   if (field.type === 'checkbox') {
     const checked = value === true || value === 'true' ? 'checked' : '';
-    return `<div class="field" data-key="${field.key}"><label class="check"><input type="checkbox" data-field="${field.key}" ${checked}/> ${escapeHtml(field.label)}</label><small>${help}</small></div>`;
+    return `<div class="field" data-key="${field.key}"><label class="check"><input type="checkbox" data-field="${field.key}" ${checked}/> ${escapeHtml(title)}</label><small>${help}</small></div>`;
   }
   if (field.type === 'select') {
     const options = (field.choices || []).map((choice) => {
@@ -116,14 +117,14 @@ function renderField(field, values) {
       const selected = String(value) === String(optionValue) ? 'selected' : '';
       return `<option value="${escapeHtml(optionValue)}" ${selected}>${escapeHtml(optionLabel)}</option>`;
     }).join('');
-    return `<label class="field" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><select data-field="${field.key}">${options}</select><small>${help}</small></label>`;
+    return `<label class="field" data-key="${field.key}"><span>${escapeHtml(title)}</span><select data-field="${field.key}">${options}</select><small>${help}</small></label>`;
   }
   if (field.type === 'textarea') {
-    return `<label class="field" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><textarea data-field="${field.key}" rows="4">${escapeHtml(value)}</textarea><small>${help}</small></label>`;
+    return `<label class="field" data-key="${field.key}"><span>${escapeHtml(title)}</span><textarea data-field="${field.key}" rows="4">${escapeHtml(value)}</textarea><small>${help}</small></label>`;
   }
   const inputType = field.type === 'number' ? 'number' : 'text';
   const step = field.step ? `step="${field.step}"` : '';
-  return `<label class="field" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><input type="${inputType}" data-field="${field.key}" value="${escapeHtml(value)}" ${step}/><small>${help}</small></label>`;
+  return `<label class="field" data-key="${field.key}"><span>${escapeHtml(title)}</span><input type="${inputType}" data-field="${field.key}" value="${escapeHtml(value)}" ${step}/><small>${help}</small></label>`;
 }
 
 function renderGroups(fields, values) {

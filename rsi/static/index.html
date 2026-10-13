@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="/static/app.css" />
 </head>
 <body>
+  <p class="aside-note">完整界面在 SWIFT Web-UI 的「RSI闭环」标签里，和训练页共用 7860 端口：<code>python -m rsi</code>。下面这份页面只保留 API 调试。</p>
   <header class="top">
     <div class="brand">
       <span class="mark">RSI</span>
@@ -35,7 +36,8 @@
       <p class="muted">从一块基座模型开始。每一轮用场景数据做 SFT，再用在线 RL 拉开和基座的差距，最后由你决定哪个检查点晋级。</p>
       <label>实验名称<input name="name" required maxlength="80" value="IT 运维助手" /></label>
       <label>场景说明<textarea name="scenario" required maxlength="500">企业内部 IT 工单分诊与处理建议。目标是从通用基座迭代出能按步骤处理工单的模型。</textarea></label>
-      <label>基座模型 id 或路径<input name="base_model" required maxlength="300" value="Qwen/Qwen2.5-7B-Instruct" /></label>
+      <label>模型id或路径(--model)<input name="base_model" required maxlength="300" value="Qwen/Qwen2.5-7B-Instruct" /></label>
+      <p class="muted">与 Web-UI 相同，可选 Qwen/Qwen2.5-7B-Instruct、14B、32B、72B，或填 checkpoint 路径。模型类型 qwen2，模板 qwen2_5。</p>
       <div class="row-actions">
         <button type="button" id="create-cancel" class="ghost">取消</button>
         <button type="submit" class="primary">创建并进入数据阶段</button>
