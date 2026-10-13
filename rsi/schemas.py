@@ -5,6 +5,8 @@ from pathlib import Path
 
 import yaml
 
+from rsi.webui_labels import label_for
+
 CONFIG_PATH = Path(__file__).resolve().parent / 'configs' / 'a100_80g.yaml'
 
 STAGE_ORDER = ['data', 'sft', 'sft_eval', 'rl', 'rl_eval', 'promote', 'next_round']
@@ -139,14 +141,15 @@ FIELDS = {
         _field('val_dataset', '验证集', '--val_dataset', 'text', '数据', '可选。', advanced=True),
     ],
     'sft': [
-        _field('model', '模型 id 或路径', '--model', 'text', '模型', '本轮基座。训练后的模型填 checkpoint 目录。'),
-        _field('template', 'Prompt 模板', '--template', 'text', '模型', 'Qwen2.5 使用 qwen2_5。'),
+        _field('model', '模型id或路径', '--model', 'text', '模型', '实际的模型id'),
+        _field('model_type', '模型类型', '--model_type', 'select', '模型', 'SWIFT已支持的模型类型'),
+        _field('template', '模型Prompt模板类型', '--template', 'text', '模型', '选择匹配模型的Prompt模板'),
         _field('system', 'System', '--system', 'textarea', '模型', '可选系统提示。'),
         _field('torch_dtype', '训练精度', '--torch_dtype', 'select', '模型', 'A100 上 7B LoRA 使用 bfloat16。',
                ['bfloat16', 'float16', 'float32']),
         _field('seed', '随机种子', '--seed', 'number', '模型', '', step='1'),
         _field('tuner_type', '训练方式', '--tuner_type', 'select', '调参', '单卡 80G 建议 lora。全参 Adam 放不进约 60GB 可用内存。',
-               ['lora', 'full', 'adalora', 'dora', 'longlora']),
+               ['lora', 'full', 'longlora', 'adalora', 'llamapro', 'adapter', 'vera', 'boft', 'fourierft', 'reft', 'bone']),
         _field('lora_rank', 'LoRA rank', '--lora_rank', 'number', '调参', '', step='1'),
         _field('lora_alpha', 'LoRA alpha', '--lora_alpha', 'number', '调参', '', step='1'),
         _field('lora_dropout', 'LoRA dropout', '--lora_dropout', 'number', '调参', '', step='0.01'),
@@ -168,9 +171,10 @@ FIELDS = {
         _field('max_length', '最大长度', '--max_length', 'number', '超参数', '', step='1'),
         _field('logging_steps', '日志步数', '--logging_steps', 'number', '超参数', '', step='1'),
         _field('eval_steps', '评估步数', '--eval_steps', 'number', '超参数', '', step='1'),
-        _field('save_steps', '保存步数', '--save_steps', 'number', '超参数', '', step='1'),
+        _field('save_steps', '存储步数', '--save_steps', 'number', '超参数', '设置每个多少步数进行存储', step='1'),
         _field('save_total_limit', '最多保留检查点', '--save_total_limit', 'number', '超参数', '', step='1'),
-        _field('split_dataset_ratio', '验证集比例', '--split_dataset_ratio', 'number', '超参数', '', advanced=True,
+        _field('output_dir', '存储目录', '--output_dir', 'text', '超参数', '设置输出模型存储在哪个文件夹下'),
+        _field('split_dataset_ratio', '验证集拆分比例', '--split_dataset_ratio', 'number', '超参数', '', advanced=True,
                step='0.01'),
         _field('dataset_num_proc', '数据集进程数', '--dataset_num_proc', 'number', '资源', '', advanced=True, step='1'),
         _field(
@@ -187,11 +191,18 @@ FIELDS = {
         _field('neftune_noise_alpha', 'NEFTune 噪声', '--neftune_noise_alpha', 'number', '超参数', '0 表示关闭。常用 5 或 10。',
                advanced=True, step='0.5'),
         _field('attn_impl', 'Attention 实现', '--attn_impl', 'select', '显存', '没装 flash-attn 时用 sdpa。',
-               ['sdpa', 'eager', 'flash_attention_2', 'flash_attention_3'], advanced=True),
-        _field('use_liger_kernel', 'Liger kernel', '--use_liger_kernel', 'checkbox', '显存', '可降低显存，需要额外安装。',
-               advanced=True),
-        _field('deepspeed', 'DeepSpeed', '--deepspeed', 'select', '显存', '单卡 LoRA 通常不需要。', ['', 'zero2', 'zero3'],
-               advanced=True),
+               ['sdpa', 'eager', 'flash_attention_2', 'flash_attention_3', 'flash_attention_4'], advanced=True),
+        _field('use_liger_kernel', '使用Liger kernel', '--use_liger_kernel', 'checkbox', '显存',
+               'Liger kernel可以有效降低显存使用', advanced=True),
+        _field(
+            'deepspeed',
+            'DeepSpeed',
+            '--deepspeed',
+            'select',
+            '显存',
+            '可以选择下拉列表，也支持传入路径',
+            ['', 'zero0', 'zero1', 'zero2', 'zero3', 'zero2_offload', 'zero3_offload'],
+            advanced=True),
         _field('sequence_parallel_size', '序列并行', '--sequence_parallel_size', 'number', '显存', '单卡保持 1。', advanced=True,
                step='1'),
         _field('quant_method', '量化方式', '--quant_method', 'select', '显存', '14B 可改为 bnb 做 QLoRA。留空表示不量化。',
@@ -200,14 +211,17 @@ FIELDS = {
         _field('dataset', '数据集', '--dataset', 'text', '数据', '默认沿用本轮数据阶段的结果。', advanced=True),
     ],
     'sft_eval': [
-        _field('model', '模型 / checkpoint', '--model', 'text', '模型', '默认是本轮 SFT checkpoint。'),
-        _field('eval_backend', '评测后端', '--eval_backend', 'select', '评测', '与 Web-UI 评测页一致。',
+        _field('model', '模型id或路径', '--model', 'text', '模型', '实际的模型id，如果是训练后的模型请填入checkpoint-xxx的目录'),
+        _field('model_type', '选择模型类型', '--model_type', 'select', '模型', 'SWIFT已支持的模型类型'),
+        _field('template', '模型Prompt模板类型', '--template', 'text', '模型', '选择匹配模型的Prompt模板'),
+        _field('eval_backend', '评测后端', '--eval_backend', 'select', '评测', '选择评测后端',
                ['Native', 'OpenCompass', 'VLMEvalKit']),
         _field('eval_dataset', '评测数据集', '--eval_dataset', 'text', '评测',
                'Mock 接受任意名字。真实 EvalScope 请改成 gsm8k、ceval 等已支持的数据集。'),
         _field('eval_limit', '每个数据集取样数', '--eval_limit', 'number', '评测', '', step='1'),
-        _field('custom_eval_config', '自定义评测配置', '--extra_eval_args', 'text', '评测',
-               '对应 Web-UI 的 custom_eval_config，提交时写入 extra_eval_args。'),
+        _field('eval_output_dir', '评测输出目录', '--eval_output_dir', 'text', '评测', '评测结果的输出目录'),
+        _field('custom_eval_config', '自定义数据集评测配置', '--custom_eval_config', 'text', '评测',
+               '可以使用该配置评测自己的数据集，详见github文档的评测部分'),
         _field('temperature', '温度', '--temperature', 'number', '生成', '评测默认 0。', step='0.1'),
         _field('max_new_tokens', '最大生成长度', '--max_new_tokens', 'number', '生成', '', step='1'),
         _field('eval_num_proc', '并发数', '--eval_num_proc', 'number', '资源', '单卡上不必开到 Web-UI 默认的 16。', step='1'),
@@ -218,7 +232,8 @@ FIELDS = {
     'rl': [
         _field('rlhf_type', 'RLHF 类型', '--rlhf_type', 'select', '算法', '在线 RL 预设 grpo。DPO/KTO 等是离线偏好学习。',
                ['grpo', 'dpo', 'kto', 'cpo', 'simpo', 'orpo', 'ppo', 'gkd', 'rm']),
-        _field('model', '策略模型', '--model', 'text', '模型', '默认是本轮 SFT checkpoint，而不是最初的基座。'),
+        _field('model', '模型id或路径', '--model', 'text', '模型', '实际的模型id，如果是训练后的模型请填入checkpoint-xxx的目录'),
+        _field('model_type', '模型类型', '--model_type', 'select', '模型', 'SWIFT已支持的模型类型'),
         _field('dataset', '数据集', '--dataset', 'text', '数据', '默认沿用数据阶段。GRPO 需要 solution 或可评分字段。'),
         _field('reward_funcs', '奖励函数', '--reward_funcs', 'text', '奖励', '空格分隔。内置示例注册了 itops_checklist。'),
         _field('reward_weights', '奖励权重', '--reward_weights', 'text', '奖励', '与奖励函数一一对应，空格分隔。'),
@@ -238,7 +253,8 @@ FIELDS = {
         _field('per_device_train_batch_size', '训练 batch size', '--per_device_train_batch_size', 'number', '超参数', '',
                step='1'),
         _field('gradient_accumulation_steps', '梯度累积', '--gradient_accumulation_steps', 'number', '超参数', '', step='1'),
-        _field('tuner_type', '训练方式', '--tuner_type', 'select', '调参', '', ['lora', 'full']),
+        _field('tuner_type', '训练方式', '--tuner_type', 'select', '调参', '选择训练的方式',
+               ['lora', 'full', 'longlora', 'adalora', 'llamapro', 'adapter', 'vera', 'boft', 'fourierft', 'reft', 'bone']),
         _field('lora_rank', 'LoRA rank', '--lora_rank', 'number', '调参', '', step='1'),
         _field('lora_alpha', 'LoRA alpha', '--lora_alpha', 'number', '调参', '', step='1'),
         _field('target_modules', 'Target modules', '--target_modules', 'text', '调参', ''),
@@ -262,8 +278,15 @@ FIELDS = {
         _field('seed', '随机种子', '--seed', 'number', '模型', '', advanced=True, step='1'),
         _field('system', 'System', '--system', 'textarea', '模型', '', advanced=True),
         _field('template', 'Prompt 模板', '--template', 'text', '模型', '', advanced=True),
-        _field('deepspeed', 'DeepSpeed', '--deepspeed', 'select', '显存', '单卡 LoRA 通常留空。', ['', 'zero2', 'zero3'],
-               advanced=True),
+        _field(
+            'deepspeed',
+            'DeepSpeed',
+            '--deepspeed',
+            'select',
+            '显存',
+            '可以选择下拉列表，也支持传入路径',
+            ['', 'zero0', 'zero1', 'zero2', 'zero3', 'zero2_offload', 'zero3_offload'],
+            advanced=True),
         _field('quant_method', '量化方式', '--quant_method', 'select', '显存', '显存不够时改为 bnb。', ['', 'bnb', 'awq', 'gptq'],
                advanced=True),
         _field('quant_bits', '量化位数', '--quant_bits', 'number', '显存', '', advanced=True, step='1'),
@@ -282,17 +305,22 @@ FIELDS = {
         _field('split_dataset_ratio', '验证集比例', '--split_dataset_ratio', 'number', '数据', '', advanced=True, step='0.01'),
         _field('load_from_cache_file', '使用数据集缓存', '--load_from_cache_file', 'checkbox', '资源', '', advanced=True),
         _field('logging_steps', '日志步数', '--logging_steps', 'number', '日志', '', advanced=True, step='1'),
-        _field('save_steps', '保存步数', '--save_steps', 'number', '日志', '', advanced=True, step='1'),
+        _field('save_steps', '存储步数', '--save_steps', 'number', '日志', '设置每个多少步数进行存储', advanced=True, step='1'),
         _field('save_total_limit', '最多保留检查点', '--save_total_limit', 'number', '日志', '', advanced=True, step='1'),
+        _field('output_dir', '存储目录', '--output_dir', 'text', '日志', '设置输出模型存储在哪个文件夹下', advanced=True),
         _field('warmup_ratio', 'Warmup 比例', '--warmup_ratio', 'number', '超参数', '', advanced=True, step='0.01'),
     ],
     'rl_eval': [
-        _field('model', '模型 / checkpoint', '--model', 'text', '模型', '默认是本轮 RL checkpoint。'),
-        _field('eval_backend', '评测后端', '--eval_backend', 'select', '评测', '',
+        _field('model', '模型id或路径', '--model', 'text', '模型', '实际的模型id，如果是训练后的模型请填入checkpoint-xxx的目录'),
+        _field('model_type', '选择模型类型', '--model_type', 'select', '模型', 'SWIFT已支持的模型类型'),
+        _field('template', '模型Prompt模板类型', '--template', 'text', '模型', '选择匹配模型的Prompt模板'),
+        _field('eval_backend', '评测后端', '--eval_backend', 'select', '评测', '选择评测后端',
                ['Native', 'OpenCompass', 'VLMEvalKit']),
         _field('eval_dataset', '评测数据集', '--eval_dataset', 'text', '评测', '与 SFT 评测使用同一名字，方便对比。'),
         _field('eval_limit', '每个数据集取样数', '--eval_limit', 'number', '评测', '', step='1'),
-        _field('custom_eval_config', '自定义评测配置', '--extra_eval_args', 'text', '评测', ''),
+        _field('eval_output_dir', '评测输出目录', '--eval_output_dir', 'text', '评测', '评测结果的输出目录'),
+        _field('custom_eval_config', '自定义数据集评测配置', '--custom_eval_config', 'text', '评测',
+               '可以使用该配置评测自己的数据集，详见github文档的评测部分'),
         _field('temperature', '温度', '--temperature', 'number', '生成', '', step='0.1'),
         _field('max_new_tokens', '最大生成长度', '--max_new_tokens', 'number', '生成', '', step='1'),
         _field('eval_num_proc', '并发数', '--eval_num_proc', 'number', '资源', '', step='1'),
@@ -301,6 +329,17 @@ FIELDS = {
         _field('verbose', '详细日志', '--verbose', 'checkbox', '评测', '', advanced=True),
     ],
     'promote': [
+        _field('choice', '晋级检查点', '', 'select', '决策', '分数更高的检查点会作为建议，可以改选，包括退回基座',
+               [{
+                   'value': 'rl',
+                   'label': 'RL checkpoint'
+               }, {
+                   'value': 'sft',
+                   'label': 'SFT checkpoint'
+               }, {
+                   'value': 'base',
+                   'label': '当前基座'
+               }]),
         _field('reason', '晋级说明', '', 'textarea', '决策', '会写进审计。例如：RL accuracy 高于 SFT，采纳 RL。'),
     ],
     'next_round': [
@@ -308,7 +347,8 @@ FIELDS = {
         _field('note', '备注', '', 'textarea', '下一轮', '可选。'),
     ],
     'serve': [
-        _field('model', '模型 / checkpoint', '--model', 'text', '部署', '默认是最近一次晋级的检查点。'),
+        _field('model', '模型id或路径', '--model', 'text', '部署', '实际的模型id，如果是训练后的模型请填入checkpoint-xxx的目录'),
+        _field('model_type', '选择模型类型', '--model_type', 'select', '部署', 'SWIFT已支持的模型类型'),
         _field('served_model_name', '服务模型名', '--served_model_name', 'text', '部署', 'OpenAI 请求里的 model 字段。'),
         _field('infer_backend', '推理框架', '--infer_backend', 'select', '部署', 'A100 上真实部署用 vllm。',
                ['vllm', 'transformers', 'sglang', 'lmdeploy']),
@@ -341,10 +381,22 @@ def presets() -> dict:
 
 def public_schema() -> dict:
     preset = presets()
+    fields = {}
+    for stage, items in FIELDS.items():
+        copied = []
+        for item in items:
+            field = dict(item)
+            if 'choices' in field:
+                field['choices'] = list(field['choices'])
+            label, info = label_for(stage, field['key'], field['label'], field.get('help') or '')
+            field['label'] = label
+            field['help'] = info
+            copied.append(field)
+        fields[stage] = copied
     return {
         'stages': STAGE_META,
         'stage_order': STAGE_ORDER,
-        'fields': FIELDS,
+        'fields': fields,
         'presets': {key: preset.get(key, {})
                     for key in ('data', 'sft', 'sft_eval', 'rl', 'rl_eval', 'serve', 'next_round')},
         'public_datasets': PUBLIC_DATASETS,

@@ -86,6 +86,11 @@ class SwiftWebUI(SwiftPipeline):
             gr.HTML(f"<h1><center>{locale_dict['title'][lang]}({_version})</center></h1>")
             gr.HTML(f"<h3><center>{locale_dict['sub_title'][lang]}</center></h3>")
             with gr.Tabs():
+                try:
+                    from rsi.gradio_app import build_rsi_tab
+                    build_rsi_tab(app)
+                except Exception:
+                    logger.exception('RSI tab was not added')
                 LLMTrain.build_ui(LLMTrain)
                 LLMRLHF.build_ui(LLMRLHF)
                 LLMGRPO.build_ui(LLMGRPO)

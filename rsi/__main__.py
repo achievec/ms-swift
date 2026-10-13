@@ -1,17 +1,22 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
+"""Launch RSI and the SWIFT Web-UI as one Gradio app on the Web-UI port."""
 import os
 
-import uvicorn
-
-from rsi.app import create_app
+from rsi.gradio_app import launch_standalone, resolve_server
 
 
 def main():
-    host = os.environ.get('RSI_HOST', '127.0.0.1')
-    port = int(os.environ.get('RSI_PORT', '8765'))
-    app = create_app()
-    print(f'RSI UI: http://{host}:{port}  (backend={app.state.pipeline.backend.name})')
-    uvicorn.run(app, host=host, port=port, log_level='info')
+    host, port = resolve_server()
+    os.environ['WEBUI_SERVER'] = host
+    os.environ['WEBUI_PORT'] = str(port)
+    try:
+        from swift.ui.app import webui_main
+    except Exception as exc:
+        print(f'swift web-ui 未加载（{exc}）。RSI 闭环仍在 {host}:{port}，其余标签会在装好 swift 依赖后出现。')
+        launch_standalone(host, port)
+        return
+    print(f'SWIFT WebUI + RSI: http://{host}:{port}  （默认标签：RSI闭环）')
+    webui_main()
 
 
 if __name__ == '__main__':

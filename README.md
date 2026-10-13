@@ -256,9 +256,11 @@ SWIFT_UI_LANG=en swift web-ui
 
 ### RSI closed-loop UI
 
-A click-through recursive self-improvement loop (data → SFT → eval → online RL → eval → promote → next round → OpenAI-compatible serve) lives in [`rsi/`](rsi/README.md). It reuses ms-swift parameter names and defaults to a mock backend so the full loop runs without a GPU. Set `RSI_BACKEND=swift` on a machine with an A100 to call the real `swift` CLIs.
+A click-through recursive self-improvement loop (data → SFT → eval → online RL → eval → promote → next round → OpenAI-compatible serve) lives in [`rsi/`](rsi/README.md). It is the first tab of this Web-UI (`RSI闭环` on port 7860, in front of the existing train / RLHF / GRPO / infer / export / eval / sample tabs) and reuses the same Gradio controls and parameter names. The default backend is mock, so the loop runs without a GPU. Set `RSI_BACKEND=swift` on a machine with an A100 to call the real `swift` CLIs.
 
 ```shell
+./run.sh
+# or, in the foreground:
 pip install -r rsi/requirements.txt
 python -m rsi
 ```
