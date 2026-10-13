@@ -20,13 +20,13 @@ This is the manual version of the loop most post-training stacks use now: superv
 
 ## Run locally (mock)
 
-From the repository root, `rsi/run.sh` starts the same Gradio app in the background. No arguments means restart (stop, then start). Status lines are in Chinese, and a successful start prints http://127.0.0.1:7860/
+From the repository root, `./run.sh` starts the same Gradio app in the background. No arguments means restart (stop, then start). Status lines are in Chinese, and a successful start prints http://127.0.0.1:7860/
 
 ```bash
-./rsi/run.sh              # restart
-./rsi/run.sh start
-./rsi/run.sh stop
-./rsi/run.sh restart
+./run.sh              # restart
+./run.sh start
+./run.sh stop
+./run.sh restart
 ```
 
 The process id is `rsi/.rsi.pid` and the log is `rsi/.rsi.log`. If `rsi/.venv`, a repo `.venv`, or an already activated virtualenv exists, the script uses that Python. Otherwise it uses `python3` and runs `pip install -r rsi/requirements.txt` only when `gradio` or `fastapi` is missing. If that install cannot write into the current interpreter, it creates `rsi/.venv` and installs there. `stop` ends the recorded process and any listener on port 7860 whose command is `python -m rsi`. It leaves an unrelated program on that port alone.
@@ -115,7 +115,7 @@ SQLite tables `runs`, `rounds`, `steps`, `checkpoints`, and `services` record ea
 ## Layout
 
 ```
-rsi/run.sh           start / stop / restart the Web-UI on port 7860
+run.sh                start / stop / restart the Web-UI on port 7860
 rsi/gradio_app.py     RSI闭环 Gradio tab (default page on port 7860)
 rsi/webui_catalog.py  model / template / dataset ids parsed from the Web-UI registries
 rsi/webui_labels.py   Web-UI Chinese labels and help text

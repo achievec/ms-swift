@@ -3,7 +3,7 @@
 # No arguments means restart. Default URL: http://127.0.0.1:7860/
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RSI_DIR="${ROOT}/rsi"
 PID_FILE="${RSI_DIR}/.rsi.pid"
 LOG_FILE="${RSI_DIR}/.rsi.log"
@@ -23,7 +23,7 @@ browser_url() {
 
 usage() {
   cat <<EOF
-用法：./rsi/run.sh [start|stop|restart]
+用法：./run.sh [start|stop|restart]
   start    后台启动 python -m rsi（默认 http://127.0.0.1:7860/）
   stop     结束本应用的进程，以及它占用的 ${PORT} 端口
   restart  先停止再启动
@@ -294,7 +294,7 @@ main() {
   if command -v flock >/dev/null 2>&1; then
     exec 9>"${LOCK_FILE}"
     if ! flock -n 9; then
-      echo "[错误] 另一个 ./rsi/run.sh 正在执行，请稍后再试。"
+      echo "[错误] 另一个 ./run.sh 正在执行，请稍后再试。"
       exit 1
     fi
   fi
