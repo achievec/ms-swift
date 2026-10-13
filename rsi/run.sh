@@ -255,11 +255,14 @@ cmd_start() {
   # The background pid is python itself, so stop can match it immediately.
   cd "${ROOT}"
   PYTHONPATH="${ROOT}${PYTHONPATH:+:${PYTHONPATH}}" \
+    PYTHONUNBUFFERED=1 \
     WEBUI_PORT="${PORT}" \
     WEBUI_SERVER="${HOST}" \
-    "${PY}" -m rsi >> "${LOG_FILE}" 2>&1 &
+    "${PY}" -m rsi >> "${LOG_FILE}" 2>&1 9>&- &
   pid="$!"
   echo "${pid}" > "${PID_FILE}"
+  # Drop the lock before the ready-wait so stop/restart can run while Gradio is coming up.
+  release_lock
   if ! wait_until_ready "${pid}"; then
     echo "[启动] 启动失败。请查看 rsi/.rsi.log"
     exit 1
@@ -272,6 +275,13 @@ cmd_restart() {
   echo "[重启] 先停止，再启动 RSI Web-UI。"
   cmd_stop
   cmd_start
+}
+
+release_lock() {
+  if [[ -e /proc/self/fd/9 ]]; then
+    flock -u 9 2>/dev/null || true
+    exec 9>&-
+  fi
 }
 
 main() {
