@@ -28,6 +28,7 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     app = FastAPI(title='ms-swift RSI', version=__version__, lifespan=lifespan)
     app.state.pipeline = pipeline
+    app.state.swift_ui = False
     app.state.home = home
 
     @app.exception_handler(PipelineError)
@@ -43,6 +44,8 @@ def create_app(home: Path | None = None) -> FastAPI:
             'backend': pipeline.backend.name,
             'serve_backend': pipeline._serve_backend_name(),
             'hardware': schema.get('hardware') or {},
+            'swift_ui': bool(getattr(app.state, 'swift_ui', False)),
+            'port': int(os.environ.get('WEBUI_PORT') or os.environ.get('RSI_PORT') or '7860'),
         }
 
     @app.get('/api/schema')
@@ -56,7 +59,8 @@ def create_app(home: Path | None = None) -> FastAPI:
     @app.post('/api/runs')
     async def create_run(request: Request):
         body = await request.json()
-        return pipeline.create_run(body.get('name', ''), body.get('scenario', ''), body.get('base_model', ''))
+        meta = body.get('model_meta') if isinstance(body.get('model_meta'), dict) else {}
+        return pipeline.create_run(body.get('name', ''), body.get('scenario', ''), body.get('base_model', ''), meta)
 
     @app.get('/api/runs/{run_id}')
     def get_run(run_id: str, round: int | None = None):
