@@ -5,6 +5,8 @@ from pathlib import Path
 
 import yaml
 
+from rsi.webui_catalog import load_catalog
+
 CONFIG_PATH = Path(__file__).resolve().parent / 'configs' / 'a100_80g.yaml'
 
 STAGE_ORDER = ['data', 'sft', 'sft_eval', 'rl', 'rl_eval', 'promote', 'next_round']
@@ -82,7 +84,7 @@ BUNDLED = [
 ]
 
 
-def _field(key, label, arg, type='text', group='基础', help='', choices=None, advanced=False, step=None):
+def _field(key, label, arg, type='text', group='基础', help='', choices=None, advanced=False, step=None, source=None):
     item = {
         'key': key,
         'label': label,
@@ -96,7 +98,21 @@ def _field(key, label, arg, type='text', group='基础', help='', choices=None, 
         item['choices'] = choices
     if step is not None:
         item['step'] = step
+    if source:
+        item['source'] = source
     return item
+
+
+def _model_fields(checkpoint=False):
+    """Web-UI 模型设置 labels. Rendered by the V1 page as themed comboboxes."""
+    model_help = ('实际的模型id，如果是训练后的模型请填入checkpoint-xxx的目录' if checkpoint else '实际的模型id')
+    type_label = '选择模型类型' if checkpoint else '模型类型'
+    return [
+        _field('model', '模型id或路径', '--model', 'combo', '模型设置', model_help, source='models'),
+        _field('model_type', type_label, '--model_type', 'combo', '模型设置', 'SWIFT已支持的模型类型', source='model_types'),
+        _field('template', '模型Prompt模板类型', '--template', 'combo', '模型设置', '选择匹配模型的Prompt模板',
+               source='templates'),
+    ]
 
 
 FIELDS = {
@@ -139,12 +155,11 @@ FIELDS = {
         _field('val_dataset', '验证集', '--val_dataset', 'text', '数据', '可选。', advanced=True),
     ],
     'sft': [
-        _field('model', '模型 id 或路径', '--model', 'text', '模型', '本轮基座。训练后的模型填 checkpoint 目录。'),
-        _field('template', 'Prompt 模板', '--template', 'text', '模型', 'Qwen2.5 使用 qwen2_5。'),
-        _field('system', 'System', '--system', 'textarea', '模型', '可选系统提示。'),
-        _field('torch_dtype', '训练精度', '--torch_dtype', 'select', '模型', 'A100 上 7B LoRA 使用 bfloat16。',
+        *_model_fields(checkpoint=False),
+        _field('system', 'System字段', '--system', 'textarea', '模型设置', '选择system字段的内容'),
+        _field('torch_dtype', '训练精度', '--torch_dtype', 'select', '模型设置', 'A100 上 7B LoRA 使用 bfloat16。',
                ['bfloat16', 'float16', 'float32']),
-        _field('seed', '随机种子', '--seed', 'number', '模型', '', step='1'),
+        _field('seed', '随机种子', '--seed', 'number', '模型设置', '', step='1'),
         _field('tuner_type', '训练方式', '--tuner_type', 'select', '调参', '单卡 80G 建议 lora。全参 Adam 放不进约 60GB 可用内存。',
                ['lora', 'full', 'adalora', 'dora', 'longlora']),
         _field('lora_rank', 'LoRA rank', '--lora_rank', 'number', '调参', '', step='1'),
@@ -200,7 +215,7 @@ FIELDS = {
         _field('dataset', '数据集', '--dataset', 'text', '数据', '默认沿用本轮数据阶段的结果。', advanced=True),
     ],
     'sft_eval': [
-        _field('model', '模型 / checkpoint', '--model', 'text', '模型', '默认是本轮 SFT checkpoint。'),
+        *_model_fields(checkpoint=True),
         _field('eval_backend', '评测后端', '--eval_backend', 'select', '评测', '与 Web-UI 评测页一致。',
                ['Native', 'OpenCompass', 'VLMEvalKit']),
         _field('eval_dataset', '评测数据集', '--eval_dataset', 'text', '评测',
@@ -218,7 +233,7 @@ FIELDS = {
     'rl': [
         _field('rlhf_type', 'RLHF 类型', '--rlhf_type', 'select', '算法', '在线 RL 预设 grpo。DPO/KTO 等是离线偏好学习。',
                ['grpo', 'dpo', 'kto', 'cpo', 'simpo', 'orpo', 'ppo', 'gkd', 'rm']),
-        _field('model', '策略模型', '--model', 'text', '模型', '默认是本轮 SFT checkpoint，而不是最初的基座。'),
+        *_model_fields(checkpoint=False),
         _field('dataset', '数据集', '--dataset', 'text', '数据', '默认沿用数据阶段。GRPO 需要 solution 或可评分字段。'),
         _field('reward_funcs', '奖励函数', '--reward_funcs', 'text', '奖励', '空格分隔。内置示例注册了 itops_checklist。'),
         _field('reward_weights', '奖励权重', '--reward_weights', 'text', '奖励', '与奖励函数一一对应，空格分隔。'),
@@ -261,7 +276,6 @@ FIELDS = {
         _field('log_completions', '记录采样', '--log_completions', 'checkbox', '日志', ''),
         _field('seed', '随机种子', '--seed', 'number', '模型', '', advanced=True, step='1'),
         _field('system', 'System', '--system', 'textarea', '模型', '', advanced=True),
-        _field('template', 'Prompt 模板', '--template', 'text', '模型', '', advanced=True),
         _field('deepspeed', 'DeepSpeed', '--deepspeed', 'select', '显存', '单卡 LoRA 通常留空。', ['', 'zero2', 'zero3'],
                advanced=True),
         _field('quant_method', '量化方式', '--quant_method', 'select', '显存', '显存不够时改为 bnb。', ['', 'bnb', 'awq', 'gptq'],
@@ -287,7 +301,7 @@ FIELDS = {
         _field('warmup_ratio', 'Warmup 比例', '--warmup_ratio', 'number', '超参数', '', advanced=True, step='0.01'),
     ],
     'rl_eval': [
-        _field('model', '模型 / checkpoint', '--model', 'text', '模型', '默认是本轮 RL checkpoint。'),
+        *_model_fields(checkpoint=True),
         _field('eval_backend', '评测后端', '--eval_backend', 'select', '评测', '',
                ['Native', 'OpenCompass', 'VLMEvalKit']),
         _field('eval_dataset', '评测数据集', '--eval_dataset', 'text', '评测', '与 SFT 评测使用同一名字，方便对比。'),
@@ -308,14 +322,13 @@ FIELDS = {
         _field('note', '备注', '', 'textarea', '下一轮', '可选。'),
     ],
     'serve': [
-        _field('model', '模型 / checkpoint', '--model', 'text', '部署', '默认是最近一次晋级的检查点。'),
+        *_model_fields(checkpoint=True),
         _field('served_model_name', '服务模型名', '--served_model_name', 'text', '部署', 'OpenAI 请求里的 model 字段。'),
         _field('infer_backend', '推理框架', '--infer_backend', 'select', '部署', 'A100 上真实部署用 vllm。',
                ['vllm', 'transformers', 'sglang', 'lmdeploy']),
         _field('host', 'Host', '--host', 'text', '部署', '本机 Mock 用 127.0.0.1。对外服务再用 0.0.0.0。'),
         _field('port', 'Port', '--port', 'number', '部署', '与 swift deploy 示例一致时为 8000。', step='1'),
         _field('api_key', 'API key', '--api_key', 'text', '部署', '留空则不校验。'),
-        _field('template', 'Prompt 模板', '--template', 'text', '部署', ''),
         _field('torch_dtype', '精度', '--torch_dtype', 'select', '部署', '', ['bfloat16', 'float16', 'float32']),
         _field('max_new_tokens', '最大生成长度', '--max_new_tokens', 'number', '生成', '', step='1'),
         _field('temperature', '温度', '--temperature', 'number', '生成', '', step='0.1'),
@@ -351,4 +364,5 @@ def public_schema() -> dict:
         'bundled': BUNDLED,
         'hardware': preset.get('hardware', {}),
         'base_model_default': 'Qwen/Qwen2.5-7B-Instruct',
+        'catalog': load_catalog(),
     }

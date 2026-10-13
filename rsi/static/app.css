@@ -160,13 +160,49 @@ tr.expand td { background: #faf7f2; }
   position: fixed; bottom: 16px; right: 16px; background: var(--ink); color: white;
   padding: 10px 14px; border-radius: 8px; max-width: 360px; z-index: 5;
 }
-dialog { border: 0; border-radius: 14px; padding: 18px; width: min(520px, calc(100vw - 24px)); }
+dialog { border: 0; border-radius: 14px; padding: 18px; width: min(760px, calc(100vw - 24px)); }
+dialog fieldset.model-settings {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  margin: 0 0 12px;
+  padding: 10px 12px 4px;
+}
+dialog legend { padding: 0 6px; color: var(--teal-ink); font-size: 13px; }
+.model-row { display: grid; grid-template-columns: 1.5fr 1fr 1fr; gap: 10px 12px; }
+.product-tabs {
+  display: flex; gap: 6px; flex-wrap: wrap;
+  padding: 0 22px 10px;
+  background: #2a211b;
+}
+.product-tabs button {
+  background: transparent; color: #d9cbbd;
+  border: 1px solid transparent; border-radius: 999px;
+  padding: 4px 10px; font-size: 13px;
+}
+.product-tabs button.active { background: #e7b15a; color: #2a211b; }
+.swift-panel { padding: 22px 26px 48px; }
+.swift-frame { width: 100%; min-height: 70vh; border: 1px solid var(--line); border-radius: 12px; background: white; }
+.combo { position: relative; }
+.combo-list {
+  position: absolute; z-index: 6; left: 0; right: 0; top: 4.6em;
+  max-height: 240px; overflow: auto;
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 8px; box-shadow: var(--shadow);
+}
+.combo-list button {
+  display: block; width: 100%; text-align: left;
+  background: transparent; border: 0; border-radius: 0; padding: 6px 10px;
+}
+.combo-list button.selected { background: var(--teal-soft); }
+.combo-list button.selected::before { content: "✓ "; color: var(--teal-ink); font-weight: 700; }
+.combo-list button:hover, .combo-list button.active { background: #f6f1e8; }
+.combo-hint { color: var(--amber); }
 dialog::backdrop { background: rgba(36, 28, 21, 0.45); }
 dialog label { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
 
 @media (max-width: 900px) {
   .shell { grid-template-columns: 1fr; }
   aside { border-right: 0; border-bottom: 1px solid var(--line); }
-  .grid, .candidates { grid-template-columns: 1fr; }
+  .grid, .candidates, .model-row { grid-template-columns: 1fr; }
   .top { flex-direction: column; align-items: flex-start; }
 }

@@ -20,7 +20,17 @@
       <span id="backend-pill">后端</span>
     </div>
   </header>
-  <div class="shell">
+  <nav class="product-tabs" id="product-tabs">
+    <button type="button" class="active" data-product="rsi">RSI闭环</button>
+    <button type="button" data-product="train">LLM预训练/微调</button>
+    <button type="button" data-product="rlhf">LLM人类对齐</button>
+    <button type="button" data-product="grpo">LLM GRPO</button>
+    <button type="button" data-product="infer">LLM推理</button>
+    <button type="button" data-product="export">LLM导出</button>
+    <button type="button" data-product="eval">LLM评测</button>
+    <button type="button" data-product="sample">LLM采样</button>
+  </nav>
+  <div class="shell" id="rsi-shell">
     <aside>
       <button id="new-run" class="primary block" type="button">新建实验</button>
       <p class="aside-note">每一轮都是人工点下一步。Mock 模式不占用 GPU，审计写在 SQLite。</p>
@@ -28,6 +38,13 @@
     </aside>
     <main id="main"></main>
   </div>
+  <section id="swift-panel" class="swift-panel" hidden>
+    <div class="panel">
+      <p class="kicker">SWIFT Web-UI</p>
+      <h2 id="swift-panel-title">原 Web-UI 页面</h2>
+      <div id="swift-panel-body"></div>
+    </div>
+  </section>
   <div id="toast" hidden></div>
   <dialog id="create-dialog">
     <form id="create-form" method="dialog">
@@ -35,7 +52,35 @@
       <p class="muted">从一块基座模型开始。每一轮用场景数据做 SFT，再用在线 RL 拉开和基座的差距，最后由你决定哪个检查点晋级。</p>
       <label>实验名称<input name="name" required maxlength="80" value="IT 运维助手" /></label>
       <label>场景说明<textarea name="scenario" required maxlength="500">企业内部 IT 工单分诊与处理建议。目标是从通用基座迭代出能按步骤处理工单的模型。</textarea></label>
-      <label>基座模型 id 或路径<input name="base_model" required maxlength="300" value="Qwen/Qwen2.5-7B-Instruct" /></label>
+      <fieldset class="model-settings">
+        <legend>模型设置</legend>
+        <div class="model-row">
+          <label class="field combo">
+            <span>模型id或路径(--model)</span>
+            <input name="base_model" data-combo="1" data-role="model" data-source="models" required maxlength="300" value="Qwen/Qwen2.5-7B-Instruct" autocomplete="off" />
+            <div class="combo-list" hidden></div>
+            <small>实际的模型id</small>
+            <small class="combo-hint" hidden></small>
+          </label>
+          <label class="field combo">
+            <span>模型类型(--model_type)</span>
+            <input name="model_type" data-combo="1" data-source="model_types" value="qwen2" autocomplete="off" />
+            <div class="combo-list" hidden></div>
+            <small>SWIFT已支持的模型类型</small>
+          </label>
+          <label class="field combo">
+            <span>模型Prompt模板类型(--template)</span>
+            <input name="template" data-combo="1" data-source="templates" value="qwen2_5" autocomplete="off" />
+            <div class="combo-list" hidden></div>
+            <small>选择匹配模型的Prompt模板</small>
+          </label>
+        </div>
+        <label class="field">
+          <span>System字段(--system)</span>
+          <textarea name="system">你是企业内部 IT 运维助手。先给出判断，再给出可执行的排查步骤。不要编造未提供的系统状态。</textarea>
+          <small>选择system字段的内容</small>
+        </label>
+      </fieldset>
       <div class="row-actions">
         <button type="button" id="create-cancel" class="ghost">取消</button>
         <button type="submit" class="primary">创建并进入数据阶段</button>

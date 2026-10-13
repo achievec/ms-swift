@@ -4,7 +4,7 @@ Click-through recursive self-improvement on top of ms-swift:
 
 **data → SFT → SFT eval → online RL → RL eval → promote → next round → OpenAI-compatible serve**
 
-The UI speaks Chinese. Parameter names match the existing Gradio Web-UI and the `swift sft` / `swift rlhf` / `swift eval` / `swift deploy` CLIs. ms-swift itself is not modified; this app shells out to it only when you ask.
+The UI speaks Chinese and keeps the original RSI layout. Model fields use the Web-UI wording (`模型id或路径(--model)`, `模型类型(--model_type)`, `模型Prompt模板类型(--template)`) inside that same page. Training code is unchanged; this app shells out to `swift` only when you ask.
 
 Default mode is **mock**. No GPU, no model download, no EvalScope. A deterministic score, a checkpoint directory, and an audit row are written so the whole loop can be clicked through on a laptop. Point the same forms at a real A100 later by changing one environment variable.
 
@@ -20,18 +20,29 @@ This is the manual version of the loop most post-training stacks use now: superv
 
 ## Run locally (mock)
 
-From the repository root:
+From the repository root, `./run.sh` starts the V1 RSI page in the background on the same port as `swift web-ui`. No arguments means restart (stop, then start). Status lines are in Chinese, and a successful start prints http://127.0.0.1:7860/
+
+```bash
+./run.sh              # restart
+./run.sh start
+./run.sh stop
+./run.sh restart
+```
+
+The process id is `rsi/.rsi.pid` and the log is `rsi/.rsi.log`. If `rsi/.venv`, a repo `.venv`, or an already activated virtualenv exists, the script uses that Python. Otherwise it uses `python3` and runs `pip install -r rsi/requirements.txt` only when `fastapi` or `uvicorn` is missing.
+
+The same page can still be started in the foreground:
 
 ```bash
 pip install -r rsi/requirements.txt
 python -m rsi
 ```
 
-Open http://127.0.0.1:8765
+Open http://127.0.0.1:7860/
 
 Then:
 
-1. **新建实验**. The default base is `Qwen/Qwen2.5-7B-Instruct` and the scenario is an internal IT helpdesk.
+1. **新建实验**. **模型设置** matches the Web-UI: `模型id或路径(--model)` is a searchable dropdown of the same model ids (default `Qwen/Qwen2.5-7B-Instruct`, including 14B / 32B / 72B). Choosing one fills `模型类型(--model_type)` and `模型Prompt模板类型(--template)` (`qwen2` and `qwen2_5`). A checkpoint path can still be typed. The scenario is an internal IT helpdesk.
 2. **数据**. Leave the bundled `itops_mix.jsonl` selected (ms-swift `messages` plus a `solution` field for GRPO). Click 校验格式, then 运行本阶段. You can also pick a public id such as `modelscope/gsm8k`, upload a jsonl, or type a local path.
 3. **SFT**. The form is the A100 preset (`swift sft`, LoRA, bf16). Run it. The log shows the command that real training would execute, and a mock `checkpoint-final/args.json` is written.
 4. **SFT 评测**, **在线 RL** (`swift rlhf --rlhf_type grpo`, vLLM colocate), **RL 评测**. Same pattern.
@@ -41,7 +52,7 @@ Then:
 
 Re-running an earlier stage keeps the old audit row and marks later stages in that round as 已作废.
 
-Override the port with `RSI_PORT` and the bind address with `RSI_HOST`. State (SQLite, uploads, mock checkpoints) lives in `rsi/workspace/`, or in `$RSI_HOME`.
+`WEBUI_PORT` (or `RSI_PORT`) changes the port. `WEBUI_SERVER` (or `RSI_HOST`) changes the bind address. The default is http://127.0.0.1:7860/ , the same port as `swift web-ui`. Do not run both at once. The header tab **RSI闭环** is this page. The other tabs (LLM预训练/微调, LLM人类对齐, LLM GRPO, LLM推理, LLM导出, LLM评测, LLM采样) are the original Web-UI: when torch is installed they open at `/swift-ui` on this same process; otherwise stop `./run.sh` and run `swift web-ui`. State (SQLite, uploads, mock checkpoints) lives in `rsi/workspace/`, or in `$RSI_HOME`.
 
 ```bash
 pytest rsi/tests -q
@@ -98,6 +109,8 @@ SQLite tables `runs`, `rounds`, `steps`, `checkpoints`, and `services` record ea
 ## Layout
 
 ```
+run.sh                start / stop / restart the V1 page on port 7860
+rsi/webui_catalog.py  model ids parsed from the Web-UI registries
 rsi/app.py            FastAPI + static UI
 rsi/pipeline.py       stage order and promotion
 rsi/backends.py       MockBackend, MsSwiftBackend

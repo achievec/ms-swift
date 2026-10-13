@@ -12,6 +12,7 @@ from rsi.backends import BackendError
 from rsi.commands import STAGE_COMMAND, build_argv, format_shell
 from rsi.dataset_validate import MAX_BYTES, validate_file, validate_public_id
 from rsi.schemas import STAGE_META, STAGE_ORDER, presets
+from rsi.webui_catalog import match_model
 from rsi.serving import find_free_port, loopback, port_is_free
 from rsi.store import Store
 
@@ -121,7 +122,7 @@ class Pipeline:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def create_run(self, name: str, scenario: str, base_model: str) -> dict:
+    def create_run(self, name: str, scenario: str, base_model: str, model_meta: dict | None = None) -> dict:
         name = (name or '').strip()
         scenario = (scenario or '').strip()
         base_model = (base_model or '').strip()
@@ -133,7 +134,43 @@ class Pipeline:
             raise PipelineError('基座模型需要 1 到 300 个字符')
         run_id = uuid.uuid4().hex[:8]
         self.store.create_run(run_id, name, scenario, base_model)
+        self._write_meta(run_id, base_model, model_meta or {})
         return self.view(run_id)
+
+    def _meta_path(self, run_id: str) -> Path:
+        return self.home / 'runs' / run_id / 'meta.json'
+
+    def _write_meta(self, run_id: str, base_model: str, model_meta: dict) -> None:
+        matched = match_model(base_model) or {}
+        incoming = model_meta if isinstance(model_meta, dict) else {}
+        payload = {
+            'model_type': (incoming.get('model_type') or matched.get('model_type') or ''),
+            'template': (incoming.get('template') or matched.get('template') or ''),
+            'system': incoming.get('system') or '',
+        }
+        path = self._meta_path(run_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+
+    def _read_meta(self, run_id: str) -> dict:
+        path = self._meta_path(run_id)
+        if not path.is_file():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _fill_model_meta(self, run: dict, preset: dict) -> None:
+        meta = self._read_meta(run['id'])
+        matched = match_model(str(preset.get('model') or '')) or match_model(run.get('base_model') or '') or {}
+        if not preset.get('model_type'):
+            preset['model_type'] = meta.get('model_type') or matched.get('model_type') or ''
+        if not preset.get('template'):
+            preset['template'] = meta.get('template') or matched.get('template') or ''
+        if meta.get('system') and not preset.get('system'):
+            preset['system'] = meta['system']
 
     def list_runs(self) -> list:
         return self.store.list_runs()
@@ -225,6 +262,7 @@ class Pipeline:
                 if data_params.get(key) not in (None, ''):
                     preset[key] = data_params[key]
             preset['output_dir'] = str(self.stage_dir(run['id'], rnd['round_index'], 'sft'))
+            self._fill_model_meta(run, preset)
             return preset
 
         if stage == 'rl':
@@ -234,6 +272,7 @@ class Pipeline:
                 preset['dataset'] = data_result['dataset']
             preset['output_dir'] = str(self.stage_dir(run['id'], rnd['round_index'], 'rl'))
             preset['external_plugins'] = _resolve_existing(preset.get('external_plugins'))
+            self._fill_model_meta(run, preset)
             return preset
 
         if stage in {'sft_eval', 'rl_eval'}:
@@ -242,6 +281,7 @@ class Pipeline:
             preset['model'] = checkpoint['path'] if checkpoint else ''
             preset['eval_output_dir'] = str(self.stage_dir(run['id'], rnd['round_index'], stage) / 'eval_output')
             preset['custom_eval_config'] = _resolve_existing(preset.get('custom_eval_config'))
+            self._fill_model_meta(run, preset)
             return preset
 
         if stage == 'promote':
@@ -255,6 +295,7 @@ class Pipeline:
             if promo:
                 preset['model'] = promo['promoted_checkpoint']
                 preset['served_model_name'] = _slug(run['name'], promo['round_index'], promo['promoted_kind'])
+            self._fill_model_meta(run, preset)
             return preset
         return preset
 

@@ -250,6 +250,8 @@ swift web-ui
 递归自改进闭环（数据 → SFT → 评测 → 在线 RL → 评测 → 晋级 → 下一轮 → OpenAI 兼容推理）在 [`rsi/`](rsi/README.md)。参数名与 ms-swift 命令行一致，默认 Mock，没有 GPU 也能把主流程走完。放到 A100 上时设置 `RSI_BACKEND=swift`，即可改为调用真实 `swift` 命令。
 
 ```shell
+./run.sh
+# 或前台启动：
 pip install -r rsi/requirements.txt
 python -m rsi
 ```

@@ -259,6 +259,8 @@ SWIFT_UI_LANG=en swift web-ui
 A click-through recursive self-improvement loop (data → SFT → eval → online RL → eval → promote → next round → OpenAI-compatible serve) lives in [`rsi/`](rsi/README.md). It reuses ms-swift parameter names and defaults to a mock backend so the full loop runs without a GPU. Set `RSI_BACKEND=swift` on a machine with an A100 to call the real `swift` CLIs.
 
 ```shell
+./run.sh
+# or, in the foreground:
 pip install -r rsi/requirements.txt
 python -m rsi
 ```

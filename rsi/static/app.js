@@ -102,12 +102,19 @@ function fieldValue(field, values) {
   return raw;
 }
 
+function displayLabel(field) {
+  const label = field.label || '';
+  if (!field.arg || label.includes('(--') || label.endsWith(')')) return label;
+  return `${label}(${field.arg})`;
+}
+
 function renderField(field, values) {
   const value = fieldValue(field, values);
-  const help = `${escapeHtml(field.help || '')} ${field.arg ? `<code>${escapeHtml(field.arg)}</code>` : ''}`;
+  const help = escapeHtml(field.help || '');
+  const label = escapeHtml(displayLabel(field));
   if (field.type === 'checkbox') {
     const checked = value === true || value === 'true' ? 'checked' : '';
-    return `<div class="field" data-key="${field.key}"><label class="check"><input type="checkbox" data-field="${field.key}" ${checked}/> ${escapeHtml(field.label)}</label><small>${help}</small></div>`;
+    return `<div class="field" data-key="${field.key}"><label class="check"><input type="checkbox" data-field="${field.key}" ${checked}/> ${label}</label><small>${help}</small></div>`;
   }
   if (field.type === 'select') {
     const options = (field.choices || []).map((choice) => {
@@ -116,14 +123,24 @@ function renderField(field, values) {
       const selected = String(value) === String(optionValue) ? 'selected' : '';
       return `<option value="${escapeHtml(optionValue)}" ${selected}>${escapeHtml(optionLabel)}</option>`;
     }).join('');
-    return `<label class="field" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><select data-field="${field.key}">${options}</select><small>${help}</small></label>`;
+    return `<label class="field" data-key="${field.key}"><span>${label}</span><select data-field="${field.key}">${options}</select><small>${help}</small></label>`;
+  }
+  if (field.type === 'combo') {
+    const role = field.key === 'model' ? 'data-role="model"' : '';
+    return `<label class="field combo" data-key="${field.key}">
+      <span>${label}</span>
+      <input type="text" data-field="${field.key}" data-combo="1" data-source="${escapeHtml(field.source || '')}" ${role} value="${escapeHtml(value)}" autocomplete="off" />
+      <div class="combo-list" hidden></div>
+      <small>${help}</small>
+      ${field.key === 'model' ? '<small class="combo-hint" hidden></small>' : ''}
+    </label>`;
   }
   if (field.type === 'textarea') {
-    return `<label class="field" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><textarea data-field="${field.key}" rows="4">${escapeHtml(value)}</textarea><small>${help}</small></label>`;
+    return `<label class="field" data-key="${field.key}"><span>${label}</span><textarea data-field="${field.key}" rows="4">${escapeHtml(value)}</textarea><small>${help}</small></label>`;
   }
   const inputType = field.type === 'number' ? 'number' : 'text';
   const step = field.step ? `step="${field.step}"` : '';
-  return `<label class="field" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><input type="${inputType}" data-field="${field.key}" value="${escapeHtml(value)}" ${step}/><small>${help}</small></label>`;
+  return `<label class="field" data-key="${field.key}"><span>${label}</span><input type="${inputType}" data-field="${field.key}" value="${escapeHtml(value)}" ${step}/><small>${help}</small></label>`;
 }
 
 function renderGroups(fields, values) {
@@ -137,7 +154,7 @@ function renderGroups(fields, values) {
   }
   const blocks = groups.map((group) => `
     <h3>${escapeHtml(group.name)}</h3>
-    <div class="grid">${group.fields.map((field) => renderField(field, values)).join('')}</div>`).join('');
+    <div class="${group.name === '模型设置' ? 'grid model-row' : 'grid'}">${group.fields.map((field) => renderField(field, values)).join('')}</div>`).join('');
   const extra = advanced.length ? `
     <details>
       <summary>更多参数（与 swift Web-UI / 命令行同名）</summary>
@@ -148,7 +165,8 @@ function renderGroups(fields, values) {
 
 function collectParams() {
   const params = {};
-  document.querySelectorAll('[data-field]').forEach((el) => {
+  const root = document.getElementById('main') || document;
+  root.querySelectorAll('[data-field]').forEach((el) => {
     if (el.type === 'radio') {
       if (el.checked) params[el.dataset.field] = el.value;
       return;
@@ -451,7 +469,136 @@ async function sendChat() {
   render();
 }
 
+const PRODUCT_TITLES = {
+  rsi: 'RSI闭环',
+  train: 'LLM预训练/微调',
+  rlhf: 'LLM人类对齐',
+  grpo: 'LLM GRPO',
+  infer: 'LLM推理',
+  export: 'LLM导出',
+  eval: 'LLM评测',
+  sample: 'LLM采样',
+};
+
+function catalogList(source) {
+  const catalog = (state.schema && state.schema.catalog) || {};
+  return catalog[source] || [];
+}
+
+function closeCombos(except) {
+  document.querySelectorAll('.combo-list').forEach((list) => {
+    if (except && list === except) return;
+    list.hidden = true;
+  });
+}
+
+function openCombo(input) {
+  const wrap = input.closest('.combo');
+  if (!wrap) return;
+  const list = wrap.querySelector('.combo-list');
+  const all = catalogList(input.dataset.source);
+  const query = input.value.trim().toLowerCase();
+  const matched = query ? all.filter((item) => String(item).toLowerCase().includes(query)) : all;
+  let shown = matched.slice(0, 40);
+  if (input.value && matched.includes(input.value) && !shown.includes(input.value)) {
+    shown = [input.value, ...shown.slice(0, 39)];
+  }
+  list.innerHTML = shown.map((item) => {
+    const selected = item === input.value ? 'selected' : '';
+    return `<button type="button" class="${selected}" data-combo-value="${escapeHtml(item)}">${escapeHtml(item)}</button>`;
+  }).join('') || '<button type="button" disabled>无匹配项，可直接使用输入的路径</button>';
+  if (matched.length > shown.length) {
+    list.innerHTML += `<button type="button" disabled>还有 ${matched.length - shown.length} 项，继续输入以缩小范围</button>`;
+  }
+  closeCombos(list);
+  list.hidden = false;
+}
+
+function applyModelMatch(input) {
+  const catalog = (state.schema && state.schema.catalog) || {};
+  const meta = (catalog.by_model || {})[input.value.trim()];
+  const root = input.closest('form') || input.closest('section') || document.getElementById('main');
+  const hint = input.closest('.combo').querySelector('.combo-hint');
+  const typeEl = root && root.querySelector('[name="model_type"], [data-field="model_type"]');
+  const templateEl = root && root.querySelector('[name="template"], [data-field="template"]');
+  if (meta) {
+    if (typeEl && meta.model_type) typeEl.value = meta.model_type;
+    if (templateEl && meta.template) templateEl.value = meta.template;
+    if (hint) hint.hidden = true;
+  } else if (input.value.trim() && hint) {
+    hint.hidden = false;
+    hint.textContent = '无法识别model_type和template,请手动选择';
+  }
+}
+
+function showProduct(id) {
+  document.querySelectorAll('#product-tabs button').forEach((button) => {
+    button.classList.toggle('active', button.dataset.product === id);
+  });
+  const shell = document.getElementById('rsi-shell');
+  const panel = document.getElementById('swift-panel');
+  if (id === 'rsi') {
+    shell.hidden = false;
+    panel.hidden = true;
+    return;
+  }
+  shell.hidden = true;
+  panel.hidden = false;
+  document.getElementById('swift-panel-title').textContent = PRODUCT_TITLES[id] || id;
+  const body = document.getElementById('swift-panel-body');
+  const title = PRODUCT_TITLES[id] || id;
+  if (state.swiftUi) {
+    body.innerHTML = `<p class="muted">「${escapeHtml(title)}」在同一端口的原 Gradio Web-UI 里。RSI 闭环仍是默认页面，点「RSI闭环」回到这套界面。</p><iframe class="swift-frame" src="/swift-ui/" title="SWIFT Web-UI"></iframe>`;
+    return;
+  }
+  body.innerHTML = `<p>「${escapeHtml(title)}」是 ms-swift 默认 Web-UI 的原页面。RSI 闭环保持现在这套界面，并占用默认端口 <b>7860</b>。</p><p class="muted">当前进程没有挂上 Gradio 表单（通常是还没装 torch）。要打开原来的训练 / 对齐 / GRPO / 推理 / 导出 / 评测 / 采样页，先 <span class="mono">./run.sh stop</span>，再运行 <span class="mono">swift web-ui</span>。两边共用 7860，不要同时启动。装好 swift 依赖后，这些标签会在同一进程的 /swift-ui 打开原表单。</p>`;
+}
+
+document.addEventListener('focusin', (event) => {
+  if (event.target.dataset && event.target.dataset.combo) openCombo(event.target);
+});
+
+document.addEventListener('input', (event) => {
+  if (!(event.target.dataset && event.target.dataset.combo)) return;
+  openCombo(event.target);
+  if (event.target.dataset.role === 'model') applyModelMatch(event.target);
+});
+
+document.addEventListener('keydown', (event) => {
+  if (!(event.target.dataset && event.target.dataset.combo)) return;
+  const list = event.target.closest('.combo').querySelector('.combo-list');
+  if (!list || list.hidden) return;
+  const items = [...list.querySelectorAll('button[data-combo-value]')];
+  if (!items.length) return;
+  const current = items.findIndex((item) => item.classList.contains('active'));
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    const next = event.key === 'ArrowDown' ? Math.min(items.length - 1, current + 1) : Math.max(0, current - 1);
+    items.forEach((item) => item.classList.remove('active'));
+    items[next].classList.add('active');
+  } else if (event.key === 'Enter' && current >= 0) {
+    event.preventDefault();
+    items[current].click();
+  } else if (event.key === 'Escape') {
+    list.hidden = true;
+  }
+});
+
 document.addEventListener('click', async (event) => {
+  const option = event.target.closest('[data-combo-value]');
+  if (option) {
+    const input = option.closest('.combo').querySelector('input');
+    input.value = option.dataset.comboValue;
+    option.closest('.combo-list').hidden = true;
+    if (input.dataset.role === 'model') applyModelMatch(input);
+    return;
+  }
+  if (!event.target.closest('.combo')) closeCombos();
+  const product = event.target.closest('[data-product]');
+  if (product) {
+    showProduct(product.dataset.product);
+    return;
+  }
   const target = event.target.closest('button');
   if (!target || state.busy) return;
   try {
@@ -548,6 +695,11 @@ document.getElementById('create-form').addEventListener('submit', async (event) 
         name: form.name.value,
         scenario: form.scenario.value,
         base_model: form.base_model.value,
+        model_meta: {
+          model_type: form.model_type.value,
+          template: form.template.value,
+          system: form.system.value,
+        },
       }),
     });
     document.getElementById('create-dialog').close();
@@ -565,6 +717,7 @@ async function boot() {
   if (health.hardware && health.hardware.label) {
     document.getElementById('hardware-pill').textContent = health.hardware.label;
   }
+  state.swiftUi = Boolean(health.swift_ui);
   await refreshRuns();
   render();
 }
