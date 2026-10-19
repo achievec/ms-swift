@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from rsi import __version__
@@ -15,7 +15,25 @@ from rsi.pipeline import Pipeline, PipelineError
 from rsi.schemas import public_schema
 
 STATIC_DIR = Path(__file__).resolve().parent / 'static'
+# run.sh appends here: rsi/.rsi.log next to this package, never a request path.
+SERVER_LOG_PATH = Path(__file__).resolve().parent / '.rsi.log'
+SERVER_LOG_TAIL = 400 * 1024
 logger = logging.getLogger(__name__)
+
+
+def server_log_path() -> Path:
+    return SERVER_LOG_PATH
+
+
+def read_server_log(path: Path, limit: int | None = None) -> str:
+    """Return the launch log, keeping the tail when the file is large."""
+    size_limit = SERVER_LOG_TAIL if limit is None else limit
+    data = path.read_bytes()
+    if len(data) <= size_limit:
+        return data.decode('utf-8', errors='replace')
+    tail = data[-size_limit:]
+    text = tail.decode('utf-8', errors='replace')
+    return f'[截断] 文件共 {len(data)} 字节，以下为最后 {size_limit} 字节。\n{text}'
 
 
 async def read_json(request: Request) -> dict:
@@ -72,6 +90,17 @@ def create_app(home: Path | None = None) -> FastAPI:
     @app.get('/api/schema')
     def schema():
         return public_schema()
+
+    @app.get('/api/server-log')
+    def server_log():
+        path = server_log_path()
+        if not path.is_file():
+            return PlainTextResponse('rsi/.rsi.log 不存在\n', status_code=404)
+        try:
+            text = read_server_log(path)
+        except OSError:
+            return PlainTextResponse('rsi/.rsi.log 无法读取\n', status_code=404)
+        return PlainTextResponse(text)
 
     @app.get('/api/runs')
     def list_runs():

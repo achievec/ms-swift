@@ -437,6 +437,38 @@ def test_unhandled_error_returns_json_detail(client, monkeypatch):
     assert 'Internal Server Error' not in response.text
 
 
+def test_server_log_endpoint_reads_only_the_launch_log(client, tmp_path, monkeypatch):
+    import rsi.app as app_module
+    api, _home = client
+    log = tmp_path / '.rsi.log'
+    secret = tmp_path / 'secret.txt'
+    secret.write_text('secret-not-the-log', encoding='utf-8')
+    monkeypatch.setattr(app_module, 'server_log_path', lambda: log)
+
+    missing = api.get('/api/server-log')
+    assert missing.status_code == 404
+    assert missing.headers['content-type'].startswith('text/plain')
+    assert missing.text == 'rsi/.rsi.log 不存在\n'
+    ignored = api.get('/api/server-log', params={'path': str(secret)})
+    assert ignored.status_code == 404
+    assert 'secret-not-the-log' not in ignored.text
+
+    log.write_text('启动 RSI\n第二行\n', encoding='utf-8')
+    found = api.get('/api/server-log', params={'path': str(secret)})
+    assert found.status_code == 200
+    assert found.headers['content-type'].startswith('text/plain')
+    assert 'utf-8' in found.headers['content-type']
+    assert found.text == '启动 RSI\n第二行\n'
+    assert 'secret-not-the-log' not in found.text
+
+    monkeypatch.setattr(app_module, 'SERVER_LOG_TAIL', 32)
+    log.write_bytes(('A' * 40 + 'TAIL').encode('ascii'))
+    tailed = api.get('/api/server-log')
+    assert tailed.status_code == 200
+    assert tailed.text.startswith('[截断] 文件共 44 字节，以下为最后 32 字节。\n')
+    assert tailed.text.endswith('A' * 28 + 'TAIL')
+
+
 def test_preset_yaml_matches_schema():
     from rsi.schemas import presets
     data = presets()
