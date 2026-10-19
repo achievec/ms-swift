@@ -37,11 +37,6 @@ def read_server_log(path: Path, limit: int | None = None) -> str:
     return f'[截断] 文件共 {len(data)} 字节，以下为最后 {size_limit} 字节。\n{text}'
 
 
-def wants_html(request: Request) -> bool:
-    """Browser navigation asks for text/html. curl's ``*/*`` does not."""
-    return 'text/html' in (request.headers.get('accept') or '').lower()
-
-
 def server_log_window(path: Path, offset: int | None) -> dict:
     """Tail on the first read, then bytes after ``offset``. The file is fixed."""
     tail = SERVER_LOG_TAIL
@@ -90,10 +85,15 @@ _SERVER_LOG_PAGE = """<!DOCTYPE html>
     <p>自动跟上新日志</p>
     <a href="/">返回</a>
   </header>
-  <pre id="log"></pre>
+  <pre id="log">正在加载…
+</pre>
   <script>
     const view = document.getElementById('log');
+    const MISSING = 'rsi/.rsi.log 不存在\n';
+    const EMPTY = '日志是空的\n';
+    const FAILED = '加载失败\n';
     let offset = null;
+    let haveText = false;
     let pinned = true;
     view.addEventListener('scroll', () => {
       const gap = view.scrollHeight - view.scrollTop - view.clientHeight;
@@ -102,25 +102,43 @@ _SERVER_LOG_PAGE = """<!DOCTYPE html>
     function follow() {
       if (pinned) view.scrollTop = view.scrollHeight;
     }
+    function showFailure() {
+      if (!haveText) view.textContent = FAILED;
+    }
     async function pull(depth) {
       const url = offset == null ? '/api/server-log/stream' : '/api/server-log/stream?offset=' + offset;
-      const response = await fetch(url, {headers: {accept: 'application/json'}});
-      if (!response.ok) return;
+      let response;
+      try {
+        response = await fetch(url, {headers: {accept: 'application/json'}});
+      } catch (_err) {
+        showFailure();
+        return;
+      }
+      if (!response.ok) {
+        showFailure();
+        return;
+      }
       const body = await response.json();
       if (body.missing) {
-        view.textContent = 'rsi/.rsi.log 不存在\n';
+        view.textContent = MISSING;
         offset = null;
+        haveText = false;
         follow();
         return;
       }
-      if (body.reset || offset == null) view.textContent = body.text || '';
-      else if (body.text) view.textContent += body.text;
+      const chunk = body.text || '';
+      if (body.reset || offset == null || !haveText) {
+        view.textContent = chunk || EMPTY;
+        haveText = Boolean(chunk);
+      } else if (chunk) {
+        view.textContent += chunk;
+      }
       offset = body.next_offset;
       follow();
       if (depth < 8 && body.size > body.next_offset) await pull(depth + 1);
     }
     async function tick() {
-      try { await pull(0); } catch (_err) {}
+      try { await pull(0); } catch (_err) { showFailure(); }
     }
     tick();
     setInterval(tick, 1000);
@@ -186,9 +204,7 @@ def create_app(home: Path | None = None) -> FastAPI:
         return public_schema()
 
     @app.get('/api/server-log')
-    def server_log(request: Request):
-        if wants_html(request):
-            return HTMLResponse(_SERVER_LOG_PAGE)
+    def server_log():
         path = server_log_path()
         if not path.is_file():
             return PlainTextResponse('rsi/.rsi.log 不存在\n', status_code=404)

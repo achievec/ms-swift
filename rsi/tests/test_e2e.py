@@ -477,20 +477,32 @@ def test_server_log_page_follows_new_lines(client, tmp_path, monkeypatch):
     secret.write_text('secret-not-the-log', encoding='utf-8')
     monkeypatch.setattr(app_module, 'server_log_path', lambda: log)
 
-    page = api.get('/api/server-log', headers={'accept': 'text/html'})
+    browser = api.get('/api/server-log', headers={'accept': 'text/html,application/xhtml+xml'})
+    assert browser.status_code == 404
+    assert browser.headers['content-type'].startswith('text/plain')
+    assert browser.text == 'rsi/.rsi.log 不存在\n'
+    assert '<html' not in browser.text.lower()
+    log.write_text('启动 RSI\n', encoding='utf-8')
+    snapshot = api.get('/api/server-log', headers={'accept': 'text/html'})
+    assert snapshot.status_code == 200
+    assert snapshot.headers['content-type'].startswith('text/plain')
+    assert snapshot.text == '启动 RSI\n'
+    assert '<h1>' not in snapshot.text
+    page = api.get('/server-log', headers={'accept': 'text/html'})
     assert page.status_code == 200
     assert page.headers['content-type'].startswith('text/html')
     assert '<h1>进程日志</h1>' in page.text
     assert '/api/server-log/stream' in page.text
     assert 'setInterval' in page.text
     assert 'scrollTop' in page.text
+    assert '加载失败' in page.text
+    assert '不存在' in page.text
+    assert '日志是空的' in page.text
     assert 'secret-not-the-log' not in page.text
-    dedicated = api.get('/server-log')
-    assert dedicated.status_code == 200
-    assert dedicated.text == page.text
     home = Path(__file__).resolve().parents[1].joinpath('static', 'index.html').read_text(encoding='utf-8')
     assert 'href="/server-log"' in home
 
+    log.unlink()
     missing = api.get('/api/server-log/stream', params={'path': str(secret)})
     assert missing.status_code == 200
     assert missing.headers['content-type'].startswith('application/json')
