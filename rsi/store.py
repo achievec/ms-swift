@@ -321,13 +321,26 @@ class Store:
                          (utcnow(), logs, service_id))
 
     def upsert_fetch(self, row: dict) -> None:
+        # Update-or-insert. ``INSERT ... ON CONFLICT`` is SQLite 3.24+ and older
+        # intranet builds reject it with ``near "ON": syntax error``. The row key
+        # is the existing primary key (kind, repo_id).
+        kind = row['kind']
+        repo_id = row['repo_id']
+        local_path = row.get('local_path') or ''
+        state = row['state']
+        message = row.get('message') or ''
+        updated_at = utcnow()
         with self.transaction() as conn:
-            conn.execute(
-                'INSERT INTO fetches (kind, repo_id, local_path, state, message, updated_at) VALUES (?, ?, ?, ?, ?, ?) '
-                'ON CONFLICT(kind, repo_id) DO UPDATE SET local_path=excluded.local_path, state=excluded.state, '
-                'message=excluded.message, updated_at=excluded.updated_at',
-                (row['kind'], row['repo_id'], row.get('local_path') or '', row['state'], row.get('message') or '',
-                 utcnow()))
+            found = conn.execute('SELECT 1 FROM fetches WHERE kind=? AND repo_id=?', (kind, repo_id)).fetchone()
+            if found:
+                conn.execute(
+                    'UPDATE fetches SET local_path=?, state=?, message=?, updated_at=? WHERE kind=? AND repo_id=?',
+                    (local_path, state, message, updated_at, kind, repo_id))
+            else:
+                conn.execute(
+                    'INSERT INTO fetches (kind, repo_id, local_path, state, message, updated_at) '
+                    'VALUES (?, ?, ?, ?, ?, ?)',
+                    (kind, repo_id, local_path, state, message, updated_at))
 
     def list_fetches(self) -> list:
         with self.transaction() as conn:

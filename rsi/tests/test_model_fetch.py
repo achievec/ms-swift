@@ -454,6 +454,52 @@ def test_refresh_endpoint_and_local_source(tmp_path, hope_env):
         monkeypatch.undo()
 
 
+def test_upsert_fetch_persists_status_without_on_conflict(tmp_path, hope_env):
+    from rsi.store import Store
+    store = Store(tmp_path / 'direct.sqlite')
+    first = {
+        'kind': 'model',
+        'repo_id': REPO,
+        'local_path': str(tmp_path / 'models' / 'Qwen' / 'Qwen2.5-7B-Instruct'),
+        'state': '同步中',
+        'message': '同步中',
+    }
+    store.upsert_fetch(first)
+    store.upsert_fetch({**first, 'state': '就绪', 'message': '已在本地'})
+    rows = store.list_fetches()
+    assert len(rows) == 1
+    assert rows[0]['kind'] == 'model'
+    assert rows[0]['repo_id'] == REPO
+    assert rows[0]['state'] == '就绪'
+    assert rows[0]['message'] == '已在本地'
+    assert rows[0]['local_path'] == first['local_path']
+    source = Path(__file__).resolve().parents[1].joinpath('store.py').read_text(encoding='utf-8')
+    code = '\n'.join(line for line in source.splitlines() if not line.strip().startswith('#'))
+    assert 'ON CONFLICT' not in code
+
+    def runner(argv, **kwargs):
+        return Completed(stdout='submitted, pending')
+
+    client, app = _client(tmp_path, runner)
+    with client as api:
+        run_id = api.post('/api/runs', json={
+            'name': '记下同步',
+            'scenario': '不下载也能记下 fetch 状态',
+            'base_model': REPO,
+        }).json()['run']['id']
+        assert api.post(f'/api/runs/{run_id}/stages/data/run', json={
+            'params': {'source': 'bundled', 'bundled': 'itops_mix'},
+        }).status_code == 200
+        started = api.post(f'/api/runs/{run_id}/stages/sft/run', json={'params': {}})
+        assert started.status_code == 200, started.text
+        assert started.json()['status'] == 'syncing'
+        saved = app.state.pipeline.store.list_fetches()
+    assert len(saved) == 1
+    assert saved[0]['kind'] == 'model'
+    assert saved[0]['repo_id'] == REPO
+    assert saved[0]['state'] == '同步中'
+
+
 def test_run_sh_exits_when_hope_cli_is_missing():
     import os
     import shutil
