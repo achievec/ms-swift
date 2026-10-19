@@ -30,7 +30,7 @@ _UNSAFE_BIND_ADDRESSES = {'0.0.0.0', '::', '[::]'}
 _SECURITY_WARNING = ('⚠️ SECURITY WARNING: The Web UI is bound to {addr!r} and will be accessible to '
                      'anyone on the network. The ms-swift Web UI has no built-in authentication and allows '
                      'executing arbitrary commands on the server. This can lead to Remote Code Execution (RCE). '
-                     'If you do not need external access, use --server_name 127.0.0.1 (the default). '
+                     'If you do not need external access, pass --server_name 127.0.0.1. '
                      'If you must expose the Web UI, protect it with a reverse proxy, VPN, or firewall rules.')
 
 locale_dict = {

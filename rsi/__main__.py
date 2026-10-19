@@ -58,11 +58,12 @@ def mount_swift_ui(app) -> bool:
 
 
 def main():
-    host = os.environ.get('WEBUI_SERVER') or os.environ.get('RSI_HOST', '127.0.0.1')
+    host = os.environ.get('WEBUI_SERVER') or os.environ.get('RSI_HOST', '0.0.0.0')
     port = int(os.environ.get('WEBUI_PORT') or os.environ.get('RSI_PORT', '8418'))
     app = create_app()
     mount_swift_ui(app)
-    print(f'RSI UI: http://{host}:{port}  (backend={app.state.pipeline.backend.name})')
+    shown = '127.0.0.1' if host in {'0.0.0.0', '::', '[::]'} else host
+    print(f'RSI UI: http://{shown}:{port}/  (listen {host}:{port}, backend={app.state.pipeline.backend.name})')
     uvicorn.run(app, host=host, port=port, log_level='info')
 
 

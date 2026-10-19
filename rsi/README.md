@@ -39,7 +39,7 @@ pip install -r rsi/requirements.txt
 
 `./run.sh` with no arguments restarts the UI. `./run.sh start`, `./run.sh stop`, and `./run.sh restart` do what they say. The process id is `rsi/.rsi.pid` and the log is `rsi/.rsi.log`. `python -m rsi` still works if you want the server in the foreground.
 
-Open http://127.0.0.1:8418
+The server listens on `0.0.0.0:8418`. On this machine open http://127.0.0.1:8418
 
 Then:
 
@@ -53,7 +53,7 @@ Then:
 
 Re-running an earlier stage keeps the old audit row and marks later stages in that round as 已作废.
 
-Override the port with `WEBUI_PORT` or `RSI_PORT` (default `8418`) and the bind address with `WEBUI_SERVER` or `RSI_HOST`. The header chip **打开 SWIFT Web-UI** goes to `/swift-ui/` on this same process. When Gradio and the swift training stack import, that path is the original Web-UI. Otherwise the page says it cannot be opened. The standalone `swift web-ui` command uses the same default port, 8418. `WEBUI_PORT` or `--server_port` still overrides it. State (SQLite, uploads, checkpoints) lives in `rsi/workspace/`, or in `$RSI_HOME`.
+The default bind is `0.0.0.0:8418`. Override the port with `WEBUI_PORT` or `RSI_PORT`, and the bind address with `WEBUI_SERVER` or `RSI_HOST` (for example `127.0.0.1` to refuse other machines). The header chip **打开 SWIFT Web-UI** goes to `/swift-ui/` on this same process. When Gradio and the swift training stack import, that path is the original Web-UI. Otherwise the page says it cannot be opened. The standalone `swift web-ui` command uses the same default, `0.0.0.0:8418`. `WEBUI_PORT`, `WEBUI_SERVER`, `--server_port`, and `--server_name` still override it. State (SQLite, uploads, checkpoints) lives in `rsi/workspace/`, or in `$RSI_HOME`.
 
 ```bash
 pytest rsi/tests -q
