@@ -139,7 +139,7 @@ FIELDS = {
         _field('val_dataset', '验证集', '--val_dataset', 'text', '数据', '可选。', advanced=True),
     ],
     'sft': [
-        _field('model', '模型 id 或路径', '--model', 'text', '模型', '本轮基座。训练后的模型填 checkpoint 目录。'),
+        _field('model', '模型id或路径', '--model', 'text', '模型', '实际的模型id。训练后的模型填 checkpoint 目录。'),
         _field('template', 'Prompt 模板', '--template', 'text', '模型', 'Qwen2.5 使用 qwen2_5。'),
         _field('system', 'System', '--system', 'textarea', '模型', '可选系统提示。'),
         _field('torch_dtype', '训练精度', '--torch_dtype', 'select', '模型', 'A100 上 7B LoRA 使用 bfloat16。',

@@ -260,8 +260,10 @@ A click-through recursive self-improvement loop (data → SFT → eval → onlin
 
 ```shell
 pip install -r rsi/requirements.txt
-python -m rsi
+./run.sh
 ```
+
+The page is http://127.0.0.1:7860/. `./run.sh` restarts; `start` / `stop` / `restart` are explicit. `python -m rsi` runs the same server in the foreground.
 
 ### Using Python
 

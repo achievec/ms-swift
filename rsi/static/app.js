@@ -247,14 +247,34 @@ function renderStage(stage) {
     </section>`;
 }
 
+function renderMetrics(board) {
+  const items = board || [];
+  const count = (status) => items.filter((item) => item.status === status).length;
+  const cells = [
+    ['blue', count('ready'), '可运行'],
+    ['red', count('failed'), '失败'],
+    ['yellow', count('running'), '运行中'],
+    ['green', count('succeeded'), '已完成'],
+    ['gray', count('locked'), '未解锁'],
+  ];
+  return `<div class="metrics">${cells.map(([tone, n, label]) => `
+    <div class="metric ${tone}"><b>${n}</b><span>${label}</span></div>`).join('')}</div>`;
+}
+
 function renderFlow() {
   const view = state.view;
-  const rail = view.board.map((item) => `
-    <button type="button" data-stage="${item.id}" class="${item.status} ${state.stage === item.id ? 'selected' : ''}">
-      <b>${escapeHtml(item.label)}</b>
-      <small>${escapeHtml(statusText(item.status))}${item.metric ? ' · ' + escapeHtml(item.metric) : ''}</small>
+  const rows = view.board.map((item) => `
+    <button type="button" data-stage="${item.id}" class="stage-row ${state.stage === item.id ? 'open' : ''}">
+      <span class="chevron">${state.stage === item.id ? '▼' : '▶'}</span>
+      <span class="pill ${item.status}">${escapeHtml(statusText(item.status))}</span>
+      <span class="name">${escapeHtml(item.label)}</span>
+      <span class="extra">${item.metric ? escapeHtml(item.metric) : ''}</span>
     </button>`).join('');
-  return `<div class="rail">${rail}</div>${renderStage(state.stage)}`;
+  return `<section class="panel">
+      <h2>闭环阶段</h2>
+      <p class="muted">点一行进入该阶段。标签是这一轮的状态，不是另一套训练页。</p>
+      <div class="stage-list">${rows}</div>
+    </section>${renderStage(state.stage)}`;
 }
 
 function renderAudit() {
@@ -323,9 +343,11 @@ function render() {
   renderRuns();
   const main = document.getElementById('main');
   if (!state.view) {
-    main.innerHTML = `<div class="empty"><h1>从一轮可点击的后训练闭环开始</h1>
-      <p>行业里常见的迭代是：场景 SFT 建立行为，评测做门禁，在线 RL（这里默认 GRPO）用奖励把策略从 SFT 上再推进一步，只有胜出的检查点才能当下一轮基座，最后用 OpenAI 兼容接口接走。</p>
-      <p>左边新建实验。没有 GPU 时全程走 Mock，SQLite 里仍能看到每一步的参数和日志。</p></div>`;
+    main.innerHTML = `<div class="notice">演示模式：Mock 不占用 GPU，每一步写入 SQLite。用来把闭环点完，不加载模型权重。</div>
+      ${renderMetrics([])}
+      <section class="panel empty"><h2>从一轮可点击的后训练闭环开始</h2>
+      <p>场景 SFT 建立行为，评测做门禁，在线 RL（这里默认 GRPO）再推进一步。只有你确认晋级的检查点才会成为下一轮基座。</p>
+      <p class="muted">左边新建实验。默认基座是 Qwen/Qwen2.5-7B-Instruct。</p></section>`;
     return;
   }
   const view = state.view;
@@ -333,16 +355,18 @@ function render() {
     <button type="button" data-round="${round.round_index}" class="${round.round_index === view.round.round_index ? 'active' : ''}">第 ${round.round_index} 轮${round.promoted_kind ? ' · ' + round.promoted_kind : ''}</button>`).join('');
   const body = state.tab === 'audit' ? renderAudit() : state.tab === 'serve' ? renderServe() : renderFlow();
   main.innerHTML = `
-    <p class="kicker">Round ${view.round.round_index} · ${escapeHtml(view.backend)}</p>
-    <h1>${escapeHtml(view.run.name)}</h1>
-    <p>${escapeHtml(view.run.scenario)}</p>
-    <p class="muted">最初基座 <span class="mono">${escapeHtml(view.run.base_model)}</span><br/>本轮基座 <span class="mono">${escapeHtml(view.round.base_model)}</span></p>
-    <div class="rounds">${rounds}</div>
-    <div class="tabs">
-      <button type="button" data-tab="flow" class="${state.tab === 'flow' ? 'active' : ''}">流程</button>
-      <button type="button" data-tab="audit" class="${state.tab === 'audit' ? 'active' : ''}">审计</button>
-      <button type="button" data-tab="serve" class="${state.tab === 'serve' ? 'active' : ''}">推理服务</button>
-    </div>
+    <div class="notice">第 ${view.round.round_index} 轮 · ${escapeHtml(view.backend)} 后端。最初基座 ${escapeHtml(view.run.base_model)}，本轮基座 ${escapeHtml(view.round.base_model)}。</div>
+    ${renderMetrics(view.board || [])}
+    <section class="panel">
+      <h1>${escapeHtml(view.run.name)}</h1>
+      <p>${escapeHtml(view.run.scenario)}</p>
+      <div class="rounds">${rounds}</div>
+      <div class="tabs">
+        <button type="button" data-tab="flow" class="${state.tab === 'flow' ? 'active' : ''}">流程</button>
+        <button type="button" data-tab="audit" class="${state.tab === 'audit' ? 'active' : ''}">审计</button>
+        <button type="button" data-tab="serve" class="${state.tab === 'serve' ? 'active' : ''}">推理服务</button>
+      </div>
+    </section>
     ${body}`;
   syncSource();
 }

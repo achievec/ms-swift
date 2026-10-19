@@ -24,10 +24,12 @@ From the repository root:
 
 ```bash
 pip install -r rsi/requirements.txt
-python -m rsi
+./run.sh
 ```
 
-Open http://127.0.0.1:8765
+`./run.sh` with no arguments restarts the UI. `./run.sh start`, `./run.sh stop`, and `./run.sh restart` do what they say. The process id is `rsi/.rsi.pid` and the log is `rsi/.rsi.log`. `python -m rsi` still works if you want the server in the foreground.
+
+Open http://127.0.0.1:7860
 
 Then:
 
@@ -41,7 +43,7 @@ Then:
 
 Re-running an earlier stage keeps the old audit row and marks later stages in that round as 已作废.
 
-Override the port with `RSI_PORT` and the bind address with `RSI_HOST`. State (SQLite, uploads, mock checkpoints) lives in `rsi/workspace/`, or in `$RSI_HOME`.
+Override the port with `WEBUI_PORT` or `RSI_PORT` (default `7860`) and the bind address with `WEBUI_SERVER` or `RSI_HOST`. State (SQLite, uploads, mock checkpoints) lives in `rsi/workspace/`, or in `$RSI_HOME`.
 
 ```bash
 pytest rsi/tests -q

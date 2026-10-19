@@ -251,8 +251,10 @@ swift web-ui
 
 ```shell
 pip install -r rsi/requirements.txt
-python -m rsi
+./run.sh
 ```
+
+页面地址是 http://127.0.0.1:7860/。`./run.sh` 不带参数等于重启；也可以 `start` / `stop` / `restart`。前台运行用 `python -m rsi`。
 
 ### 使用Python
 ms-swift也支持使用python的方式进行训练和推理。下面给出训练和推理的**伪代码**，具体可以查看[这里](https://github.com/modelscope/ms-swift/blob/main/examples/notebook/qwen2_5-self-cognition/self-cognition-sft.ipynb)。
