@@ -492,8 +492,8 @@ def test_server_log_page_follows_new_lines(client, tmp_path, monkeypatch):
     assert page.status_code == 200
     assert page.headers['content-type'].startswith('text/html')
     assert '<h1>进程日志</h1>' in page.text
-    assert '/api/server-log/stream' in page.text
-    assert 'setInterval' in page.text
+    assert '/api/server-log/events' in page.text
+    assert 'EventSource' in page.text
     assert 'scrollTop' in page.text
     assert '加载失败' in page.text
     assert '不存在' in page.text
@@ -543,6 +543,88 @@ def test_server_log_page_follows_new_lines(client, tmp_path, monkeypatch):
     shrunk = api.get('/api/server-log/stream', params={'offset': 10_000}).json()
     assert shrunk['reset'] is True
     assert shrunk['next_offset'] == 44
+
+
+def _browser_sse_data(frame: str) -> str:
+    """Reconstruct event.data the way a browser joins SSE data lines."""
+    raw = ''
+    for line in frame.split('\n'):
+        if not line.startswith('data:'):
+            continue
+        value = line[5:]
+        if value.startswith(' '):
+            value = value[1:]
+        raw += value + '\n'
+    return raw[:-1] if raw.endswith('\n') else raw
+
+
+def test_server_log_events_use_sse(client, tmp_path, monkeypatch):
+    import asyncio
+
+    import rsi.app as app_module
+    api, _home = client
+    log = tmp_path / '.rsi.log'
+    monkeypatch.setattr(app_module, 'server_log_path', lambda: log)
+    monkeypatch.setattr(app_module, 'SERVER_LOG_POLL_SECONDS', 0.05)
+    monkeypatch.setattr(app_module, 'SERVER_LOG_HEARTBEAT_SECONDS', 0)
+
+    framed = app_module.format_server_log_event('append', '第一行\n第二行\n', 12)
+    assert framed.startswith('id: 12\n')
+    assert 'event: append\n' in framed
+    assert framed.endswith('\n\n')
+    assert _browser_sse_data(framed) == '第一行\n第二行\n'
+    assert _browser_sse_data(app_module.format_server_log_event('append', '无换行')) == '无换行'
+    assert _browser_sse_data(app_module.format_server_log_event('snapshot', '')) == ''
+
+    async def missing_once():
+        chunks = []
+        async for chunk in app_module.iter_server_log_events():
+            chunks.append(chunk)
+        return ''.join(chunks)
+
+    missing_text = asyncio.run(missing_once())
+    assert 'event: missing\n' in missing_text
+    assert 'rsi/.rsi.log 不存在' in missing_text
+    assert missing_text.strip().endswith('data:')
+
+    log.write_text('启动 RSI\n', encoding='utf-8')
+
+    async def follow():
+        gen = app_module.iter_server_log_events()
+        first = await gen.__anext__()
+        with log.open('a', encoding='utf-8') as handle:
+            handle.write('第二行\n')
+        second = await gen.__anext__()
+        third = await gen.__anext__()
+        log.unlink()
+        gone = await gen.__anext__()
+        await gen.aclose()
+        return first, second, third, gone
+
+    first, second, third, gone = asyncio.run(follow())
+    assert 'event: snapshot' in first
+    assert _browser_sse_data(first) == '启动 RSI\n'
+    assert 'event: append' in second
+    assert _browser_sse_data(second) == '第二行\n'
+    assert '启动 RSI' not in _browser_sse_data(second)
+    assert third.startswith(': ping')
+    assert 'event: missing' in gone
+
+    log.write_text('启动 RSI\n', encoding='utf-8')
+    with api.stream('GET', '/api/server-log/events') as response:
+        assert response.status_code == 200
+        assert response.headers['content-type'].startswith('text/event-stream')
+        assert response.headers['cache-control'] == 'no-cache'
+        got = ''
+        for chunk in response.iter_text():
+            got += chunk
+            if 'event: snapshot' in got and got.endswith('\n\n'):
+                break
+    assert _browser_sse_data(got) == '启动 RSI\n'
+    plain = api.get('/api/server-log', headers={'accept': 'text/html'})
+    assert plain.headers['content-type'].startswith('text/plain')
+    assert plain.text == '启动 RSI\n'
+    assert '<html' not in plain.text.lower()
 
 
 def test_preset_yaml_matches_schema():

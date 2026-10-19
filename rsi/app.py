@@ -1,12 +1,14 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
+import asyncio
 import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from rsi import __version__
@@ -19,6 +21,8 @@ STATIC_DIR = Path(__file__).resolve().parent / 'static'
 # run.sh appends here: rsi/.rsi.log next to this package, never a request path.
 SERVER_LOG_PATH = Path(__file__).resolve().parent / '.rsi.log'
 SERVER_LOG_TAIL = 400 * 1024
+SERVER_LOG_POLL_SECONDS = 0.5
+SERVER_LOG_HEARTBEAT_SECONDS = 15
 logger = logging.getLogger(__name__)
 
 
@@ -61,6 +65,55 @@ def server_log_window(path: Path, offset: int | None) -> dict:
     return window
 
 
+def format_server_log_event(event: str, data: str, event_id: int | None = None) -> str:
+    """One SSE event. A trailing newline in ``data`` survives the browser's framing."""
+    lines = []
+    if event_id is not None:
+        lines.append(f'id: {int(event_id)}')
+    lines.append(f'event: {event}')
+    body = data or ''
+    if body == '':
+        lines.append('data:')
+    else:
+        parts = body.split('\n')
+        trailing = body.endswith('\n')
+        if trailing:
+            parts = parts[:-1]
+        for part in parts:
+            lines.append(f'data: {part}')
+        if trailing:
+            lines.append('data:')
+    return '\n'.join(lines) + '\n\n'
+
+
+async def iter_server_log_events():
+    """Tail rsi/.rsi.log as SSE: one snapshot, then appends, with comment heartbeats."""
+    path = server_log_path()
+    window = server_log_window(path, None)
+    if window['missing']:
+        yield format_server_log_event('missing', 'rsi/.rsi.log 不存在\n')
+        return
+    yield format_server_log_event('snapshot', window['text'], window['next_offset'])
+    offset = window['next_offset']
+    last_beat = time.monotonic()
+    while True:
+        window = server_log_window(path, offset)
+        if window['missing']:
+            yield format_server_log_event('missing', 'rsi/.rsi.log 不存在\n')
+            return
+        if window['text'] or window['reset']:
+            kind = 'snapshot' if window['reset'] else 'append'
+            yield format_server_log_event(kind, window['text'], window['next_offset'])
+            offset = window['next_offset']
+            last_beat = time.monotonic()
+            if window['next_offset'] < window['size']:
+                continue
+        elif time.monotonic() - last_beat >= SERVER_LOG_HEARTBEAT_SECONDS:
+            yield ': ping\n\n'
+            last_beat = time.monotonic()
+        await asyncio.sleep(SERVER_LOG_POLL_SECONDS)
+
+
 _SERVER_LOG_PAGE = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -92,8 +145,8 @@ _SERVER_LOG_PAGE = """<!DOCTYPE html>
     const MISSING = 'rsi/.rsi.log 不存在\n';
     const EMPTY = '日志是空的\n';
     const FAILED = '加载失败\n';
-    let offset = null;
     let haveText = false;
+    let saw = false;
     let pinned = true;
     view.addEventListener('scroll', () => {
       const gap = view.scrollHeight - view.scrollTop - view.clientHeight;
@@ -102,46 +155,29 @@ _SERVER_LOG_PAGE = """<!DOCTYPE html>
     function follow() {
       if (pinned) view.scrollTop = view.scrollHeight;
     }
-    function showFailure() {
-      if (!haveText) view.textContent = FAILED;
-    }
-    async function pull(depth) {
-      const url = offset == null ? '/api/server-log/stream' : '/api/server-log/stream?offset=' + offset;
-      let response;
-      try {
-        response = await fetch(url, {headers: {accept: 'application/json'}});
-      } catch (_err) {
-        showFailure();
-        return;
-      }
-      if (!response.ok) {
-        showFailure();
-        return;
-      }
-      const body = await response.json();
-      if (body.missing) {
-        view.textContent = MISSING;
-        offset = null;
-        haveText = false;
-        follow();
-        return;
-      }
-      const chunk = body.text || '';
-      if (body.reset || offset == null || !haveText) {
-        view.textContent = chunk || EMPTY;
-        haveText = Boolean(chunk);
-      } else if (chunk) {
-        view.textContent += chunk;
-      }
-      offset = body.next_offset;
+    const source = new EventSource('/api/server-log/events');
+    source.addEventListener('snapshot', (ev) => {
+      saw = true;
+      view.textContent = ev.data || EMPTY;
+      haveText = Boolean(ev.data);
       follow();
-      if (depth < 8 && body.size > body.next_offset) await pull(depth + 1);
-    }
-    async function tick() {
-      try { await pull(0); } catch (_err) { showFailure(); }
-    }
-    tick();
-    setInterval(tick, 1000);
+    });
+    source.addEventListener('append', (ev) => {
+      saw = true;
+      if (!haveText) view.textContent = ev.data || EMPTY;
+      else if (ev.data) view.textContent += ev.data;
+      haveText = haveText || Boolean(ev.data);
+      follow();
+    });
+    source.addEventListener('missing', (ev) => {
+      saw = true;
+      view.textContent = ev.data || MISSING;
+      haveText = false;
+      source.close();
+    });
+    source.onerror = () => {
+      if (!saw) view.textContent = FAILED;
+    };
   </script>
 </body>
 </html>
@@ -221,6 +257,17 @@ def create_app(home: Path | None = None) -> FastAPI:
     @app.get('/api/server-log/stream')
     def server_log_stream(offset: int | None = None):
         return server_log_window(server_log_path(), offset)
+
+    @app.get('/api/server-log/events')
+    async def server_log_events():
+        return StreamingResponse(
+            iter_server_log_events(),
+            media_type='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'X-Accel-Buffering': 'no',
+            },
+        )
 
     @app.get('/api/runs')
     def list_runs():
