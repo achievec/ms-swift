@@ -536,6 +536,9 @@ document.addEventListener('click', async (event) => {
   if (!target || state.busy) return;
   try {
     if (target.id === 'new-run') {
+      const form = document.getElementById('create-form');
+      form.name.value = '';
+      form.scenario.value = '';
       document.getElementById('create-dialog').showModal();
       return;
     }

@@ -34,8 +34,8 @@
     <form id="create-form" method="dialog">
       <h2>新建 RSI 实验</h2>
       <p class="muted">从一块基座模型开始。每一轮用场景数据做 SFT，再用在线 RL 拉开和基座的差距，最后由你决定哪个检查点晋级。</p>
-      <label>实验名称<input name="name" required maxlength="80" value="IT 运维助手" /></label>
-      <label>场景说明<textarea name="scenario" required maxlength="500">企业内部 IT 工单分诊与处理建议。目标是从通用基座迭代出能按步骤处理工单的模型。</textarea></label>
+      <label>实验名称<input name="name" required maxlength="80" placeholder="给实验起个名字" value="" /></label>
+      <label>场景说明<textarea name="scenario" required maxlength="500" placeholder="说明这个实验要解决的场景"></textarea></label>
       <div id="create-model"></div>
       <div class="row-actions">
         <button type="button" id="create-cancel" class="ghost">取消</button>
