@@ -113,6 +113,7 @@ class LLMModelType:
     ernie4_5 = 'ernie4_5'
     ernie4_5_moe = 'ernie4_5_moe'
     gemma_emb = 'gemma_emb'
+    gemma2_emb = 'gemma2_emb'
     longchat = 'longchat'
     iquestcoder = 'iquestcoder'
     youtu_llm = 'youtu_llm'
@@ -288,6 +289,8 @@ class MLLMModelType:
 
     jina_reranker_m0 = 'jina_reranker_m0'
     monkeyocrv2 = 'monkeyocrv2'
+
+    nemotron_h_omni = 'nemotron_h_omni'
 
 
 class ModelType(LLMModelType, MLLMModelType, BertModelType, RMModelType):
