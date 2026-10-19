@@ -633,13 +633,15 @@ class Pipeline:
         }
 
     def _touch_fetch_progress(self) -> None:
+        """Update hope rows from local files. Clone progress is in the process log."""
         if model_source() != 'hope':
             return
         for row in self.store.list_fetches():
             if row.get('state') != '同步中' or not row.get('repo_id'):
                 continue
-            status = self.fetcher.probe(row['kind'], row['repo_id'])
-            self._note_fetch(status)
+            status = self.fetcher.status_of(row['kind'], row['repo_id'])
+            if status.state != row.get('state') or status.message != row.get('message'):
+                self._note_fetch(status)
 
     def view(self, run_id: str, round_index=None) -> dict:
         run = self._require_run(run_id)

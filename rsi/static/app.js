@@ -872,7 +872,7 @@ function fetchNotice() {
   const syncing = rows.find((row) => row.state === '同步中');
   if (syncing) {
     if (syncing.message && syncing.message !== '同步中') return `${syncing.repo_id} ${syncing.message}`;
-    return '同步中';
+    return `${syncing.repo_id} 同步中，进度见进程日志`;
   }
   const failed = rows.find((row) => row.state === '失败');
   if (failed) return failed.message || '失败';
@@ -884,7 +884,7 @@ function fetchProgressText() {
   const parts = [];
   fetchRows().forEach((row) => {
     if (row.state === '同步中') {
-      const detail = row.message && row.message !== '同步中' ? row.message : '同步中';
+      const detail = row.message && row.message !== '同步中' ? row.message : '同步中，进度见进程日志';
       parts.push(`${row.repo_id} ${detail}`);
     } else if (row.state === '失败') {
       parts.push(`${row.repo_id} ${row.message || '失败'}`);

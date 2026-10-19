@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -23,10 +24,8 @@ from rsi.model_fetch import (
     hope_login_succeeded,
     hope_needs_login,
     kick_hope_login,
-    list_argv,
     login_unconfirmed_message,
     model_source,
-    parse_hope_list,
     public_clone_command,
 )
 
@@ -156,34 +155,19 @@ def test_tilde_model_root_is_the_clone_cwd(tmp_path, monkeypatch, caplog):
     assert fetcher.model_root() == house / 'other-models'
 
 
-def test_parse_hope_list_copies_status_and_does_not_invent_percent():
-    listed = 'Qwen2.5-7B-Instruct  同步中  1.2GB/15.2GB  8%\n'
-    parsed = parse_hope_list(listed, REPO)
-    assert parsed == 'Qwen2.5-7B-Instruct 同步中 1.2GB/15.2GB 8%'
-    waiting = parse_hope_list('已存在，等待同步\n', REPO)
-    assert waiting == '已存在，等待同步'
-    assert '%' not in waiting
-    assert parse_hope_list('submitted, pending\n', REPO) == 'submitted, pending'
-    size_only = parse_hope_list('1.2GB/15.2GB\n', REPO)
-    assert size_only == '1.2GB/15.2GB'
-    assert '%' not in size_only
-    assert parse_hope_list('', REPO) == ''
-    assert parse_hope_list('   \n', REPO) == ''
-
-
-def test_hope_list_progress_is_shown_until_local_files_exist(tmp_path, hope_env):
-    listed = f'Qwen2.5-7B-Instruct  同步中  1.2GB/15.2GB  8% token={TOKEN}\n'
+def test_sync_status_comes_from_local_files_not_hope_list(tmp_path, hope_env):
+    calls = []
 
     def runner(argv, **kwargs):
-        if argv[1] == 'list':
-            return Completed(stdout=listed)
+        calls.append(list(argv))
+        assert argv[1] != 'list'
         return Completed(stdout='submitted, pending')
 
     client, _app = _client(tmp_path, runner)
     with client as api:
         run_id = api.post('/api/runs', json={
             'name': '看进度',
-            'scenario': '同步时显示 hope list 原文',
+            'scenario': '同步状态不看 hope list',
             'base_model': REPO,
         }).json()['run']['id']
         refreshed = api.post(f'/api/runs/{run_id}/fetch', json={'model': REPO})
@@ -191,10 +175,10 @@ def test_hope_list_progress_is_shown_until_local_files_exist(tmp_path, hope_env)
         row = next(item for item in refreshed.json()['fetches'] if item['kind'] == 'model')
         assert row['state'] == '同步中'
         assert row['repo_id'] == REPO
-        assert '8%' in row['message']
-        assert '1.2GB/15.2GB' in row['message']
+        assert row['message'] == '同步中'
+        assert '8%' not in row['message']
         assert TOKEN not in row['message']
-        assert row['state'] != '就绪'
+        assert all(item[1] != 'list' for item in calls)
         dest = tmp_path / 'models' / 'Qwen' / 'Qwen2.5-7B-Instruct'
         dest.mkdir(parents=True)
         (dest / 'config.json').write_text('{}', encoding='utf-8')
@@ -206,6 +190,8 @@ def test_hope_list_progress_is_shown_until_local_files_exist(tmp_path, hope_env)
     page = Path(__file__).resolve().parents[1].joinpath('static', 'app.js').read_text(encoding='utf-8')
     assert 'data-fetch-note' in page
     assert '重新拉取' in page
+    assert '进度见进程日志' in page
+    assert 'hope list' not in page
 
 
 def test_refresh_lists_then_clone_completes(tmp_path, hope_env):
@@ -234,8 +220,8 @@ def test_refresh_lists_then_clone_completes(tmp_path, hope_env):
     done = fetcher.refresh('model', REPO, background=False)
     assert done.state == '就绪'
     assert done.message == '已在本地'
-    assert calls[2] == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
-    assert calls[3][0:3] == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
+    assert calls[2][0:3] == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
+    assert all(item[1] != 'list' for item in calls)
     calls.clear()
     again = fetcher.ensure('model', REPO)
     assert again.state == '就绪'
@@ -295,13 +281,10 @@ def test_bundled_fetch_yaml_defaults_to_hope(monkeypatch):
     startup = describe_startup()
     assert startup == 'model_source=hope hope_username=yes hope_token=no'
     assert 'liyuhao03' not in startup
-    listed = list_argv(REPO)
-    assert listed == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
     real, public = clone_argv('https://huggingface.co/Qwen/Qwen2.5-7B-Instruct')
     assert '--username=liyuhao03' in real
     assert public == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
     monkeypatch.setenv('RSI_HOPE_USERNAME', 'other-user')
-    assert list_argv(REPO) == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
     overridden, _public = clone_argv('https://huggingface.co/Qwen/Qwen2.5-7B-Instruct')
     assert '--username=other-user' in overridden
     assert '--username=liyuhao03' not in overridden
@@ -583,7 +566,8 @@ def test_refresh_endpoint_and_local_source(tmp_path, hope_env):
         blob = refreshed.text
         assert TOKEN not in blob
         assert 'https://huggingface.co' not in blob
-        assert any(item[:2] == ['hope', 'list'] for item in calls)
+        assert any(item[1] == 'clone' for item in calls)
+        assert all(item[1] != 'list' for item in calls)
 
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setenv('RSI_MODEL_SOURCE', 'local')
@@ -707,7 +691,7 @@ def test_hope_clone_and_list_log_redacted_commands(tmp_path, hope_env, caplog, m
     assert listed.state == '同步中'
     text = caplog.text
     assert 'hope 开始 hope clone https://huggingface.co/Qwen/Qwen2.5-7B-Instruct ' in text
-    assert 'hope 开始 hope list --creator=all --name_like=Qwen2.5-7B-Instruct ' in text
+    assert 'hope list' not in text
     assert 'exit=0' in text
     assert f'cwd={tmp_path / "models"} target={tmp_path / "models" / "Qwen" / "Qwen2.5-7B-Instruct"}' in text
     assert f'cwd={tmp_path / "models" / "Qwen"}' not in text
@@ -718,23 +702,18 @@ def test_hope_clone_and_list_log_redacted_commands(tmp_path, hope_env, caplog, m
     assert '--username=' not in text
     assert '--params=' not in text
     assert '***' in text
-    assert '…截断' in text
     logins = [item for item in seen if item[0][1] == 'login']
     clones = [item for item in seen if item[0][1] == 'clone']
-    lists = [item for item in seen if item[0][1] == 'list']
     assert logins[0][0] == ['hope', 'login', USER]
     assert logins[0][1]['stdin'] is subprocess.DEVNULL
     assert logins[0][1]['timeout'] == model_fetch.LOGIN_TIMEOUT
     assert '-p' not in logins[0][0]
     clone_kwargs = clones[0][1]
-    list_kwargs = lists[0][1]
     assert clone_kwargs['stdin'] is subprocess.DEVNULL
     assert 'timeout' not in clone_kwargs
-    assert list_kwargs['stdin'] is subprocess.DEVNULL
-    assert list_kwargs['timeout'] == model_fetch.LIST_TIMEOUT
     assert clones[0][0][:3] == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
     assert f'--token={TOKEN}' in clones[0][0]
-    assert lists[0][0] == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
+    assert all(item[0][1] != 'list' for item in seen)
     assert 'hope 开始 hope login ***' in text
     formatted = _hope_handler().format(caplog.records[0])
     assert re.search(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}', formatted)
@@ -936,7 +915,6 @@ def test_yaml_username_is_used_until_env_is_set(tmp_path, monkeypatch):
     monkeypatch.delenv('RSI_HOPE_USERNAME', raising=False)
     monkeypatch.delenv('RSI_HOPE_TOKEN', raising=False)
     monkeypatch.delenv('RSI_HOPE_PARAMS', raising=False)
-    assert list_argv(REPO) == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
     real, public = clone_argv('https://huggingface.co/Qwen/Qwen2.5-7B-Instruct')
     assert '--username=from-yaml' in real
     assert not any(item.startswith('--token=') for item in real)
@@ -945,7 +923,6 @@ def test_yaml_username_is_used_until_env_is_set(tmp_path, monkeypatch):
     assert login_unconfirmed_message() == (
         'hope 登录未确认：请点重新拉取再发一次，或在终端执行 hope login from-yaml')
     monkeypatch.setenv('RSI_HOPE_USERNAME', 'from-env')
-    assert list_argv(REPO) == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
     real, public = clone_argv('https://huggingface.co/Qwen/Qwen2.5-7B-Instruct')
     assert '--username=from-env' in real
     assert '--username=from-yaml' not in real
@@ -957,7 +934,10 @@ def test_committed_username_is_not_in_code_or_token_file():
     fetch = (root / 'configs' / 'fetch.yaml').read_text(encoding='utf-8')
     assert 'hope_username: liyuhao03' in fetch
     assert 'hope_token' not in fetch
-    assert 'liyuhao03' not in (root / 'model_fetch.py').read_text(encoding='utf-8')
+    source = (root / 'model_fetch.py').read_text(encoding='utf-8')
+    assert 'liyuhao03' not in source
+    assert "['hope', 'list'" not in source
+    assert 'hope list' not in (root / 'static' / 'app.js').read_text(encoding='utf-8')
     readme = (root / 'README.md').read_text(encoding='utf-8')
     assert 'hope_username: liyuhao03' in readme
     assert 'hope login liyuhao03' in readme
@@ -1082,9 +1062,10 @@ def test_list_banner_retries_login_once_then_cools_down(tmp_path, hope_env):
 
     fetcher = _fetcher(tmp_path, runner)
     status = fetcher.refresh('model', REPO, background=False)
-    assert [item[1] for item in calls] == ['login', 'list', 'login', 'list']
-    assert calls[1] == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
-    assert not any(item.startswith(('--username=', '--token=', '--params=')) for item in calls[1])
+    assert [item[1] for item in calls] == ['login', 'clone', 'login', 'clone']
+    assert calls[1][:3] == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
+    assert any(item.startswith('--username=') for item in calls[1])
+    assert not any(item[1] == 'list' for item in calls)
     assert status.state == '失败'
     assert status.message == login_unconfirmed_message()
     calls.clear()
@@ -1140,3 +1121,64 @@ def test_kick_hope_login_is_nonblocking(tmp_path, hope_env, monkeypatch):
     monkeypatch.setenv('RSI_MODEL_SOURCE', 'hope')
     monkeypatch.delenv('RSI_HOPE_USERNAME', raising=False)
     kick_hope_login(runner=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('missing misid')))
+
+
+def test_clone_chunks_are_in_the_process_log_before_hope_returns(tmp_path, hope_env, monkeypatch):
+    log = tmp_path / '.rsi.log'
+    monkeypatch.setattr('rsi.app.server_log_path', lambda: log)
+    seen = {}
+
+    def runner(argv, **kwargs):
+        if argv[1] == 'login':
+            return Completed(stdout='登录成功')
+        kwargs['on_chunk'](f'下载 1% token={TOKEN}\n'.encode())
+        seen['mid'] = log.read_text(encoding='utf-8')
+        kwargs['on_chunk']('下载 8%\n'.encode())
+        return Completed(stdout='should-not-be-appended-again')
+
+    status = _fetcher(tmp_path, runner).ensure('model', REPO, background=False)
+    assert status.state == '同步中'
+    assert '下载 1%' in seen['mid']
+    assert '下载 8%' not in seen['mid']
+    body = log.read_text(encoding='utf-8')
+    assert '下载 1%' in body
+    assert '下载 8%' in body
+    assert TOKEN not in body
+    assert 'should-not-be-appended-again' not in body
+
+
+def test_stream_subprocess_writes_before_the_child_exits(tmp_path, monkeypatch):
+    log = tmp_path / '.rsi.log'
+    flag = tmp_path / 'go'
+    monkeypatch.setattr('rsi.app.server_log_path', lambda: log)
+    script = (
+        'import sys, time\n'
+        'from pathlib import Path\n'
+        'flag = Path(sys.argv[1])\n'
+        'sys.stdout.buffer.write(b"tick-1\\n")\n'
+        'sys.stdout.buffer.flush()\n'
+        'for _ in range(40):\n'
+        '    if flag.exists():\n'
+        '        break\n'
+        '    time.sleep(0.05)\n'
+        'else:\n'
+        '    raise SystemExit(2)\n'
+        'sys.stdout.buffer.write(b"tick-2\\n")\n'
+        'sys.stdout.buffer.flush()\n'
+    )
+
+    def on_chunk(data):
+        model_fetch.append_process_log(data.decode())
+        if b'tick-1' in data and not flag.exists():
+            text = log.read_text(encoding='utf-8')
+            assert 'tick-1' in text
+            assert 'tick-2' not in text
+            flag.write_text('go', encoding='utf-8')
+
+    code = model_fetch.stream_subprocess(
+        [sys.executable, '-c', script, str(flag)], tmp_path, on_chunk)
+    assert code == 0
+    assert flag.is_file()
+    final = log.read_text(encoding='utf-8')
+    assert 'tick-1' in final
+    assert 'tick-2' in final

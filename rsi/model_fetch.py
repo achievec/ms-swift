@@ -38,7 +38,6 @@ LOGIN_TIMEOUT = 90
 LOGIN_COOLDOWN = 180
 _LOGIN_FAIL_PREFIX = 'hope 登录未确认：'
 _LOGIN_MISSING_USER = 'hope 未登录：请设置 hope_username'
-LIST_TIMEOUT = 60
 _login_mu = threading.Lock()
 _login_cv = threading.Condition(_login_mu)
 _login_inflight = False
@@ -204,7 +203,7 @@ def public_clone_command(url: str) -> str:
 
 
 def hope_credential_flags() -> list:
-    """Flags ``hope clone`` accepts. ``hope list`` rejects these and prints Usage."""
+    """Git credentials for ``hope clone`` only."""
     flags = []
     username = hope_username()
     token = os.environ.get('RSI_HOPE_TOKEN', '').strip()
@@ -222,12 +221,6 @@ def clone_argv(url: str) -> tuple:
     """Return the real argv and the argv safe to show or store."""
     public = ['hope', 'clone', url]
     return public + hope_credential_flags(), public
-
-
-def list_argv(repo_id: str) -> list:
-    """``hope list`` only accepts creator, org, name_like, page, and page_size."""
-    _org, name = _split_repo(repo_id)
-    return ['hope', 'list', '--creator=all', f'--name_like={name}']
 
 
 def login_argv() -> list:
@@ -386,48 +379,6 @@ def _result_text(result) -> str:
     return f'{stdout}\n{stderr}'
 
 
-_PERCENT = re.compile(r'\d+(?:\.\d+)?\s*%')
-_SIZE = re.compile(r'\d+(?:\.\d+)?\s*(?:B|KB|MB|GB|TB|KiB|MiB|GiB|字节)', re.IGNORECASE)
-_STATUS_WORDS = ('下载', '同步', '等待', '完成', '失败', '排队', '已存在', 'running', 'pending', 'waiting', 'done', 'failed', 'submitted')
-
-
-def parse_hope_list(text: str, repo_id: str) -> str:
-    """Pick the most informative line hope already printed.
-
-    A percent or size is copied only when it appears in the output. Nothing is
-    estimated when hope does not print one.
-    """
-    cleaned = redact(text or '').replace('\r\n', '\n').replace('\r', '\n')
-    cleaned = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', cleaned)
-    lines = [' '.join(line.split()) for line in cleaned.splitlines()]
-    lines = [line for line in lines if line]
-    if not lines:
-        return ''
-    name = ''
-    repo = repo_id_of(repo_id)
-    if '/' in repo:
-        name = repo.split('/', 1)[1]
-    named = [line for line in lines if name and name in line]
-    pool = named or lines
-
-    def score(line: str) -> int:
-        value = 0
-        if _PERCENT.search(line):
-            value += 4
-        if _SIZE.search(line):
-            value += 3
-        lowered = line.lower()
-        for word in _STATUS_WORDS:
-            if word.lower() in lowered:
-                value += 1
-        return value
-
-    best = max(pool, key=score)
-    if len(best) > 160:
-        best = best[:160] + '…'
-    return best
-
-
 def apply_runtime_env(env: dict) -> dict:
     for key in ('RSI_HOPE_TOKEN', 'RSI_HOPE_USERNAME', 'RSI_HOPE_PARAMS'):
         env.pop(key, None)
@@ -479,8 +430,6 @@ class ModelFetcher:
         self.runner = runner or subprocess.run
         self._notes = {}
         self._progress = {}
-        self._probed_at = {}
-        self._probe_inflight = set()
 
     def model_root(self) -> Path:
         return _root('RSI_MODEL_ROOT', 'model_root', self.home, 'models')
@@ -533,88 +482,22 @@ class ModelFetcher:
         return FetchStatus(kind, repo, latest.local_path, '同步中', message)
 
     def refresh(self, kind: str, repo_id: str, background: bool = True) -> FetchStatus:
+        """重新拉取: log in again if needed, then clone. Does not call hope list."""
         repo = repo_id_of(repo_id)
         if model_source() != 'hope' or not is_repo_id(repo):
             return self.status_of(kind, repo) if is_repo_id(repo) else FetchStatus(kind, repo, '', '保持', '')
-
-        key = f'{kind}:{repo}'
-        with _LOCK:
-            self._probed_at[key] = time.monotonic()
-
-        def job():
-            key = f'{kind}:{repo}'
-            listed = self._run(
-                list_argv(repo), cwd=self.home, target=self._path_for(kind, repo),
-                repo_key=key, force_login=True)
-            if self._remember_progress(kind, repo, listed):
-                return
-            self._start_clone(kind, repo, background=False)
-
+        current = self.status_of(kind, repo)
+        if current.state == '就绪':
+            return current
         inline = os.environ.get('RSI_FETCH_INLINE', '').strip() == '1'
-        if background and not inline:
-            threading.Thread(target=job, daemon=True).start()
-            current = self.status_of(kind, repo)
-            if current.state == '就绪':
-                return current
-            message = current.message if current.state == '同步中' and current.message else '同步中'
-            return FetchStatus(kind, repo, current.local_path, '同步中', message)
-        job()
+        self._start_clone(kind, repo, background=background and not inline, force_login=True)
         latest = self.status_of(kind, repo)
         if latest.state in {'就绪', '失败'}:
             return latest
-        return FetchStatus(kind, repo, latest.local_path, '同步中', latest.message or '同步中')
+        message = latest.message if latest.state == '同步中' and latest.message else '同步中'
+        return FetchStatus(kind, repo, latest.local_path, '同步中', message)
 
-    def probe(self, kind: str, repo_id: str, background: bool = True) -> FetchStatus:
-        """Ask hope list for the latest status text. Does not start another clone."""
-        repo = repo_id_of(repo_id)
-        current = self.status_of(kind, repo)
-        if current.state != '同步中' or model_source() != 'hope' or not is_repo_id(repo):
-            return current
-        key = f'{kind}:{repo}'
-        now = time.monotonic()
-        inline = os.environ.get('RSI_FETCH_INLINE', '').strip() == '1'
-        with _LOCK:
-            if key in self._probe_inflight:
-                return current
-            if now - self._probed_at.get(key, 0) < 5:
-                return current
-            self._probed_at[key] = now
-            self._probe_inflight.add(key)
-
-        def job():
-            try:
-                listed = self._run(
-                    list_argv(repo), cwd=self.home, target=self._path_for(kind, repo), repo_key=key)
-                self._remember_progress(kind, repo, listed)
-            finally:
-                with _LOCK:
-                    self._probe_inflight.discard(key)
-
-        if background and not inline:
-            threading.Thread(target=job, daemon=True).start()
-            return current
-        job()
-        return self.status_of(kind, repo)
-
-    def _remember_progress(self, kind: str, repo_id: str, result) -> bool:
-        """Store list text. Return True when login failed and clone must stop."""
-        if result in {'login-failed', 'no-user'}:
-            return True
-        if result in (None, 'missing-tool'):
-            return False
-        text = _result_text(result)
-        key = f'{kind}:{repo_id_of(repo_id)}'
-        if hope_needs_login(text):
-            self._note_login_failure(key)
-            return True
-        message = parse_hope_list(text, repo_id)
-        if not message:
-            return False
-        with _LOCK:
-            self._progress[key] = message
-        return False
-
-    def _start_clone(self, kind: str, repo_id: str, background: bool) -> None:
+    def _start_clone(self, kind: str, repo_id: str, background: bool, force_login: bool = False) -> None:
         key = f'{kind}:{repo_id}'
         path = self._path_for(kind, repo_id)
         if _ready(kind, path):
@@ -633,11 +516,11 @@ class ModelFetcher:
             try:
                 argv, _public = clone_argv(self._url_for(kind, repo_id))
                 # hope clone writes <org>/<name> under its cwd. Do not cd into org/ first.
-                result = self._run(argv, cwd=root, target=path, repo_key=key)
+                result = self._run(argv, cwd=root, target=path, repo_key=key, force_login=force_login)
                 if result == 'missing-tool':
                     with _LOCK:
                         self._notes[key] = _TOOL_FAILURE
-                elif result in {'login-failed', 'no-user'}:
+                elif result in ('login-failed', 'no-user'):
                     pass
                 elif hope_needs_login(_result_text(result)):
                     self._note_login_failure(key)
@@ -766,14 +649,14 @@ class ModelFetcher:
     def _run(self, argv: list, cwd: Path, target: Path | None = None, *,
              repo_key: str | None = None, force_login: bool = False, allow_login_retry: bool = True):
         kind = argv[1] if len(argv) >= 2 else ''
-        if kind in {'clone', 'list'}:
+        if kind == 'clone':
             outcome = self._ensure_login(force=force_login, repo_key=repo_key, cwd=cwd)
             if outcome != 'ok':
                 return outcome
-        result = self._execute(argv, cwd=cwd, target=target)
-        if kind not in {'clone', 'list'}:
-            return result
-        if not hope_needs_login(_result_text(result)):
+            result = self._execute_clone(argv, cwd=cwd, target=target)
+        else:
+            result = self._execute(argv, cwd=cwd, target=target)
+        if kind != 'clone' or not hope_needs_login(_result_text(result)):
             return result
         if not allow_login_retry:
             self._note_login_failure(repo_key)
@@ -786,6 +669,56 @@ class ModelFetcher:
         return self._run(
             argv, cwd, target, repo_key=repo_key, force_login=False, allow_login_retry=False)
 
+    def _execute_clone(self, argv: list, cwd: Path, target: Path | None = None):
+        """Stream hope clone into the process log as bytes arrive."""
+        command = public_hope_command(argv)
+        where = f'cwd={cwd}'
+        if target is not None:
+            where += f' target={target}'
+        logger.info('hope 开始 %s %s', command, where)
+        emitted = False
+        pieces = []
+
+        def on_chunk(data):
+            nonlocal emitted
+            emitted = True
+            text = redact(_as_text(data))
+            pieces.append(text)
+            append_process_log(text)
+
+        try:
+            if self.runner is subprocess.run:
+                code = stream_subprocess(argv, cwd, on_chunk)
+                result = _HopeResult(code, ''.join(pieces), '')
+            else:
+                completed = self.runner(
+                    argv,
+                    cwd=str(cwd),
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    on_chunk=on_chunk,
+                )
+                if completed == 'missing-tool':
+                    logger.info('hope 结束 %s %s exit=缺失', command, where)
+                    return completed
+                if not emitted:
+                    text = redact(_result_text(completed))
+                    if text:
+                        append_process_log(text)
+                        pieces.append(text)
+                code = getattr(completed, 'returncode', 1)
+                stderr = '' if emitted else _as_text(getattr(completed, 'stderr', '') or '')
+                stdout = ''.join(pieces) if emitted else _as_text(getattr(completed, 'stdout', '') or '')
+                result = _HopeResult(code, stdout, stderr)
+        except FileNotFoundError:
+            _warn_missing_hope()
+            logger.info('hope 结束 %s %s exit=缺失', command, where)
+            return 'missing-tool'
+        logger.info('hope 结束 %s %s exit=%s', command, where, getattr(result, 'returncode', 1))
+        return result
+
     def _execute(self, argv: list, cwd: Path, target: Path | None = None, timeout: int | None = None):
         command = public_hope_command(argv)
         kwargs = {
@@ -797,8 +730,6 @@ class ModelFetcher:
         }
         if timeout is not None:
             kwargs['timeout'] = timeout
-        elif len(argv) >= 2 and argv[1] == 'list':
-            kwargs['timeout'] = LIST_TIMEOUT
         where = f'cwd={cwd}'
         if target is not None:
             where += f' target={target}'
@@ -819,6 +750,52 @@ class ModelFetcher:
         code = getattr(completed, 'returncode', 1)
         logger.info('hope 结束 %s %s exit=%s\n%s', command, where, code, _trim_log(f'{stdout}\n{stderr}'))
         return completed
+
+
+_LOG_APPEND = threading.Lock()
+
+
+def process_log_path() -> Path:
+    """Same file ``/server-log`` tails. ``run.sh`` also redirects this process there."""
+    from rsi.app import server_log_path
+    return server_log_path()
+
+
+def append_process_log(text: str) -> None:
+    """Append clone output immediately so the process log shows it before hope exits."""
+    if not text:
+        return
+    data = text.encode('utf-8') if isinstance(text, str) else bytes(text)
+    path = process_log_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _LOG_APPEND:
+        with path.open('ab', buffering=0) as handle:
+            handle.write(data)
+            handle.flush()
+
+
+def stream_subprocess(argv, cwd: Path, on_chunk) -> int:
+    """Read a process in 4KB chunks and hand each chunk off before the next read."""
+    proc = subprocess.Popen(
+        list(argv),
+        cwd=str(cwd),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=0,
+    )
+    try:
+        stream = proc.stdout
+        while stream is not None:
+            block = stream.read(4096)
+            if not block:
+                break
+            on_chunk(block)
+        return proc.wait()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
 
 
 def kick_hope_login(runner=None) -> None:
