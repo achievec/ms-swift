@@ -12,6 +12,7 @@ from rsi.backends import BackendError, swift_launch
 from rsi.commands import STAGE_COMMAND, build_argv, format_shell
 from rsi.dataset_validate import MAX_BYTES, validate_file, validate_public_id
 from rsi.schemas import STAGE_META, STAGE_ORDER, presets
+from rsi.webui_catalog import match_model
 from rsi.serving import find_free_port, loopback, port_is_free
 from rsi.store import Store
 
@@ -154,10 +155,13 @@ class Pipeline:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def create_run(self, name: str, scenario: str, base_model: str) -> dict:
+    def create_run(self, name: str, scenario: str, base_model: str, model_type: str = '', template: str = '') -> dict:
         name = (name or '').strip()
         scenario = (scenario or '').strip()
         base_model = (base_model or '').strip()
+        matched = match_model(base_model) or {}
+        model_type = (model_type or matched.get('model_type') or '').strip()
+        template = (template or matched.get('template') or '').strip()
         if not name or len(name) > 80:
             raise PipelineError('实验名称需要 1 到 80 个字符')
         if not scenario or len(scenario) > 500:
@@ -165,8 +169,14 @@ class Pipeline:
         if not base_model or len(base_model) > 300:
             raise PipelineError('基座模型需要 1 到 300 个字符')
         run_id = uuid.uuid4().hex[:8]
-        self.store.create_run(run_id, name, scenario, base_model)
+        self.store.create_run(run_id, name, scenario, base_model, model_type, template)
         return self.view(run_id)
+
+    def _apply_model_meta(self, preset: dict, run: dict):
+        if run.get('model_type') and not preset.get('model_type'):
+            preset['model_type'] = run['model_type']
+        if run.get('template') and not preset.get('template'):
+            preset['template'] = run['template']
 
     def list_runs(self) -> list:
         return self.store.list_runs()
@@ -251,6 +261,7 @@ class Pipeline:
         data_params, data_result = self._data_context(run['id'], rnd['round_index'])
         if stage == 'sft':
             preset['model'] = rnd['base_model']
+            self._apply_model_meta(preset, run)
             if data_result.get('dataset'):
                 preset['dataset'] = data_result['dataset']
             for key in ('max_length', 'split_dataset_ratio', 'dataset_num_proc', 'dataloader_num_workers',
@@ -263,6 +274,7 @@ class Pipeline:
         if stage == 'rl':
             sft_ckpt = self.store.active_checkpoint(run['id'], rnd['round_index'], 'sft')
             preset['model'] = sft_ckpt['path'] if sft_ckpt else ''
+            self._apply_model_meta(preset, run)
             if data_result.get('dataset'):
                 preset['dataset'] = data_result['dataset']
             preset['output_dir'] = str(self.stage_dir(run['id'], rnd['round_index'], 'rl'))
@@ -273,6 +285,7 @@ class Pipeline:
             kind = 'sft' if stage == 'sft_eval' else 'rl'
             checkpoint = self.store.active_checkpoint(run['id'], rnd['round_index'], kind)
             preset['model'] = checkpoint['path'] if checkpoint else ''
+            self._apply_model_meta(preset, run)
             preset['eval_output_dir'] = str(self.stage_dir(run['id'], rnd['round_index'], stage) / 'eval_output')
             preset['custom_eval_config'] = _resolve_existing(preset.get('custom_eval_config'))
             return preset
@@ -288,6 +301,7 @@ class Pipeline:
             if promo:
                 preset['model'] = promo['promoted_checkpoint']
                 preset['served_model_name'] = _slug(run['name'], promo['round_index'], promo['promoted_kind'])
+            self._apply_model_meta(preset, run)
             return preset
         return preset
 

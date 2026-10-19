@@ -102,21 +102,48 @@ function fieldValue(field, values) {
   return raw;
 }
 
+function fieldHelp(field) {
+  const arg = field.arg && !String(field.label).includes('(--') ? `<code>${escapeHtml(field.arg)}</code>` : '';
+  return `${escapeHtml(field.help || '')} ${arg}`.trim();
+}
+
+function choiceEntries(field) {
+  if (field.choices && field.choices.length) {
+    return field.choices.map((choice) => {
+      if (typeof choice === 'string') return { value: choice, label: choice || '（空）' };
+      return { value: String(choice.value), label: choice.label };
+    });
+  }
+  const raw = field.choices_from && state.schema.catalog ? state.schema.catalog[field.choices_from] : [];
+  return (raw || []).map((item) => ({ value: String(item), label: String(item) }));
+}
+
 function renderField(field, values) {
   const value = fieldValue(field, values);
-  const help = `${escapeHtml(field.help || '')} ${field.arg ? `<code>${escapeHtml(field.arg)}</code>` : ''}`;
+  const help = fieldHelp(field);
   if (field.type === 'checkbox') {
     const checked = value === true || value === 'true' ? 'checked' : '';
     return `<div class="field" data-key="${field.key}"><label class="check"><input type="checkbox" data-field="${field.key}" ${checked}/> ${escapeHtml(field.label)}</label><small>${help}</small></div>`;
   }
-  if (field.type === 'select') {
-    const options = (field.choices || []).map((choice) => {
-      const optionValue = typeof choice === 'string' ? choice : choice.value;
-      const optionLabel = typeof choice === 'string' ? (choice || '（空）') : choice.label;
-      const selected = String(value) === String(optionValue) ? 'selected' : '';
-      return `<option value="${escapeHtml(optionValue)}" ${selected}>${escapeHtml(optionLabel)}</option>`;
+  if (field.type === 'select' || field.type === 'multiselect') {
+    const multiple = field.type === 'multiselect';
+    const selected = new Set(multiple ? String(value ?? '').split(/\s+/).filter(Boolean) : [String(value)]);
+    const entries = choiceEntries(field);
+    if (multiple) {
+      selected.forEach((token) => {
+        if (token && !entries.some((item) => item.value === token)) entries.push({ value: token, label: token });
+      });
+    }
+    const options = entries.map((choice) => {
+      const mark = selected.has(String(choice.value)) ? 'selected' : '';
+      return `<option value="${escapeHtml(choice.value)}" ${mark}>${escapeHtml(choice.label)}</option>`;
     }).join('');
-    return `<label class="field" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><select data-field="${field.key}">${options}</select><small>${help}</small></label>`;
+    const multi = multiple ? 'multiple data-multi size="5"' : '';
+    return `<label class="field" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><select data-field="${field.key}" ${multi}>${options}</select><small>${help}</small></label>`;
+  }
+  if (field.type === 'combo') {
+    const source = field.choices_from ? `data-choices-from="${escapeHtml(field.choices_from)}"` : '';
+    return `<label class="field combo" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><div class="combo-anchor"><input type="text" data-field="${field.key}" data-combo="1" ${source} value="${escapeHtml(value)}" autocomplete="off" /><div class="combo-list" hidden></div></div><small>${help}</small></label>`;
   }
   if (field.type === 'textarea') {
     return `<label class="field" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><textarea data-field="${field.key}" rows="4">${escapeHtml(value)}</textarea><small>${help}</small></label>`;
@@ -135,9 +162,20 @@ function renderGroups(fields, values) {
     if (!last || last.name !== field.group) groups.push({ name: field.group, fields: [] });
     groups[groups.length - 1].fields.push(field);
   }
-  const blocks = groups.map((group) => `
-    <h3>${escapeHtml(group.name)}</h3>
-    <div class="grid">${group.fields.map((field) => renderField(field, values)).join('')}</div>`).join('');
+  const blocks = groups.map((group) => {
+    const head = group.fields.slice(0, 3);
+    const modelRow = head.length === 3
+      && head.every((field) => field.type === 'combo')
+      && head.map((field) => field.key).join(',') === 'model,model_type,template';
+    const body = modelRow ? group.fields.slice(3) : group.fields;
+    const modelHtml = modelRow
+      ? `<div class="grid model-grid">${head.map((field) => renderField(field, values)).join('')}</div>`
+      : '';
+    const bodyHtml = body.length
+      ? `<div class="grid">${body.map((field) => renderField(field, values)).join('')}</div>`
+      : '';
+    return `<h3>${escapeHtml(group.name)}</h3>${modelHtml}${bodyHtml}`;
+  }).join('');
   const extra = advanced.length ? `
     <details>
       <summary>更多参数（与 swift Web-UI / 命令行同名）</summary>
@@ -148,9 +186,13 @@ function renderGroups(fields, values) {
 
 function collectParams() {
   const params = {};
-  document.querySelectorAll('[data-field]').forEach((el) => {
+  document.querySelectorAll('#main [data-field]').forEach((el) => {
     if (el.type === 'radio') {
       if (el.checked) params[el.dataset.field] = el.value;
+      return;
+    }
+    if (el.multiple) {
+      params[el.dataset.field] = Array.from(el.selectedOptions).map((option) => option.value).filter(Boolean).join(' ');
       return;
     }
     if (el.type === 'checkbox') {
@@ -548,6 +590,8 @@ document.getElementById('create-form').addEventListener('submit', async (event) 
         name: form.name.value,
         scenario: form.scenario.value,
         base_model: form.base_model.value,
+        model_type: form.model_type.value,
+        template: form.template.value,
       }),
     });
     document.getElementById('create-dialog').close();
@@ -556,6 +600,97 @@ document.getElementById('create-form').addEventListener('submit', async (event) 
   } catch (err) {
     toast(err.message);
   }
+});
+
+function catalogNames(source) {
+  const raw = source && state.schema && state.schema.catalog ? state.schema.catalog[source] : [];
+  return raw || [];
+}
+
+function showCombo(input, browse) {
+  const list = input.parentElement.querySelector('.combo-list');
+  if (!list) return;
+  const query = input.value.trim().toLowerCase();
+  const all = catalogNames(input.dataset.choicesFrom).map((item) => String(item));
+  const exact = query ? all.findIndex((item) => item.toLowerCase() === query) : -1;
+  let shown;
+  if (browse && exact >= 0) {
+    const start = Math.max(0, exact - 8);
+    shown = all.slice(start, start + 40);
+  } else if (!query) {
+    shown = all.slice(0, 40);
+  } else {
+    shown = all.filter((item) => item.toLowerCase().includes(query)).slice(0, 40);
+  }
+  if (!shown.length) {
+    list.hidden = true;
+    list.innerHTML = '';
+    return;
+  }
+  list.innerHTML = shown.map((item) => `<button type="button" data-combo-value="${escapeHtml(item)}">${escapeHtml(item)}</button>`).join('');
+  list.hidden = false;
+}
+
+function applyModelMatch(scope, modelId) {
+  const meta = (state.schema.catalog.by_model || {})[modelId];
+  if (!meta) return;
+  const typeEl = scope.querySelector('[data-field="model_type"], [name="model_type"]');
+  const templateEl = scope.querySelector('[data-field="template"], [name="template"]');
+  if (typeEl && meta.model_type) typeEl.value = meta.model_type;
+  if (templateEl && meta.template) templateEl.value = meta.template;
+}
+
+function fillCreateModel() {
+  const box = document.getElementById('create-model');
+  const model = state.schema.base_model_default || 'Qwen/Qwen2.5-7B-Instruct';
+  const meta = (state.schema.catalog.by_model || {})[model] || {};
+  box.innerHTML = `<div class="grid model-grid">
+    <label class="field combo"><span>模型id或路径(--model)</span>
+      <div class="combo-anchor"><input name="base_model" data-combo="1" data-choices-from="models" required maxlength="300" value="${escapeHtml(model)}" autocomplete="off" /><div class="combo-list" hidden></div></div>
+      <small>实际的模型id</small></label>
+    <label class="field combo"><span>模型类型(--model_type)</span>
+      <div class="combo-anchor"><input name="model_type" data-combo="1" data-choices-from="model_types" maxlength="120" value="${escapeHtml(meta.model_type || '')}" autocomplete="off" /><div class="combo-list" hidden></div></div>
+      <small>SWIFT已支持的模型类型</small></label>
+    <label class="field combo"><span>模型Prompt模板类型(--template)</span>
+      <div class="combo-anchor"><input name="template" data-combo="1" data-choices-from="templates" maxlength="120" value="${escapeHtml(meta.template || '')}" autocomplete="off" /><div class="combo-list" hidden></div></div>
+      <small>选择匹配模型的Prompt模板</small></label>
+  </div>`;
+}
+
+document.addEventListener('focusin', (event) => {
+  if (event.target.dataset && event.target.dataset.combo) showCombo(event.target, true);
+});
+
+document.addEventListener('input', (event) => {
+  const el = event.target;
+  if (!el.dataset || !el.dataset.combo) return;
+  showCombo(el, false);
+  if (el.dataset.field === 'model' || el.name === 'base_model') {
+    applyModelMatch(el.closest('dialog, section, form') || document, el.value.trim());
+  }
+});
+
+document.addEventListener('mousedown', (event) => {
+  const option = event.target.closest('[data-combo-value]');
+  if (!option) return;
+  event.preventDefault();
+  const input = option.closest('.combo').querySelector('input');
+  input.value = option.dataset.comboValue;
+  option.closest('.combo-list').hidden = true;
+  if (input.dataset.field === 'model' || input.name === 'base_model') {
+    applyModelMatch(input.closest('dialog, section, form') || document, input.value.trim());
+  }
+});
+
+document.addEventListener('focusout', (event) => {
+  const combo = event.target.closest && event.target.closest('.combo');
+  if (!combo) return;
+  setTimeout(() => {
+    if (!combo.contains(document.activeElement)) {
+      const list = combo.querySelector('.combo-list');
+      if (list) list.hidden = true;
+    }
+  }, 120);
 });
 
 async function boot() {
@@ -568,6 +703,7 @@ async function boot() {
   if (health.hardware && health.hardware.label) {
     document.getElementById('hardware-pill').textContent = health.hardware.label;
   }
+  fillCreateModel();
   await refreshRuns();
   render();
 }

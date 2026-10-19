@@ -92,6 +92,11 @@ class Store:
                 CREATE INDEX IF NOT EXISTS idx_steps_run ON steps(run_id, round_index, id);
                 CREATE INDEX IF NOT EXISTS idx_rounds_run ON rounds(run_id, round_index);
                 """)
+            columns = {row[1] for row in conn.execute('PRAGMA table_info(runs)')}
+            if 'model_type' not in columns:
+                conn.execute('ALTER TABLE runs ADD COLUMN model_type TEXT')
+            if 'template' not in columns:
+                conn.execute('ALTER TABLE runs ADD COLUMN template TEXT')
 
     @contextmanager
     def transaction(self):
@@ -117,13 +122,13 @@ class Store:
             conn.execute("UPDATE services SET status='stopped', ended_at = COALESCE(ended_at, ?) WHERE status='running'",
                          (now, ))
 
-    def create_run(self, run_id, name, scenario, base_model) -> None:
+    def create_run(self, run_id, name, scenario, base_model, model_type='', template='') -> None:
         now = utcnow()
         with self.transaction() as conn:
             conn.execute(
-                'INSERT INTO runs (id, name, scenario, base_model, round_index, current_stage, status, created_at, updated_at) '
-                'VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)',
-                (run_id, name, scenario, base_model, 'data', 'active', now, now))
+                'INSERT INTO runs (id, name, scenario, base_model, model_type, template, round_index, current_stage, '
+                'status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)',
+                (run_id, name, scenario, base_model, model_type or '', template or '', 'data', 'active', now, now))
             conn.execute(
                 'INSERT INTO rounds (run_id, round_index, base_model, status, created_at) VALUES (?, 1, ?, ?, ?)',
                 (run_id, base_model, 'active', now))

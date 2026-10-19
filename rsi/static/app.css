@@ -165,13 +165,27 @@ tr.expand td { background: #faf7f2; }
   position: fixed; bottom: 16px; right: 16px; background: var(--ink); color: white;
   padding: 10px 14px; border-radius: 8px; max-width: 360px; z-index: 5;
 }
-dialog { border: 0; border-radius: 14px; padding: 18px; width: min(520px, calc(100vw - 24px)); }
+dialog { border: 0; border-radius: 14px; padding: 18px; width: min(980px, calc(100vw - 24px)); overflow: visible; }
+.combo-anchor { position: relative; }
+.combo-list {
+  position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 4px);
+  max-height: 220px; overflow: auto;
+  background: #fffdf8; border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+.combo-list button {
+  display: block; width: 100%; text-align: left;
+  background: transparent; border: 0; border-radius: 0; padding: 6px 10px;
+}
+.combo-list button:hover { background: var(--teal-soft); }
+select[multiple] { min-height: 96px; }
+.model-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 dialog::backdrop { background: rgba(36, 28, 21, 0.45); }
 dialog label { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
 
 @media (max-width: 900px) {
   .shell { grid-template-columns: 1fr; }
   aside { border-right: 0; border-bottom: 1px solid var(--line); }
-  .grid, .candidates { grid-template-columns: 1fr; }
+  .grid, .candidates, .model-grid { grid-template-columns: 1fr; }
   .top { flex-direction: column; align-items: flex-start; }
 }
