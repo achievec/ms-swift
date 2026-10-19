@@ -96,13 +96,52 @@ function renderRuns() {
     </div>`).join('');
 }
 
+function askConfirm({ title, name = '', body, okLabel = '确定', danger = false }) {
+  const dialog = document.getElementById('confirm-dialog');
+  document.getElementById('confirm-title').textContent = title;
+  const nameEl = document.getElementById('confirm-name');
+  nameEl.textContent = name;
+  nameEl.hidden = !name;
+  document.getElementById('confirm-body').textContent = body;
+  const ok = document.getElementById('confirm-ok');
+  const cancel = document.getElementById('confirm-cancel');
+  ok.textContent = okLabel;
+  ok.className = danger ? 'danger' : 'primary';
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      ok.removeEventListener('click', onOk);
+      cancel.removeEventListener('click', onCancel);
+      dialog.removeEventListener('cancel', onEscape);
+      if (dialog.open) dialog.close();
+      resolve(value);
+    };
+    const onOk = () => finish(true);
+    const onCancel = () => finish(false);
+    const onEscape = (event) => {
+      event.preventDefault();
+      finish(false);
+    };
+    ok.addEventListener('click', onOk);
+    cancel.addEventListener('click', onCancel);
+    dialog.addEventListener('cancel', onEscape);
+    dialog.showModal();
+  });
+}
+
 async function deleteRun(id) {
   const run = state.runs.find((item) => item.id === id);
   const name = run ? run.name : id;
   const index = state.runs.findIndex((item) => item.id === id);
-  const confirmed = window.confirm(
-    `删除实验「${name}」？\n审计里的轮次、阶段和检查点记录会去掉，该实验目录下的阶段产物也会清理。上传的数据文件会保留。`
-  );
+  const confirmed = await askConfirm({
+    title: '删除实验',
+    name,
+    body: '审计里的轮次、阶段和检查点记录会去掉，该实验目录下的阶段产物也会清理。上传的数据文件会保留。',
+    okLabel: '删除',
+    danger: true,
+  });
   if (!confirmed) return;
   await api(`/api/runs/${id}`, { method: 'DELETE' });
   const wasCurrent = state.view && state.view.run.id === id;

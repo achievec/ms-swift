@@ -276,6 +276,10 @@ dialog {
 }
 .combo-list button:hover { background: var(--accent-soft); color: var(--accent-ink); }
 .model-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+#confirm-dialog { width: min(440px, calc(100vw - 24px)); }
+#confirm-dialog .row-actions { justify-content: flex-end; margin-top: 16px; }
+#confirm-name { margin: 8px 0 0; font-weight: 700; }
+#confirm-body { margin: 8px 0 0; }
 dialog::backdrop { background: rgb(17 24 39 / 0.4); }
 dialog label { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; font-weight: 600; color: #374151; }
 dialog label input, dialog label textarea { font-weight: 400; color: var(--ink); }

@@ -30,6 +30,17 @@
     <main id="main"></main>
   </div>
   <div id="toast" hidden></div>
+  <dialog id="confirm-dialog">
+    <form id="confirm-form">
+      <h2 id="confirm-title">确认</h2>
+      <p id="confirm-name" hidden></p>
+      <p id="confirm-body" class="muted"></p>
+      <div class="row-actions">
+        <button type="button" id="confirm-cancel" class="ghost">取消</button>
+        <button type="button" id="confirm-ok" class="danger">确定</button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="create-dialog">
     <form id="create-form" method="dialog">
       <h2>新建 RSI 实验</h2>
