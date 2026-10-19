@@ -6,6 +6,7 @@ still wins: ``modelscope`` leaves ids untouched, ``hf`` sets ``USE_HF=1``,
 and ``hope`` copies a Hugging Face repo locally before swift runs.
 Credentials stay in the process environment.
 """
+import logging
 import os
 import re
 import subprocess
@@ -31,6 +32,11 @@ REPO_ID = re.compile(r'^[A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*$')
 _LOCK = threading.Lock()
 _INFLIGHT = set()
 _HOPE_WARNED = False
+LOGIN_MESSAGE = 'hope 需要登录：请在启动前设置 RSI_HOPE_USERNAME 和 RSI_HOPE_TOKEN'
+_FAILURE_NOTES = {'下载工具不可用', LOGIN_MESSAGE}
+LIST_TIMEOUT = 60
+_LOG_LIMIT = 2000
+logger = logging.getLogger('rsi.model_fetch')
 
 
 @dataclass
@@ -188,6 +194,89 @@ def list_argv(repo_id: str) -> list:
     return ['hope', 'list', '--creator=all', f'--name_like={name}']
 
 
+def public_hope_command(argv: list) -> str:
+    """Command safe to write in the launch log. Drops credential flags."""
+    kept = []
+    for token in argv or []:
+        if token.startswith(('--username=', '--token=', '--params=')):
+            continue
+        kept.append(token)
+    return redact(' '.join(kept))
+
+
+def hope_needs_login(text: str) -> bool:
+    raw = text or ''
+    lowered = raw.lower()
+    if 'mis密码' in raw or '请输入密码' in raw:
+        return True
+    if 'password input may be echoed' in lowered:
+        return True
+    if 'authentication failed' in lowered or '认证失败' in raw or '登录失败' in raw:
+        return True
+    return False
+
+
+def describe_startup() -> str:
+    """One line for process start. Presence only, never the secret values."""
+    username = 'yes' if os.environ.get('RSI_HOPE_USERNAME', '').strip() else 'no'
+    token = 'yes' if os.environ.get('RSI_HOPE_TOKEN', '').strip() else 'no'
+    return f'model_source={model_source()} hope_username={username} hope_token={token}'
+
+
+def _trim_log(text: str, limit: int = _LOG_LIMIT) -> str:
+    cleaned = redact(text or '').strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[:limit] + f'\n…截断，共 {len(cleaned)} 字符'
+
+
+class _StderrHandler(logging.StreamHandler):
+    """Write to the process stderr at emit time so run.sh's tee still sees it."""
+
+    def __init__(self):
+        super().__init__(sys.stderr)
+        self._rsi_hope = True
+
+    def emit(self, record):
+        self.stream = sys.stderr
+        super().emit(record)
+
+
+def _install_hope_logger() -> None:
+    if any(getattr(handler, '_rsi_hope', False) for handler in logger.handlers):
+        return
+    handler = _StderrHandler()
+    handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s [hope] %(message)s'))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+
+
+_install_hope_logger()
+
+
+@dataclass
+class _HopeResult:
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+def _as_text(value) -> str:
+    if value is None:
+        return ''
+    if isinstance(value, bytes):
+        return value.decode('utf-8', errors='replace')
+    return str(value)
+
+
+def _result_text(result) -> str:
+    if result in (None, 'missing-tool'):
+        return ''
+    stdout = _as_text(getattr(result, 'stdout', '') or '')
+    stderr = _as_text(getattr(result, 'stderr', '') or '')
+    return f'{stdout}\n{stderr}'
+
+
 _PERCENT = re.compile(r'\d+(?:\.\d+)?\s*%')
 _SIZE = re.compile(r'\d+(?:\.\d+)?\s*(?:B|KB|MB|GB|TB|KiB|MiB|GiB|字节)', re.IGNORECASE)
 _STATUS_WORDS = ('下载', '同步', '等待', '完成', '失败', '排队', '已存在', 'running', 'pending', 'waiting', 'done', 'failed', 'submitted')
@@ -308,8 +397,8 @@ class ModelFetcher:
             inflight = key in _INFLIGHT
             note = self._notes.get(key, '')
             progress = self._progress.get(key, '')
-        if note == '下载工具不可用' and not inflight:
-            return FetchStatus(kind, repo_id_of(repo_id), str(path), '失败', '下载工具不可用')
+        if note in _FAILURE_NOTES and not inflight:
+            return FetchStatus(kind, repo_id_of(repo_id), str(path), '失败', note)
         if inflight or note == '同步中' or path.exists() or progress:
             return FetchStatus(kind, repo_id_of(repo_id), str(path), '同步中', progress or '同步中')
         return FetchStatus(kind, repo_id_of(repo_id), str(path), '缺少', '本地还没有这份文件')
@@ -318,6 +407,7 @@ class ModelFetcher:
         repo = repo_id_of(repo_id)
         current = self.status_of(kind, repo)
         if current.state == '就绪':
+            logger.info('hope 跳过 %s %s 已就绪 %s', kind, repo, current.local_path)
             return current
         if model_source() == 'local':
             return FetchStatus(kind, repo, current.local_path, '失败', '本地没有该文件')
@@ -341,8 +431,9 @@ class ModelFetcher:
             self._probed_at[key] = time.monotonic()
 
         def job():
-            listed = self._run(list_argv(repo), cwd=self.home)
-            self._remember_progress(kind, repo, listed)
+            listed = self._run(list_argv(repo), cwd=self.home, target=self._path_for(kind, repo))
+            if self._remember_progress(kind, repo, listed):
+                return
             self._start_clone(kind, repo, background=False)
 
         inline = os.environ.get('RSI_FETCH_INLINE', '').strip() == '1'
@@ -378,7 +469,7 @@ class ModelFetcher:
 
         def job():
             try:
-                listed = self._run(list_argv(repo), cwd=self.home)
+                listed = self._run(list_argv(repo), cwd=self.home, target=self._path_for(kind, repo))
                 self._remember_progress(kind, repo, listed)
             finally:
                 with _LOCK:
@@ -390,35 +481,50 @@ class ModelFetcher:
         job()
         return self.status_of(kind, repo)
 
-    def _remember_progress(self, kind: str, repo_id: str, result) -> None:
+    def _remember_progress(self, kind: str, repo_id: str, result) -> bool:
+        """Store list text. Return True when hope asked for a login and clone must stop."""
         if result in (None, 'missing-tool'):
-            return
-        text = f"{getattr(result, 'stdout', '') or ''}\n{getattr(result, 'stderr', '') or ''}"
+            return False
+        text = _result_text(result)
+        key = f'{kind}:{repo_id_of(repo_id)}'
+        if hope_needs_login(text):
+            with _LOCK:
+                self._notes[key] = LOGIN_MESSAGE
+                self._progress.pop(key, None)
+            logger.info('hope 需要登录 %s %s', kind, repo_id_of(repo_id))
+            return True
         message = parse_hope_list(text, repo_id)
         if not message:
-            return
-        key = f'{kind}:{repo_id_of(repo_id)}'
+            return False
         with _LOCK:
             self._progress[key] = message
+        return False
 
     def _start_clone(self, kind: str, repo_id: str, background: bool) -> None:
         key = f'{kind}:{repo_id}'
         path = self._path_for(kind, repo_id)
         if _ready(kind, path):
+            logger.info('hope 跳过 %s %s 已就绪 %s', kind, repo_id, path)
             return
         with _LOCK:
             if key in _INFLIGHT:
+                logger.info('hope 跳过 %s %s 已在进行', kind, repo_id)
                 return
             _INFLIGHT.add(key)
         path.parent.mkdir(parents=True, exist_ok=True)
 
         def job():
+            ready_now = False
             try:
                 argv, _public = clone_argv(self._url_for(kind, repo_id))
-                result = self._run(argv, cwd=path.parent)
+                result = self._run(argv, cwd=path.parent, target=path)
                 with _LOCK:
                     if result == 'missing-tool':
                         self._notes[key] = '下载工具不可用'
+                    elif hope_needs_login(_result_text(result)):
+                        self._notes[key] = LOGIN_MESSAGE
+                        self._progress.pop(key, None)
+                        logger.info('hope 需要登录 %s %s', kind, repo_id)
                     else:
                         self._notes.pop(key, None)
             finally:
@@ -426,26 +532,48 @@ class ModelFetcher:
                     _INFLIGHT.discard(key)
                     if _ready(kind, path):
                         self._notes.pop(key, None)
-                    elif self._notes.get(key) != '下载工具不可用':
+                        self._progress.pop(key, None)
+                        ready_now = True
+                    elif self._notes.get(key) not in _FAILURE_NOTES:
                         self._notes[key] = '同步中'
+            if ready_now:
+                logger.info('hope 就绪 %s %s %s', kind, repo_id, path)
 
         if background:
             threading.Thread(target=job, daemon=True).start()
             return
         job()
 
-    def _run(self, argv: list, cwd: Path):
+    def _run(self, argv: list, cwd: Path, target: Path | None = None):
+        command = public_hope_command(argv)
+        kwargs = {
+            'cwd': str(cwd),
+            'capture_output': True,
+            'text': True,
+            'check': False,
+            'stdin': subprocess.DEVNULL,
+        }
+        if len(argv) >= 2 and argv[1] == 'list':
+            kwargs['timeout'] = LIST_TIMEOUT
+        where = f'cwd={cwd}'
+        if target is not None:
+            where += f' target={target}'
+        logger.info('hope 开始 %s %s', command, where)
         try:
-            completed = self.runner(argv, cwd=str(cwd), capture_output=True, text=True, check=False)
+            completed = self.runner(argv, **kwargs)
         except FileNotFoundError:
             _warn_missing_hope()
+            logger.info('hope 结束 %s %s exit=缺失', command, where)
             return 'missing-tool'
-        stdout = redact(getattr(completed, 'stdout', '') or '')
-        stderr = redact(getattr(completed, 'stderr', '') or '')
-        text = f'{stdout}\n{stderr}'
+        except subprocess.TimeoutExpired as exc:
+            stdout = _as_text(getattr(exc, 'stdout', '') or '')
+            stderr = _as_text(getattr(exc, 'stderr', '') or '')
+            logger.info('hope 结束 %s %s exit=超时\n%s', command, where, _trim_log(f'{stdout}\n{stderr}'))
+            return _HopeResult(124, stdout, stderr)
+        stdout = _as_text(getattr(completed, 'stdout', '') or '')
+        stderr = _as_text(getattr(completed, 'stderr', '') or '')
         code = getattr(completed, 'returncode', 1)
-        if code not in (0, None) and not any(marker in text.lower() for marker in (item.lower() for item in WAITING_MARKERS)):
-            return completed
+        logger.info('hope 结束 %s %s exit=%s\n%s', command, where, code, _trim_log(f'{stdout}\n{stderr}'))
         return completed
 
 

@@ -1,6 +1,11 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 import json
+import logging
+import re
+import subprocess
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,10 +13,12 @@ from fastapi.testclient import TestClient
 import rsi.model_fetch as model_fetch
 from rsi.backends import swift_launch
 from rsi.model_fetch import (
+    LOGIN_MESSAGE,
     ModelFetcher,
     apply_runtime_env,
     clone_argv,
     dataset_block_message,
+    describe_startup,
     model_source,
     parse_hope_list,
     public_clone_command,
@@ -587,3 +594,178 @@ def test_run_sh_does_not_install_hope():
     assert 'RSI_HOPE_TOKEN' in readme
     page = Path(__file__).resolve().parents[1].joinpath('static', 'app.js').read_text(encoding='utf-8')
     assert '模型来源：' in page
+
+
+PASSWORD_PROMPT = 'Warning: Password input may be echoed. mis密码(非jumper密码):'
+
+
+def _hope_handler():
+    found = [handler for handler in model_fetch.logger.handlers if getattr(handler, '_rsi_hope', False)]
+    assert found, 'hope log handler missing'
+    return found[0]
+
+
+def test_hope_clone_and_list_log_redacted_commands(tmp_path, hope_env, caplog, monkeypatch):
+    monkeypatch.setenv('RSI_HOPE_PARAMS', 'secret-params')
+    caplog.set_level(logging.INFO, logger='rsi.model_fetch')
+    seen = []
+
+    def runner(argv, **kwargs):
+        seen.append((list(argv), dict(kwargs)))
+        if argv[1] == 'list':
+            stdout = f'mis无关 token={TOKEN} user={USER} params=secret-params\n' + ('已存在，等待同步 ' * 400)
+            return Completed(stdout=stdout)
+        return Completed(stdout=f'任务已存在，请等待同步 token={TOKEN} user={USER}')
+
+    fetcher = _fetcher(tmp_path, runner)
+    waiting = fetcher.ensure('model', REPO, background=False)
+    assert waiting.state == '同步中'
+    listed = fetcher.refresh('model', REPO, background=False)
+    assert listed.state == '同步中'
+    text = caplog.text
+    assert 'hope 开始 hope clone https://huggingface.co/Qwen/Qwen2.5-7B-Instruct ' in text
+    assert 'hope 开始 hope list --creator=all --name_like=Qwen2.5-7B-Instruct ' in text
+    assert 'exit=0' in text
+    assert f'cwd={tmp_path / "models" / "Qwen"}' in text
+    assert f'target={tmp_path / "models" / "Qwen" / "Qwen2.5-7B-Instruct"}' in text
+    assert TOKEN not in text
+    assert USER not in text
+    assert 'secret-params' not in text
+    assert '--token=' not in text
+    assert '--username=' not in text
+    assert '--params=' not in text
+    assert '***' in text
+    assert '…截断' in text
+    clone_kwargs = seen[0][1]
+    list_kwargs = seen[1][1]
+    assert clone_kwargs['stdin'] is subprocess.DEVNULL
+    assert 'timeout' not in clone_kwargs
+    assert list_kwargs['stdin'] is subprocess.DEVNULL
+    assert list_kwargs['timeout'] == model_fetch.LIST_TIMEOUT
+    assert seen[0][0][:3] == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
+    assert f'--token={TOKEN}' in seen[0][0]
+    formatted = _hope_handler().format(caplog.records[0])
+    assert re.search(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}', formatted)
+    assert '%(asctime)s' in _hope_handler().formatter._fmt
+
+
+def test_password_prompt_fails_fetch_and_does_not_inherit_stdin(tmp_path, hope_env, caplog):
+    caplog.set_level(logging.INFO, logger='rsi.model_fetch')
+    seen = []
+
+    def runner(argv, **kwargs):
+        seen.append(dict(kwargs))
+        dest = Path(kwargs['cwd']) / 'Qwen2.5-7B-Instruct'
+        dest.mkdir(parents=True, exist_ok=True)
+        return Completed(returncode=1, stderr=PASSWORD_PROMPT)
+
+    status = _fetcher(tmp_path, runner).ensure('model', REPO, background=False)
+    assert status.state == '失败'
+    assert status.message == LOGIN_MESSAGE
+    assert 'RSI_HOPE_USERNAME' in status.message
+    assert 'RSI_HOPE_TOKEN' in status.message
+    assert TOKEN not in status.message
+    assert USER not in status.message
+    assert seen[0]['stdin'] is subprocess.DEVNULL
+    assert 'timeout' not in seen[0]
+    assert 'hope 需要登录' in caplog.text
+    assert TOKEN not in caplog.text
+
+
+def test_list_password_prompt_stops_before_clone(tmp_path, hope_env):
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append((list(argv), dict(kwargs)))
+        return Completed(returncode=1, stdout='请输入密码')
+
+    status = _fetcher(tmp_path, runner).refresh('model', REPO, background=False)
+    assert status.state == '失败'
+    assert status.message == LOGIN_MESSAGE
+    assert len(calls) == 1
+    assert calls[0][0][1] == 'list'
+    assert calls[0][1]['stdin'] is subprocess.DEVNULL
+    assert calls[0][1]['timeout'] == model_fetch.LIST_TIMEOUT
+    assert TOKEN not in status.message
+
+
+def test_ready_and_inflight_skips_are_logged(tmp_path, hope_env, caplog, monkeypatch):
+    caplog.set_level(logging.INFO, logger='rsi.model_fetch')
+    dest = tmp_path / 'models' / 'Qwen' / 'Qwen2.5-7B-Instruct'
+    dest.mkdir(parents=True)
+    (dest / 'config.json').write_text('{}', encoding='utf-8')
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError('ready model should not call hope')
+
+    ready = _fetcher(tmp_path, refuse).ensure('model', REPO)
+    assert ready.state == '就绪'
+    assert 'hope 跳过 model Qwen/Qwen2.5-7B-Instruct 已就绪' in caplog.text
+
+    monkeypatch.delenv('RSI_FETCH_INLINE', raising=False)
+    caplog.clear()
+    started = threading.Event()
+    release = threading.Event()
+
+    def runner(argv, **kwargs):
+        started.set()
+        assert release.wait(3)
+        return Completed(stdout='submitted, pending')
+
+    (dest / 'config.json').unlink()
+    fetcher = _fetcher(tmp_path, runner)
+    try:
+        first = fetcher.ensure('model', REPO, background=True)
+        assert first.state == '同步中'
+        assert started.wait(3)
+        second = fetcher.ensure('model', REPO, background=True)
+        assert second.state == '同步中'
+        assert '已在进行' in caplog.text
+    finally:
+        release.set()
+
+
+def test_clone_ready_flip_is_logged(tmp_path, hope_env, caplog):
+    caplog.set_level(logging.INFO, logger='rsi.model_fetch')
+
+    def runner(argv, **kwargs):
+        dest = Path(kwargs['cwd']) / 'Qwen2.5-7B-Instruct'
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / 'config.json').write_text('{}', encoding='utf-8')
+        return Completed(stdout='done')
+
+    status = _fetcher(tmp_path, runner).ensure('model', REPO, background=False)
+    assert status.state == '就绪'
+    assert status.message == '已在本地'
+    assert 'hope 就绪 model Qwen/Qwen2.5-7B-Instruct' in caplog.text
+    assert 'exit=0' in caplog.text
+
+
+def test_describe_startup_reports_presence_only(monkeypatch, capsys, caplog):
+    monkeypatch.setenv('RSI_MODEL_SOURCE', 'hope')
+    monkeypatch.setenv('RSI_HOPE_TOKEN', 'super-secret')
+    monkeypatch.delenv('RSI_HOPE_USERNAME', raising=False)
+    monkeypatch.delenv('RSI_HOPE_PARAMS', raising=False)
+    text = describe_startup()
+    assert text == 'model_source=hope hope_username=no hope_token=yes'
+    assert 'super-secret' not in text
+    monkeypatch.setenv('RSI_HOPE_USERNAME', 'alice')
+    monkeypatch.delenv('RSI_HOPE_TOKEN', raising=False)
+    present = describe_startup()
+    assert present == 'model_source=hope hope_username=yes hope_token=no'
+    assert 'alice' not in present
+
+    caplog.set_level(logging.INFO, logger='rsi.model_fetch')
+    import rsi.__main__ as entry
+    app = SimpleNamespace(state=SimpleNamespace(pipeline=SimpleNamespace(backend=SimpleNamespace(name='mock'))))
+    monkeypatch.setattr(entry, 'create_app', lambda: app)
+    monkeypatch.setattr(entry, 'mount_swift_ui', lambda _app: True)
+    monkeypatch.setattr(entry.uvicorn, 'run', lambda *args, **kwargs: None)
+    monkeypatch.setenv('RSI_HOPE_TOKEN', 'super-secret')
+    monkeypatch.delenv('RSI_HOPE_USERNAME', raising=False)
+    entry.main()
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err + caplog.text
+    assert 'RSI 启动 model_source=hope hope_username=no hope_token=yes' in combined
+    assert 'super-secret' not in combined
+    assert 'alice' not in combined

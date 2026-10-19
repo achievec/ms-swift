@@ -1092,7 +1092,9 @@ async function pollFetchProgress() {
   paintFetchNotes();
   if (wasSyncing && !fetchRows().some((row) => row.state === '同步中')) {
     state.view = view;
-    toast('模型已在本地');
+    const failed = fetchRows().find((row) => row.state === '失败');
+    if (failed && failed.message) toast(failed.message);
+    else if (fetchRows().some((row) => row.state === '就绪')) toast('模型已在本地');
     render();
   }
 }
