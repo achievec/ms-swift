@@ -245,6 +245,14 @@ class Store:
     def set_current_stage(self, conn, run_id, stage):
         conn.execute('UPDATE runs SET current_stage=?, updated_at=? WHERE id=?', (stage, utcnow(), run_id))
 
+    def set_run_status(self, conn, run_id, status):
+        conn.execute('UPDATE runs SET status=?, updated_at=? WHERE id=?', (status, utcnow(), run_id))
+
+    def close_round(self, conn, run_id, round_index, note):
+        conn.execute(
+            'UPDATE rounds SET status=?, note=?, closed_at=? WHERE run_id=? AND round_index=? AND status=?',
+            ('closed', note, utcnow(), run_id, round_index, 'active'))
+
     def clear_promotion(self, conn, run_id, round_index):
         conn.execute(
             'UPDATE rounds SET promoted_checkpoint=NULL, promoted_kind=NULL, promoted_score=NULL '

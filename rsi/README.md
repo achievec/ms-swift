@@ -2,18 +2,24 @@
 
 Click-through recursive self-improvement on top of ms-swift:
 
-**data → SFT → SFT eval → online RL → RL eval → promote → next round → OpenAI-compatible serve**
+**data → SFT → SFT eval**, then a choice: online RL, the next round, or end. RL eval offers the same kind of choice. A failed eval cannot start RL.
 
 The UI speaks Chinese. Parameter names match the existing Gradio Web-UI and the `swift sft` / `swift rlhf` / `swift eval` / `swift deploy` CLIs. ms-swift itself is not modified; this app shells out to it only when you ask.
 
 Default mode calls **this checkout's ms-swift** (`python -m swift.cli.main`) on GPU 0: `swift sft`, `swift eval`, `swift rlhf`, and `swift deploy`. The held-out IT jsonl is converted to an EvalScope `general_qa` folder before eval. Set `RSI_BACKEND=mock` when you want the deterministic click-through that does not load weights.
 
 ```mermaid
-flowchart LR
-  data[Data] --> sft[SFT] --> se[SFT eval] --> rl[Online RL] --> re[RL eval] --> promo[Promote]
-  promo --> nxt[Next round]
+flowchart TD
+  data[Data] --> sft[SFT] --> se[SFT eval]
+  se -->|passed| rl[Online RL]
+  se -->|passed or failed| nxt[Promote and next round]
+  se -->|passed| done[Finish]
+  se -->|failed| stop[Stop]
+  rl --> re[RL eval]
+  re -->|passed or failed| nxt
+  re -->|passed| done
+  re -->|failed| stop
   nxt --> data
-  promo --> serve[OpenAI API]
 ```
 
 This is the manual version of the loop most post-training stacks use now: supervised fine-tuning sets the scenario behavior, a held-out eval is the gate, online RL (GRPO here, the default in ms-swift) pushes the policy with a reward, and only the winning checkpoint becomes the next base. InstructGPT used SFT → reward model → PPO. Open recipes more often skip the learned reward model and score completions directly (GRPO / RLOO / DAPO). The human stays on the gate: every stage is a form, and promotion is an explicit choice.

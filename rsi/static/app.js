@@ -56,7 +56,16 @@ function labelOf(stage) {
   if (found) return found.label;
   if (stage === 'serve') return '推理服务';
   if (stage === 'serve_stop') return '停止推理';
+  if (stage === 'decide') return '选择';
+  if (stage === 'stop') return '终止';
+  if (stage === 'finish') return '完成';
   return stage;
+}
+
+function runStatusLabel(run) {
+  if (run.status === 'stopped') return '已终止';
+  if (run.status === 'completed') return '已完成';
+  return labelOf(run.current_stage);
 }
 
 function statusText(status) {
@@ -90,7 +99,7 @@ function renderRuns() {
     <div class="run-card ${state.view && state.view.run.id === run.id ? 'active' : ''}">
       <button type="button" class="run-open" data-run="${run.id}">
         <b>${escapeHtml(run.name)}</b>
-        <small>第 ${run.round_index} 轮 · ${escapeHtml(labelOf(run.current_stage))}</small>
+        <small>第 ${run.round_index} 轮 · ${escapeHtml(runStatusLabel(run))}</small>
       </button>
       <button type="button" class="run-delete" data-delete-run="${run.id}" title="删除实验" aria-label="删除 ${escapeHtml(run.name)}">
         <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M6.2 2.2h3.6l.4.8H13v1.3H3V3h2.8l.4-.8zM4.2 5.2h7.6l-.5 8.1a1 1 0 0 1-1 .9H5.7a1 1 0 0 1-1-.9l-.5-8.1z"/></svg>
@@ -168,7 +177,9 @@ async function openRun(id, round, keepStage) {
   state.view = await api(`/api/runs/${id}${query}`);
   state.round = state.view.round.round_index;
   if (!keepStage) {
-    state.stage = state.view.mutable ? state.view.run.current_stage : 'data';
+    const current = state.view.run.current_stage;
+    const endedHere = current === 'stop' || current === 'finish';
+    state.stage = state.view.mutable || endedHere ? current : 'data';
     state.tab = 'flow';
   }
   render();
@@ -362,14 +373,75 @@ function renderStage(stage) {
     </section>`;
 }
 
+function flowAnchors(from, to) {
+  const fromX = from.x + from.w / 2;
+  const fromY = from.y + from.h / 2;
+  const toX = to.x + to.w / 2;
+  const toY = to.y + to.h / 2;
+  const dx = toX - fromX;
+  const dy = toY - fromY;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    if (dx >= 0) return [from.x + from.w, fromY, to.x, toY];
+    return [from.x, fromY, to.x + to.w, toY];
+  }
+  if (dy >= 0) return [fromX, from.y + from.h, toX, to.y];
+  return [fromX, from.y, toX, to.y + to.h];
+}
+
+function renderGraph() {
+  const flow = state.view.flow || { canvas: { width: 860, height: 236 }, nodes: [], edges: [], actions: [], prompt: '' };
+  const byId = {};
+  flow.nodes.forEach((node) => { byId[node.id] = node; });
+  const paths = flow.edges.map((edge) => {
+    const from = byId[edge.from];
+    const to = byId[edge.to];
+    if (!from || !to) return '';
+    const [x1, y1, x2, y2] = flowAnchors(from, to);
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const vertical = Math.abs(dy) > Math.abs(dx);
+    const c1x = vertical ? x1 : x1 + dx * 0.45;
+    const c1y = vertical ? y1 + dy * 0.45 : y1;
+    const c2x = vertical ? x2 : x2 - dx * 0.45;
+    const c2y = vertical ? y2 - dy * 0.45 : y2;
+    const marker = edge.live ? 'url(#flow-arrow-live)' : 'url(#flow-arrow)';
+    const label = edge.label
+      ? `<text class="flow-edge-label" x="${(x1 + x2) / 2}" y="${(y1 + y2) / 2 - 6}" text-anchor="middle">${escapeHtml(edge.label)}</text>`
+      : '';
+    return `<path class="flow-edge ${edge.live ? 'live' : ''}" d="M ${x1} ${y1} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${x2} ${y2}" marker-end="${marker}"/>${label}`;
+  }).join('');
+  const nodes = flow.nodes.map((node) => {
+    const caption = node.verdict || statusText(node.status);
+    const disabled = node.clickable ? '' : 'disabled';
+    return `<button type="button" class="flow-node ${node.status} ${state.stage === node.id ? 'selected' : ''}" data-stage="${node.id}" ${disabled} style="left:${node.x}px;top:${node.y}px;width:${node.w}px;height:${node.h}px"><b>${escapeHtml(node.label)}</b><small>${escapeHtml(caption)}</small></button>`;
+  }).join('');
+  const actions = (flow.actions || []).map((action) => `<button type="button" class="${action.danger ? 'danger' : 'primary'}" data-decision="${action.id}">${escapeHtml(action.label)}</button>`).join('');
+  const actionBar = actions
+    ? `<div class="flow-actions">${flow.prompt ? `<p class="muted">${escapeHtml(flow.prompt)}</p>` : ''}<div class="row-actions">${actions}</div></div>`
+    : '';
+  const canvas = flow.canvas || { width: 860, height: 236 };
+  return `<div class="flow-scroll"><div class="flow-canvas" style="width:${canvas.width}px;height:${canvas.height}px">
+    <svg viewBox="0 0 ${canvas.width} ${canvas.height}" aria-hidden="true">
+      <defs>
+        <marker id="flow-arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#d1d5db"/></marker>
+        <marker id="flow-arrow-live" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6366f1"/></marker>
+      </defs>
+      ${paths}
+    </svg>
+    ${nodes}
+  </div></div>${actionBar}`;
+}
+
+function renderTerminal() {
+  const ended = state.view.run.status === 'stopped';
+  return `<section class="panel"><h2>${ended ? '实验已终止' : '实验已完成'}</h2><p>本轮到此结束。已有检查点仍留在记录里。</p></section>`;
+}
+
 function renderFlow() {
-  const view = state.view;
-  const rail = view.board.map((item) => `
-    <button type="button" data-stage="${item.id}" class="${item.status} ${state.stage === item.id ? 'selected' : ''}">
-      <b>${escapeHtml(item.label)}</b>
-      <small>${escapeHtml(statusText(item.status))}${item.metric ? ' · ' + escapeHtml(item.metric) : ''}</small>
-    </button>`).join('');
-  return `<div class="rail">${rail}</div>${renderStage(state.stage)}`;
+  const graph = renderGraph();
+  if (state.stage === 'stop' || state.stage === 'finish') return graph + renderTerminal();
+  if (!state.view.forms[state.stage]) state.stage = 'data';
+  return graph + renderStage(state.stage);
 }
 
 function renderAudit() {
@@ -377,7 +449,7 @@ function renderAudit() {
   const rows = steps.map((step) => {
     const open = state.expanded === step.id;
     const detail = open ? `<tr class="expand"><td colspan="6">
-      <p><b>开始</b> ${escapeHtml(step.started_at)} · <b>结束</b> ${escapeHtml(step.ended_at || '')}</p>
+      <p><b>开始</b> ${escapeHtml(formatShanghai(step.started_at))} · <b>结束</b> ${escapeHtml(formatShanghai(step.ended_at || ''))}</p>
       <h3>参数</h3><pre class="log">${escapeHtml(JSON.stringify(step.params, null, 2))}</pre>
       <h3>结果</h3><pre class="log">${escapeHtml(JSON.stringify(visibleResult(step.result), null, 2))}</pre>
       <h3>日志</h3><pre class="log">${escapeHtml(step.logs || '')}</pre>
@@ -388,8 +460,8 @@ function renderAudit() {
       <td>${step.round_index}</td>
       <td>${escapeHtml(labelOf(step.stage))}</td>
       <td><span class="badge ${step.status}">${escapeHtml(statusText(step.status))}</span></td>
-      <td>${escapeHtml(step.started_at || '')}</td>
-      <td>${escapeHtml(step.ended_at || '')}</td>
+      <td>${escapeHtml(formatShanghai(step.started_at || ''))}</td>
+      <td>${escapeHtml(formatShanghai(step.ended_at || ''))}</td>
     </tr>${detail}`;
   }).join('');
   return `<section class="panel">
@@ -595,7 +667,20 @@ document.addEventListener('click', async (event) => {
       render();
       return;
     }
+    if (target.dataset.decision) {
+      const payload = await api(`/api/runs/${state.view.run.id}/decide`, {
+        method: 'POST',
+        body: JSON.stringify({ action: target.dataset.decision }),
+      });
+      state.view = payload.view;
+      state.stage = payload.stage || state.stage;
+      state.tab = 'flow';
+      toast(payload.view.flow && payload.view.flow.prompt ? payload.view.flow.prompt : '已记录');
+      render();
+      return;
+    }
     if (target.dataset.stage) {
+      if (target.disabled) return;
       state.stage = target.dataset.stage;
       state.tab = 'flow';
       render();

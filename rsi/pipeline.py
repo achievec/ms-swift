@@ -1,5 +1,10 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
-"""Stage machine for one RSI run: data → SFT → eval → RL → eval → promote → next round."""
+"""Stage machine for one RSI run.
+
+The trunk is data → SFT → SFT eval. After that eval the user chooses RL,
+another round, or an end. RL eval offers the same kind of choice. A failed
+eval cannot start RL.
+"""
 import json
 import re
 import shutil
@@ -12,6 +17,7 @@ import yaml
 from rsi.backends import BackendError, swift_launch
 from rsi.commands import STAGE_COMMAND, build_argv, format_shell
 from rsi.dataset_validate import MAX_BYTES, validate_file, validate_public_id
+from rsi.flow import ACTION_LABELS, assemble_flow, blocked_message, decision_actions, stage_unlocked
 from rsi.model_fetch import ModelFetcher, benchmark_dir, dataset_block_message, hf_cloneable, is_repo_id, model_source
 from rsi.schemas import STAGE_META, STAGE_ORDER, presets
 from rsi.webui_catalog import match_model
@@ -574,15 +580,13 @@ class Pipeline:
             return merged, side
         raise PipelineError('未知阶段')
 
-    def _status_for(self, stage: str, active: dict) -> str:
+    def _status_for(self, stage: str, active: dict, rnd: dict) -> str:
         step = active.get(stage)
         if step and step['status'] in {'succeeded', 'failed', 'running', 'syncing'}:
             return step['status']
-        index = STAGE_ORDER.index(stage)
-        for previous in STAGE_ORDER[:index]:
-            if active.get(previous, {}).get('status') != 'succeeded':
-                return 'locked'
-        return 'ready'
+        if stage_unlocked(stage, active, rnd):
+            return 'ready'
+        return 'locked'
 
     def _form_state(self, run, rnd, stage, active, recommendation):
         defaults = self._defaults_for(run, rnd, stage)
@@ -595,7 +599,7 @@ class Pipeline:
             values = defaults
         result = _loads(step['result_json']) if step and step.get('result_json') else None
         return {
-            'status': self._status_for(stage, active),
+            'status': self._status_for(stage, active, rnd),
             'values': values,
             'preset': defaults,
             'result': result,
@@ -652,7 +656,8 @@ class Pipeline:
             'run': run,
             'round': rnd,
             'rounds': self.store.list_rounds(run_id),
-            'mutable': rnd['round_index'] == run['round_index'] and rnd['status'] == 'active',
+            'mutable': (rnd['round_index'] == run['round_index'] and rnd['status'] == 'active'
+                        and run.get('status') == 'active'),
             'board': board,
             'forms': forms,
             'candidates': candidates,
@@ -664,6 +669,8 @@ class Pipeline:
             'services': self._public_services(run_id),
             'fetches': self.store.list_fetches(),
             'backend': self.backend.name,
+            'flow': assemble_flow(run, rnd, active, lambda stage: forms[stage]['status'],
+                                  lambda stage: next((item['metric'] for item in board if item['id'] == stage), '')),
         }
 
     def _public_services(self, run_id: str) -> list:
@@ -678,14 +685,14 @@ class Pipeline:
     def _assert_can_run(self, run: dict, stage: str):
         if stage not in STAGE_ORDER:
             raise PipelineError('未知阶段')
+        if run.get('status') != 'active':
+            raise PipelineError('实验已结束')
         rnd = self.store.get_round(run['id'], run['round_index'])
         if not rnd or rnd['status'] != 'active':
             raise PipelineError('当前轮次已结束，不能再改')
         active = self.store.latest_active_steps(run['id'], run['round_index'])
-        index = STAGE_ORDER.index(stage)
-        for previous in STAGE_ORDER[:index]:
-            if active.get(previous, {}).get('status') != 'succeeded':
-                raise PipelineError(f'请先完成「{LABELS[previous]}」')
+        if not stage_unlocked(stage, active, rnd):
+            raise PipelineError(blocked_message(stage, active, rnd))
 
     def refresh_fetch(self, run_id: str, body: dict) -> dict:
         self._require_run(run_id)
@@ -702,6 +709,30 @@ class Pipeline:
             status = self.fetcher.refresh(kind, raw, background=True)
             self._note_fetch(status)
         return {'fetches': self.store.list_fetches(), 'view': self.view(run_id)}
+
+    def decide(self, run_id: str, action: str) -> dict:
+        run = self._require_run(run_id)
+        if run.get('status') != 'active':
+            raise PipelineError('实验已结束')
+        rnd = self.store.get_round(run_id, run['round_index'])
+        if not rnd or rnd['status'] != 'active':
+            raise PipelineError('当前轮次已结束，不能再改')
+        active = self.store.latest_active_steps(run_id, rnd['round_index'])
+        allowed = {item['id'] for item in decision_actions(run, rnd, active)[0]}
+        if action not in allowed:
+            raise PipelineError('当前不能做这个选择')
+        focus = {'rl': 'rl', 'next': 'promote', 'stop': 'stop', 'finish': 'finish'}[action]
+        with self.store.transaction() as conn:
+            if action == 'stop':
+                self.store.close_round(conn, run_id, rnd['round_index'], '终止')
+                self.store.set_run_status(conn, run_id, 'stopped')
+            elif action == 'finish':
+                self.store.close_round(conn, run_id, rnd['round_index'], '完成')
+                self.store.set_run_status(conn, run_id, 'completed')
+            self.store.set_current_stage(conn, run_id, focus)
+            step_id = self.store.insert_step(conn, run_id, rnd['round_index'], 'decide', {'action': action}, 'rsi')
+            self.store.finish_step(conn, step_id, 'succeeded', {'action': action}, ACTION_LABELS[action] + '\n', '')
+        return {'ok': True, 'stage': focus, 'view': self.view(run_id)}
 
     def preview(self, run_id: str, stage: str, params: dict) -> dict:
         if stage == 'serve':
@@ -723,7 +754,10 @@ class Pipeline:
         merged, side = self._prepare(run, rnd, stage, params or {}, strict=True)
         index = STAGE_ORDER.index(stage)
         with self.store.transaction() as conn:
-            self.store.supersede(conn, run_id, rnd['round_index'], STAGE_ORDER[index:])
+            superseded = list(STAGE_ORDER[index:])
+            if stage in {'data', 'sft', 'sft_eval', 'rl', 'rl_eval'}:
+                superseded.append('decide')
+            self.store.supersede(conn, run_id, rnd['round_index'], superseded)
             self.store.deactivate_checkpoints(conn, run_id, rnd['round_index'], CHECKPOINT_RESET.get(stage, []))
             if index <= STAGE_ORDER.index('promote') and stage != 'next_round':
                 self.store.clear_promotion(conn, run_id, rnd['round_index'])
@@ -903,8 +937,8 @@ class Pipeline:
                 self.store.close_round_and_open_next(conn, run_id, round_index, outcome.get('note') or '',
                                                      outcome['next_base'])
             else:
-                nxt = STAGE_ORDER[STAGE_ORDER.index(stage) + 1]
-                self.store.set_current_stage(conn, run_id, nxt)
+                focus = {'data': 'sft', 'sft': 'sft_eval', 'rl': 'rl_eval'}.get(stage, stage)
+                self.store.set_current_stage(conn, run_id, focus)
 
     def _prepare_serve(self, run: dict, user: dict, strict: bool) -> dict:
         merged = _merge(self._defaults_for(run, {'round_index': run['round_index'], 'base_model': run['base_model']},

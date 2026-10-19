@@ -21,6 +21,8 @@ INTERNAL_KEYS = {
     'warnings',
     'custom_eval_config',
     'served_from',
+    'passed',
+    'pass_threshold',
 }
 
 STAGE_COMMAND = {
