@@ -43,7 +43,7 @@ Then:
 
 Re-running an earlier stage keeps the old audit row and marks later stages in that round as 已作废.
 
-Override the port with `WEBUI_PORT` or `RSI_PORT` (default `7860`) and the bind address with `WEBUI_SERVER` or `RSI_HOST`. State (SQLite, uploads, mock checkpoints) lives in `rsi/workspace/`, or in `$RSI_HOME`.
+Override the port with `WEBUI_PORT` or `RSI_PORT` (default `7860`) and the bind address with `WEBUI_SERVER` or `RSI_HOST`. The header chip **打开 SWIFT Web-UI** goes to `/swift-ui/` on this same process. When Gradio and the swift training stack import, that path is the original Web-UI. Otherwise the page explains that `swift web-ui` uses port 7860 after `./run.sh stop`. State (SQLite, uploads, checkpoints) lives in `rsi/workspace/`, or in `$RSI_HOME`.
 
 ```bash
 pytest rsi/tests -q

@@ -288,6 +288,22 @@ def test_default_backend_calls_real_swift(tmp_path, monkeypatch):
     assert str(Path(__file__).resolve().parents[2]) in env['PYTHONPATH'].split(':')
 
 
+def test_swift_ui_fallback_on_same_port(tmp_path, monkeypatch):
+    monkeypatch.setenv('RSI_BACKEND', 'mock')
+    from rsi.app import create_app
+    from rsi.__main__ import mount_swift_ui
+    app = create_app(tmp_path / 'home')
+    mounted = mount_swift_ui(app)
+    with TestClient(app) as api:
+        page = api.get('/swift-ui/')
+        assert page.status_code == 200
+        assert 'SWIFT Web-UI' in page.text
+        assert '返回 RSI 闭环' in page.text
+        if not mounted:
+            assert app.state.swift_ui is False
+            assert 'swift web-ui' in page.text
+
+
 def test_reward_plugin_parses():
     path = Path(__file__).resolve().parents[1] / 'examples' / 'itops_reward.py'
     ast.parse(path.read_text(encoding='utf-8'))
