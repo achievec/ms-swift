@@ -176,8 +176,7 @@ def test_refresh_lists_then_clone_completes(tmp_path, hope_env):
     done = fetcher.refresh('model', REPO, background=False)
     assert done.state == '就绪'
     assert done.message == '已在本地'
-    assert calls[1] == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct',
-                        f'--username={USER}', f'--token={TOKEN}']
+    assert calls[1] == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
     assert calls[2][0:3] == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
     calls.clear()
     again = fetcher.ensure('model', REPO)
@@ -237,15 +236,15 @@ def test_bundled_fetch_yaml_defaults_to_hope(monkeypatch):
     assert startup == 'model_source=hope hope_username=yes hope_token=no'
     assert 'liyuhao03' not in startup
     listed = list_argv(REPO)
-    assert '--username=liyuhao03' in listed
-    assert listed[:4] == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
-    assert not any(item.startswith('--token=') for item in listed)
+    assert listed == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
     real, public = clone_argv('https://huggingface.co/Qwen/Qwen2.5-7B-Instruct')
     assert '--username=liyuhao03' in real
     assert public == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
     monkeypatch.setenv('RSI_HOPE_USERNAME', 'other-user')
-    assert '--username=other-user' in list_argv(REPO)
-    assert '--username=liyuhao03' not in list_argv(REPO)
+    assert list_argv(REPO) == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
+    overridden, _public = clone_argv('https://huggingface.co/Qwen/Qwen2.5-7B-Instruct')
+    assert '--username=other-user' in overridden
+    assert '--username=liyuhao03' not in overridden
 
 
 def test_default_source_does_not_call_hope_or_force_offline(tmp_path, monkeypatch):
@@ -665,6 +664,7 @@ def test_hope_clone_and_list_log_redacted_commands(tmp_path, hope_env, caplog, m
     assert list_kwargs['timeout'] == model_fetch.LIST_TIMEOUT
     assert seen[0][0][:3] == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
     assert f'--token={TOKEN}' in seen[0][0]
+    assert seen[1][0] == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
     formatted = _hope_handler().format(caplog.records[0])
     assert re.search(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}', formatted)
     assert '%(asctime)s' in _hope_handler().formatter._fmt
@@ -816,9 +816,8 @@ def test_list_sends_username_and_login_banner_fails(tmp_path, hope_env, caplog):
 
     status = _fetcher(tmp_path, runner).refresh('model', REPO, background=False)
     assert calls[0] == list_argv(REPO)
-    assert calls[0][:4] == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
-    assert f'--username={USER}' in calls[0]
-    assert f'--token={TOKEN}' in calls[0]
+    assert calls[0] == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
+    assert not any(item.startswith(('--username=', '--token=', '--params=')) for item in calls[0])
     assert status.state == '失败'
     assert status.message == LOGIN_MESSAGE
     assert USER not in status.message
@@ -851,16 +850,17 @@ def test_yaml_username_is_used_until_env_is_set(tmp_path, monkeypatch):
     monkeypatch.delenv('RSI_HOPE_USERNAME', raising=False)
     monkeypatch.delenv('RSI_HOPE_TOKEN', raising=False)
     monkeypatch.delenv('RSI_HOPE_PARAMS', raising=False)
-    argv = list_argv(REPO)
-    assert argv[-1] == '--username=from-yaml'
-    assert not any(item.startswith('--token=') for item in argv)
+    assert list_argv(REPO) == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
+    real, public = clone_argv('https://huggingface.co/Qwen/Qwen2.5-7B-Instruct')
+    assert '--username=from-yaml' in real
+    assert not any(item.startswith('--token=') for item in real)
+    assert public == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
     assert describe_startup() == 'model_source=hope hope_username=yes hope_token=no'
     monkeypatch.setenv('RSI_HOPE_USERNAME', 'from-env')
-    argv = list_argv(REPO)
-    assert '--username=from-env' in argv
-    assert '--username=from-yaml' not in argv
+    assert list_argv(REPO) == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
     real, public = clone_argv('https://huggingface.co/Qwen/Qwen2.5-7B-Instruct')
     assert '--username=from-env' in real
+    assert '--username=from-yaml' not in real
     assert public == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
 
 

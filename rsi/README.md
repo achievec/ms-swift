@@ -100,7 +100,7 @@ hope 模式下可以不装 modelscope 这个 pip 包：`swift/utils/logger.py` �
 | `RSI_MODEL_SOURCE` | 覆盖 fetch.yaml。可选 `hope`（配置文件里的默认）、`hf`、`modelscope`、`local` |
 | `RSI_MODEL_ROOT` | 模型目录。hope 会把 `org/name` 放到 `<根>/<org>/<name>`。对应 `fetch.yaml` 的 `model_root` |
 | `RSI_DATA_ROOT` | 数据集目录，对应 `data_root` |
-| `RSI_HOPE_USERNAME` / `RSI_HOPE_TOKEN` | 覆盖 `fetch.yaml` 的 `hope_username`，并给 `hope clone` / `hope list` 带上 `--token=`。token 只放环境变量，不会进日志。不要把 token 写进 yaml |
+| `RSI_HOPE_USERNAME` / `RSI_HOPE_TOKEN` | 只加在 `hope clone` 的 `--username=` / `--token=` 上。`hope list` 不接受这些参数。token 只放环境变量，不会进日志。不要把 token 写进 yaml |
 | `RSI_FETCH_CONFIG` | 另选一份 yaml，键与 `fetch.yaml` 相同 |
 
 `fetch.yaml` 示例：
@@ -112,7 +112,7 @@ model_root: /data/models
 data_root: /data/datasets
 ```
 
-仓库里的 `fetch.yaml` 已写 `hope_username: liyuhao03`，`./run.sh` 会把它传给 `hope clone` 和 `hope list`。换 misid 改这一行，或用 `RSI_HOPE_USERNAME` 覆盖。token 仍只走 `RSI_HOPE_TOKEN`。
+仓库里的 `fetch.yaml` 已写 `hope_username: liyuhao03`，`./run.sh` 会把它传给 `hope clone`。`hope list` 只有 `hope list --creator=all --name_like=<模型名>`，不带用户名或 token。换 misid 改这一行，或用 `RSI_HOPE_USERNAME` 覆盖。token 仍只走 `RSI_HOPE_TOKEN`。
 
 hope 本身要事先装好（`./run.sh` 不会安装它）。来源是 hope 但找不到 `hope` 命令时，`./run.sh` 打印下面这一行并立刻以非 0 退出，不会把服务拉起来：
 

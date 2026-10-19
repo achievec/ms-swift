@@ -185,7 +185,7 @@ def public_clone_command(url: str) -> str:
 
 
 def hope_credential_flags() -> list:
-    """Flags hope already accepts on clone and list. Token stays in the environment only."""
+    """Flags ``hope clone`` accepts. ``hope list`` rejects these and prints Usage."""
     flags = []
     username = hope_username()
     token = os.environ.get('RSI_HOPE_TOKEN', '').strip()
@@ -206,9 +206,9 @@ def clone_argv(url: str) -> tuple:
 
 
 def list_argv(repo_id: str) -> list:
+    """``hope list`` only accepts creator, org, name_like, page, and page_size."""
     _org, name = _split_repo(repo_id)
-    public = ['hope', 'list', '--creator=all', f'--name_like={name}']
-    return public + hope_credential_flags()
+    return ['hope', 'list', '--creator=all', f'--name_like={name}']
 
 
 def public_hope_command(argv: list) -> str:
