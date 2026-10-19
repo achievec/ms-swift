@@ -123,7 +123,7 @@ def materialize_general_qa(source: Path, dest_dir: Path):
             target.write(json.dumps({'query': query, 'response': response}, ensure_ascii=False) + '\n')
             written += 1
     if written == 0:
-        raise PipelineError(f'评测文件没有可交给 swift eval 的问答：{source}')
+        raise PipelineError(f'评测文件里没有问答：{source}')
     return dest_dir, written
 
 

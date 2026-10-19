@@ -14,6 +14,7 @@ function visibleResult(result) {
   if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
   const copy = { ...result };
   delete copy.mock;
+  delete copy.backend;
   return copy;
 }
 
@@ -179,11 +180,6 @@ function fieldValue(field, values) {
   return raw;
 }
 
-function fieldHelp(field) {
-  const arg = field.arg && !String(field.label).includes('(--') ? `<code>${escapeHtml(field.arg)}</code>` : '';
-  return `${escapeHtml(field.help || '')} ${arg}`.trim();
-}
-
 function choiceEntries(field) {
   if (field.choices && field.choices.length) {
     return field.choices.map((choice) => {
@@ -197,10 +193,9 @@ function choiceEntries(field) {
 
 function renderField(field, values) {
   const value = fieldValue(field, values);
-  const help = fieldHelp(field);
   if (field.type === 'checkbox') {
     const checked = value === true || value === 'true' ? 'checked' : '';
-    return `<div class="field" data-key="${field.key}"><label class="check"><input type="checkbox" data-field="${field.key}" ${checked}/> ${escapeHtml(field.label)}</label><small>${help}</small></div>`;
+    return `<div class="field" data-key="${field.key}"><label class="check"><input type="checkbox" data-field="${field.key}" ${checked}/> ${escapeHtml(field.label)}</label></div>`;
   }
   if (field.type === 'select' || field.type === 'multiselect') {
     const multiple = field.type === 'multiselect';
@@ -216,18 +211,18 @@ function renderField(field, values) {
       return `<option value="${escapeHtml(choice.value)}" ${mark}>${escapeHtml(choice.label)}</option>`;
     }).join('');
     const multi = multiple ? 'multiple data-multi size="5"' : '';
-    return `<label class="field" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><select data-field="${field.key}" ${multi}>${options}</select><small>${help}</small></label>`;
+    return `<label class="field" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><select data-field="${field.key}" ${multi}>${options}</select></label>`;
   }
   if (field.type === 'combo') {
     const source = field.choices_from ? `data-choices-from="${escapeHtml(field.choices_from)}"` : '';
-    return `<label class="field combo" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><div class="combo-anchor"><input type="text" data-field="${field.key}" data-combo="1" ${source} value="${escapeHtml(value)}" autocomplete="off" /><div class="combo-list" hidden></div></div><small>${help}</small></label>`;
+    return `<label class="field combo" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><div class="combo-anchor"><input type="text" data-field="${field.key}" data-combo="1" ${source} value="${escapeHtml(value)}" autocomplete="off" /><div class="combo-list" hidden></div></div></label>`;
   }
   if (field.type === 'textarea') {
-    return `<label class="field" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><textarea data-field="${field.key}" rows="4">${escapeHtml(value)}</textarea><small>${help}</small></label>`;
+    return `<label class="field" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><textarea data-field="${field.key}" rows="4">${escapeHtml(value)}</textarea></label>`;
   }
   const inputType = field.type === 'number' ? 'number' : 'text';
   const step = field.step ? `step="${field.step}"` : '';
-  return `<label class="field" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><input type="${inputType}" data-field="${field.key}" value="${escapeHtml(value)}" ${step}/><small>${help}</small></label>`;
+  return `<label class="field" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><input type="${inputType}" data-field="${field.key}" value="${escapeHtml(value)}" ${step}/></label>`;
 }
 
 function renderGroups(fields, values) {
@@ -334,7 +329,6 @@ function renderStage(stage) {
     <div id="upload-row" class="field">
       <span>上传 jsonl / json</span>
       <input id="file-input" type="file" accept=".jsonl,.json,.txt" />
-      <small>上传后会立刻校验，并把路径填进数据集字段。</small>
     </div>` : '';
   const validate = stage === 'data' ? '<button type="button" class="ghost" data-action="validate">校验格式</button>' : '';
   const result = form.result ? `<h3>结果</h3><pre class="log">${escapeHtml(JSON.stringify(visibleResult(form.result), null, 2))}</pre>` : '';
@@ -350,7 +344,6 @@ function renderStage(stage) {
       ${upload}
       <details class="yaml">
         <summary>高级参数 YAML</summary>
-        <p class="muted">同名键会覆盖上面的表单。</p>
         <textarea id="extra-yaml">${escapeHtml((form.values && form.values.extra_yaml) || '')}</textarea>
       </details>
       <div class="row-actions">
@@ -380,7 +373,7 @@ function renderAudit() {
   const steps = state.view.steps || [];
   const rows = steps.map((step) => {
     const open = state.expanded === step.id;
-    const detail = open ? `<tr class="expand"><td colspan="7">
+    const detail = open ? `<tr class="expand"><td colspan="6">
       <p><b>开始</b> ${escapeHtml(step.started_at)} · <b>结束</b> ${escapeHtml(step.ended_at || '')}</p>
       <h3>参数</h3><pre class="log">${escapeHtml(JSON.stringify(step.params, null, 2))}</pre>
       <h3>结果</h3><pre class="log">${escapeHtml(JSON.stringify(visibleResult(step.result), null, 2))}</pre>
@@ -392,17 +385,15 @@ function renderAudit() {
       <td>${step.round_index}</td>
       <td>${escapeHtml(labelOf(step.stage))}</td>
       <td><span class="badge ${step.status}">${escapeHtml(statusText(step.status))}</span></td>
-      <td>${escapeHtml(step.backend)}</td>
       <td>${escapeHtml(step.started_at || '')}</td>
       <td>${escapeHtml(step.ended_at || '')}</td>
     </tr>${detail}`;
   }).join('');
   return `<section class="panel">
     <h2>审计</h2>
-    <p class="muted">每次运行都会留下开始时间、参数、结束时间、结果和日志。重新运行不会删旧记录，只把后续步骤标成已作废。</p>
     <table>
-      <thead><tr><th>ID</th><th>轮</th><th>阶段</th><th>状态</th><th>后端</th><th>开始</th><th>结束</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="7">还没有步骤。</td></tr>'}</tbody>
+      <thead><tr><th>ID</th><th>轮</th><th>阶段</th><th>状态</th><th>开始</th><th>结束</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="6">还没有步骤。</td></tr>'}</tbody>
     </table>
   </section>`;
 }
@@ -418,8 +409,7 @@ function renderServe() {
   const endpoint = running ? `http://${service.host === '0.0.0.0' ? '127.0.0.1' : service.host}:${service.port}/v1` : '';
   return `<section class="panel">
     <h2>OpenAI 兼容推理</h2>
-    <p class="muted">晋级之后可以启动 OpenAI 兼容推理服务。</p>
-    ${promoted ? '' : '<p>还没有晋级检查点，部署按钮会保持关闭。</p>'}
+    ${promoted ? '' : '<p>还没有晋级检查点。</p>'}
     ${renderGroups(fields, values)}
     <div class="row-actions">
       <button type="button" class="primary" data-action="serve" ${promoted ? '' : 'disabled'}>${running ? '重新启动服务' : '启动推理 API'}</button>
@@ -428,11 +418,11 @@ function renderServe() {
     ${running ? `<p>服务中：<code>${escapeHtml(endpoint)}</code> · 模型名 <code>${escapeHtml(service.served_model_name)}</code> · 检查点 <span class="mono">${escapeHtml(service.checkpoint)}</span></p>
       <pre class="command">curl ${escapeHtml(endpoint)}/chat/completions \\
   -H 'Content-Type: application/json' \\
-  -d '{"model":"${escapeHtml(service.served_model_name)}","messages":[{"role":"user","content":"VPN 连不上"}]}'</pre>` : ''}
+  -d '{"model":"${escapeHtml(service.served_model_name)}","messages":[{"role":"user","content":"你好"}]}'</pre>` : ''}
     <h3>试一句</h3>
     <div class="chat-log">${bubbles}</div>
     <div class="row-actions">
-      <input id="chat-input" type="text" placeholder="例如：会议室 Wi-Fi 门户证书不受信任" ${running ? '' : 'disabled'} />
+      <input id="chat-input" type="text" placeholder="输入内容" ${running ? '' : 'disabled'} />
       <button type="button" class="primary" data-action="chat" ${running ? '' : 'disabled'}>发送</button>
     </div>
   </section>`;
@@ -443,7 +433,6 @@ function render() {
   const main = document.getElementById('main');
   if (!state.view) {
     main.innerHTML = `<div class="empty"><h1>从一轮可点击的后训练闭环开始</h1>
-      <p>场景 SFT 建立行为，评测做门禁，在线 RL（默认 GRPO）再用奖励推进一步。只有胜出的检查点才能当下一轮基座，最后用 OpenAI 兼容接口接走。</p>
       <p>从左边新建实验开始。</p></div>`;
     return;
   }
@@ -731,13 +720,13 @@ function fillCreateModel() {
   box.innerHTML = `<div class="grid model-grid">
     <label class="field combo"><span>模型id或路径(--model)</span>
       <div class="combo-anchor"><input name="base_model" data-combo="1" data-choices-from="models" required maxlength="300" value="${escapeHtml(model)}" autocomplete="off" /><div class="combo-list" hidden></div></div>
-      <small>实际的模型id</small></label>
+    </label>
     <label class="field combo"><span>模型类型(--model_type)</span>
       <div class="combo-anchor"><input name="model_type" data-combo="1" data-choices-from="model_types" maxlength="120" value="${escapeHtml(meta.model_type || '')}" autocomplete="off" /><div class="combo-list" hidden></div></div>
-      <small>SWIFT已支持的模型类型</small></label>
+    </label>
     <label class="field combo"><span>模型Prompt模板类型(--template)</span>
       <div class="combo-anchor"><input name="template" data-combo="1" data-choices-from="templates" maxlength="120" value="${escapeHtml(meta.template || '')}" autocomplete="off" /><div class="combo-list" hidden></div></div>
-      <small>选择匹配模型的Prompt模板</small></label>
+    </label>
   </div>`;
 }
 

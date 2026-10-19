@@ -21,9 +21,7 @@ _SWIFT_UI_FALLBACK = """<!DOCTYPE html>
 <body>
   <main>
     <h1>SWIFT Web-UI</h1>
-    <p>原生页面的地址是 <a href="/swift-ui/"><code>/swift-ui/</code></a>，和 RSI 闭环同一个进程、同一个端口（默认 7860）。</p>
-    <p>当前进程没有挂上 Gradio 训练页（通常还没装 torch / transformers / modelscope）。依赖装好后，这个地址会打开原来的 LLM 预训练/微调、人类对齐、GRPO、推理、导出、评测、采样。</p>
-    <p>也可以先 <code>./run.sh stop</code>，再单独运行 <code>swift web-ui</code>。它默认同样占用 <code>http://127.0.0.1:7860/</code>，不要和 RSI 同时开。</p>
+    <p>这个页面暂时打不开。</p>
     <p><a href="/">返回 RSI 闭环</a></p>
   </main>
 </body>

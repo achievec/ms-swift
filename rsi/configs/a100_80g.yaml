@@ -36,7 +36,7 @@ data:
 
 sft:
   template: qwen2_5
-  system: "你是企业内部 IT 运维助手。先给出判断，再给出可执行的排查步骤。不要编造未提供的系统状态。"
+  system: ""
   torch_dtype: bfloat16
   seed: 42
   tuner_type: lora
@@ -87,7 +87,7 @@ sft_eval:
 rl:
   rlhf_type: grpo
   template: qwen2_5
-  system: "你是企业内部 IT 运维助手。把处理要点写进回复，覆盖工单里的关键对象。"
+  system: ""
   torch_dtype: bfloat16
   seed: 42
   tuner_type: lora

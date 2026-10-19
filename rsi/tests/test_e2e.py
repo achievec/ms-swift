@@ -301,7 +301,8 @@ def test_swift_ui_fallback_on_same_port(tmp_path, monkeypatch):
         assert '返回 RSI 闭环' in page.text
         if not mounted:
             assert app.state.swift_ui is False
-            assert 'swift web-ui' in page.text
+            assert 'swift web-ui' not in page.text
+            assert 'torch' not in page.text
 
 
 def test_reward_plugin_parses():
