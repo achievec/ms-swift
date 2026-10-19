@@ -224,10 +224,28 @@ def test_modelscope_ids_are_blocked_and_config_file_is_overridden_by_env(tmp_pat
 def test_bundled_fetch_yaml_defaults_to_hope(monkeypatch):
     monkeypatch.delenv('RSI_MODEL_SOURCE', raising=False)
     monkeypatch.delenv('RSI_FETCH_CONFIG', raising=False)
+    monkeypatch.delenv('RSI_HOPE_USERNAME', raising=False)
+    monkeypatch.delenv('RSI_HOPE_TOKEN', raising=False)
+    monkeypatch.delenv('RSI_HOPE_PARAMS', raising=False)
     bundled = Path(__file__).resolve().parents[1] / 'configs' / 'fetch.yaml'
     text = bundled.read_text(encoding='utf-8')
     assert 'model_source: hope' in text
+    assert 'hope_username: liyuhao03' in text
+    assert 'hope_token' not in text
     assert model_source() == 'hope'
+    startup = describe_startup()
+    assert startup == 'model_source=hope hope_username=yes hope_token=no'
+    assert 'liyuhao03' not in startup
+    listed = list_argv(REPO)
+    assert '--username=liyuhao03' in listed
+    assert listed[:4] == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
+    assert not any(item.startswith('--token=') for item in listed)
+    real, public = clone_argv('https://huggingface.co/Qwen/Qwen2.5-7B-Instruct')
+    assert '--username=liyuhao03' in real
+    assert public == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
+    monkeypatch.setenv('RSI_HOPE_USERNAME', 'other-user')
+    assert '--username=other-user' in list_argv(REPO)
+    assert '--username=liyuhao03' not in list_argv(REPO)
 
 
 def test_default_source_does_not_call_hope_or_force_offline(tmp_path, monkeypatch):
@@ -744,7 +762,10 @@ def test_clone_ready_flip_is_logged(tmp_path, hope_env, caplog):
     assert 'exit=0' in caplog.text
 
 
-def test_describe_startup_reports_presence_only(monkeypatch, capsys, caplog):
+def test_describe_startup_reports_presence_only(tmp_path, monkeypatch, capsys, caplog):
+    cfg = tmp_path / 'fetch.yaml'
+    cfg.write_text('model_source: hope\n', encoding='utf-8')
+    monkeypatch.setenv('RSI_FETCH_CONFIG', str(cfg))
     monkeypatch.setenv('RSI_MODEL_SOURCE', 'hope')
     monkeypatch.setenv('RSI_HOPE_TOKEN', 'super-secret')
     monkeypatch.delenv('RSI_HOPE_USERNAME', raising=False)
@@ -843,9 +864,12 @@ def test_yaml_username_is_used_until_env_is_set(tmp_path, monkeypatch):
     assert public == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
 
 
-def test_misid_is_not_hardcoded():
+def test_committed_username_is_not_in_code_or_token_file():
     root = Path(__file__).resolve().parents[1]
-    for relative in ('model_fetch.py', 'configs/fetch.yaml', 'app.py'):
-        assert 'liyuhao03' not in (root / relative).read_text(encoding='utf-8')
+    fetch = (root / 'configs' / 'fetch.yaml').read_text(encoding='utf-8')
+    assert 'hope_username: liyuhao03' in fetch
+    assert 'hope_token' not in fetch
+    assert 'liyuhao03' not in (root / 'model_fetch.py').read_text(encoding='utf-8')
     readme = (root / 'README.md').read_text(encoding='utf-8')
-    assert 'export RSI_HOPE_USERNAME=liyuhao03' in readme
+    assert 'hope_username: liyuhao03' in readme
+    assert 'RSI_HOPE_TOKEN' in readme

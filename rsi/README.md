@@ -100,27 +100,19 @@ hope 模式下可以不装 modelscope 这个 pip 包：`swift/utils/logger.py` �
 | `RSI_MODEL_SOURCE` | 覆盖 fetch.yaml。可选 `hope`（配置文件里的默认）、`hf`、`modelscope`、`local` |
 | `RSI_MODEL_ROOT` | 模型目录。hope 会把 `org/name` 放到 `<根>/<org>/<name>`。对应 `fetch.yaml` 的 `model_root` |
 | `RSI_DATA_ROOT` | 数据集目录，对应 `data_root` |
-| `RSI_HOPE_USERNAME` / `RSI_HOPE_TOKEN` | `hope clone` 和 `hope list` 都会带上 `--username=` / `--token=`。只放在环境变量里，不会进日志、审计或界面上的命令。`fetch.yaml` 可以写 `hope_username`（不含 token），环境变量优先 |
+| `RSI_HOPE_USERNAME` / `RSI_HOPE_TOKEN` | 覆盖 `fetch.yaml` 的 `hope_username`，并给 `hope clone` / `hope list` 带上 `--token=`。token 只放环境变量，不会进日志。不要把 token 写进 yaml |
 | `RSI_FETCH_CONFIG` | 另选一份 yaml，键与 `fetch.yaml` 相同 |
 
 `fetch.yaml` 示例：
 
 ```yaml
 model_source: hope
+hope_username: liyuhao03
 model_root: /data/models
 data_root: /data/datasets
-# hope_username: your-misid
 ```
 
-GPU 上启动前指定 misid（有 token 再加一行）。不要把 token 写进 yaml：
-
-```bash
-export RSI_HOPE_USERNAME=liyuhao03
-# export RSI_HOPE_TOKEN=...
-./run.sh
-```
-
-没设用户名时，`hope list` 会停在「用户名(misid) / HOPE登录认证」，页面变成「hope 需要登录：请在启动前设置 RSI_HOPE_USERNAME 和 RSI_HOPE_TOKEN」。
+仓库里的 `fetch.yaml` 已写 `hope_username: liyuhao03`，`./run.sh` 会把它传给 `hope clone` 和 `hope list`。换 misid 改这一行，或用 `RSI_HOPE_USERNAME` 覆盖。token 仍只走 `RSI_HOPE_TOKEN`。
 
 hope 本身要事先装好（`./run.sh` 不会安装它）。来源是 hope 但找不到 `hope` 命令时，`./run.sh` 打印下面这一行并立刻以非 0 退出，不会把服务拉起来：
 
