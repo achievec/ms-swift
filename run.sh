@@ -279,6 +279,9 @@ cmd_start() {
     exit 1
   done
   ensure_deps
+  if [[ "${RSI_MODEL_SOURCE:-}" == "hope" ]] && ! command -v hope >/dev/null 2>&1; then
+    echo "[依赖] 未找到 hope。安装：pip3 install hope==3.6.6 --no-cache-dir -i https://pypi.sankuai.com/simple" | tee -a "${LOG_FILE}"
+  fi
   echo "[启动] 正在后台启动 python -m rsi …"
   {
     echo ""

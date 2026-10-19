@@ -265,6 +265,8 @@ pip install -r rsi/requirements.txt
 
 The page is http://127.0.0.1:7860/. `./run.sh` restarts; `start` / `stop` / `restart` are explicit. `python -m rsi` runs the same server in the foreground.
 
+On a network that cannot reach ModelScope or Hugging Face, set `RSI_MODEL_SOURCE=hope` and the directories in [`rsi/README.md`](rsi/README.md) under「内网部署」. `./run.sh` does not install the hope client.
+
 ### Using Python
 
 ms-swift also supports training and inference using Python. Below is pseudocode for training and inference. For more details, you can refer to [here](https://github.com/modelscope/ms-swift/blob/main/examples/notebook/qwen2_5-self-cognition/self-cognition-sft.ipynb).

@@ -67,6 +67,7 @@ function statusText(status) {
     failed: '失败',
     running: '运行中',
     superseded: '已作废',
+    syncing: '同步中',
   }[status] || status;
 }
 
@@ -347,6 +348,7 @@ function renderStage(stage) {
         <summary>高级参数 YAML</summary>
         <textarea id="extra-yaml">${escapeHtml((form.values && form.values.extra_yaml) || '')}</textarea>
       </details>
+      ${fetchBar()}
       <div class="row-actions">
         <button type="button" class="primary" data-action="run" ${mutable ? '' : 'disabled'}>${buttonLabel}</button>
         ${validate}
@@ -412,6 +414,7 @@ function renderServe() {
     <h2>OpenAI 兼容推理</h2>
     ${promoted ? '' : '<p>还没有晋级检查点。</p>'}
     ${renderGroups(fields, values)}
+    ${fetchBar()}
     <div class="row-actions">
       <button type="button" class="primary" data-action="serve" ${promoted ? '' : 'disabled'}>${running ? '重新启动服务' : '启动推理 API'}</button>
       <button type="button" class="danger" data-action="serve-stop" ${running ? '' : 'disabled'}>停止</button>
@@ -615,6 +618,20 @@ document.addEventListener('click', async (event) => {
       applyPreset();
       return;
     }
+    if (target.dataset.action === 'refetch') {
+      const params = collectParams();
+      const payload = await api(`/api/runs/${state.view.run.id}/fetch`, {
+        method: 'POST',
+        body: JSON.stringify({
+          model: params.model || state.view.run.base_model,
+          dataset: params.dataset || '',
+        }),
+      });
+      state.view = payload.view;
+      toast(fetchNotice() || '已提交检查');
+      render();
+      return;
+    }
     if (target.dataset.action === 'serve') {
       state.busy = true;
       await startServe();
@@ -683,7 +700,26 @@ document.getElementById('create-form').addEventListener('submit', async (event) 
   }
 });
 
+function fetchNotice() {
+  const rows = (state.view && state.view.fetches) || [];
+  if (rows.some((row) => row.state === '同步中')) return '同步中';
+  const failed = rows.find((row) => row.state === '失败');
+  if (failed) return failed.message || '失败';
+  if (rows.some((row) => row.state === '就绪')) return '已就绪';
+  return '';
+}
+
+function fetchBar() {
+  if (!state.schema || state.schema.model_source !== 'hope') return '';
+  const notice = fetchNotice();
+  const badge = notice ? `<span class="badge">${escapeHtml(notice)}</span>` : '';
+  return `<div class="row-actions">${badge}<button type="button" class="ghost" data-action="refetch">重新拉取</button></div>`;
+}
+
 function catalogNames(source, input) {
+  if (source === 'datasets' && state.schema && state.schema.model_source === 'hope') {
+    return (state.schema.catalog && state.schema.catalog.hf_datasets) || [];
+  }
   if (source === 'eval_datasets_by_backend') {
     const scope = (input && input.closest('section, form')) || document;
     const backend = scope.querySelector('[data-field="eval_backend"]');

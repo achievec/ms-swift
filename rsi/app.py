@@ -92,6 +92,11 @@ def create_app(home: Path | None = None) -> FastAPI:
         data = await file.read()
         return pipeline.save_upload(file.filename or 'data.jsonl', data)
 
+    @app.post('/api/runs/{run_id}/fetch')
+    async def refresh_fetch(run_id: str, request: Request):
+        body = await request.json()
+        return pipeline.refresh_fetch(run_id, body or {})
+
     @app.post('/api/runs/{run_id}/stages/{stage}/preview')
     async def preview_stage(run_id: str, stage: str, request: Request):
         body = await request.json()

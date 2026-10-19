@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from rsi.commands import build_argv, format_shell
+from rsi.model_fetch import apply_runtime_env
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -65,6 +66,7 @@ def swift_launch(argv: list) -> tuple:
     parts = [part for part in current.split(':') if part]
     if root not in parts:
         env['PYTHONPATH'] = ':'.join([root, *parts]) if parts else root
+    apply_runtime_env(env)
     return command, env
 
 

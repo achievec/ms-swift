@@ -77,6 +77,38 @@ A `solution` or `answer` field is kept for GRPO, including rows that only have a
 
 Install ms-swift and a GPU stack on the training machine the usual way (`pip install -e .` from this repo, plus the CUDA extras you need). This RSI app does not import `swift`, so the UI keeps working on a box that only has the packages in `rsi/requirements.txt`.
 
+## 内网部署
+
+外网机器不用改配置。swift 仍按原来的方式解析模型 id：默认 ModelScope，`USE_HF=1` 时走 Hugging Face。RSI 不会替它们下载。
+
+内网只能用 hope 把 Hugging Face 仓库同步进来，不支持 ModelScope。在启动前设置：
+
+| 变量 | 作用 |
+| --- | --- |
+| `RSI_MODEL_SOURCE` | `hope`、`hf`、`modelscope`（默认）、`local`。也可以写在 `rsi/configs/fetch.yaml` 的 `model_source`，环境变量优先 |
+| `RSI_MODEL_ROOT` | 模型目录。hope 会把 `org/name` 放到 `<根>/<org>/<name>`。对应 `fetch.yaml` 的 `model_root` |
+| `RSI_DATA_ROOT` | 数据集目录，对应 `data_root` |
+| `RSI_HOPE_USERNAME` / `RSI_HOPE_TOKEN` | 可选。只放在环境变量里，不会进日志、审计或界面上的命令 |
+| `RSI_FETCH_CONFIG` | 另选一份 yaml，键与 `fetch.yaml` 相同 |
+
+`fetch.yaml` 示例：
+
+```yaml
+model_source: hope
+model_root: /data/models
+data_root: /data/datasets
+```
+
+hope 本身要事先装好（`./run.sh` 不会安装它）。没找到命令时，启动日志里会有一行：
+
+```text
+pip3 install hope==3.6.6 --no-cache-dir -i https://pypi.sankuai.com/simple
+```
+
+`hope --version` 应为 3.6.6。同步是异步的：第一次只提交任务，界面状态是「同步中」，可用「重新拉取」再查一次。目录里出现 `config.json` 后，训练命令的 `--model` 改为本地路径，并带上 `--model_type` 和 `--template`。子进程会设置 `HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`、`HF_DATASETS_OFFLINE=1`。
+
+公开数据集请用 Hugging Face 的 `org/name`，或直接上传本地文件。`modelscope/...` 会提示不能在当前网络下载。内置评测 jsonl 仍走本地 `general_qa`。其它评测集放到 `$RSI_DATA_ROOT/benchmarks/<名字>`，或在 `eval_dataset_args` 里写 `local_path`。
+
 ## Hardware this preset is for
 
 1× NVIDIA A100 80GB, 18 CPU cores, about 92GB RAM with about 60GB usable.
@@ -103,6 +135,7 @@ SQLite tables `runs`, `rounds`, `steps`, `checkpoints`, and `services` record ea
 rsi/app.py            FastAPI + static UI
 rsi/pipeline.py       stage order and promotion
 rsi/backends.py       MockBackend, MsSwiftBackend
+rsi/model_fetch.py    optional local copy before swift runs
 rsi/serving.py        mock OpenAI server
 rsi/schemas.py        form fields copied from the Web-UI argument names
 rsi/configs/a100_80g.yaml

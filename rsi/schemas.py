@@ -5,6 +5,7 @@ from pathlib import Path
 
 import yaml
 
+from rsi.model_fetch import hf_dataset_choices, model_source
 from rsi.webui_catalog import eval_datasets_by_backend, load_catalog
 
 CONFIG_PATH = Path(__file__).resolve().parent / 'configs' / 'a100_80g.yaml'
@@ -353,11 +354,13 @@ def public_schema() -> dict:
         'bundled': BUNDLED,
         'hardware': preset.get('hardware', {}),
         'base_model_default': 'Qwen/Qwen2.5-7B-Instruct',
+        'model_source': model_source(),
         'catalog': {
             'models': sorted(catalog['models']),
             'model_types': sorted(catalog['model_types']),
             'templates': sorted(catalog['templates']),
             'datasets': datasets,
+            'hf_datasets': hf_dataset_choices(),
             'eval_datasets': eval_datasets_by_backend()['Native'],
             'eval_datasets_by_backend': eval_datasets_by_backend(),
             'by_model': catalog['by_model'],

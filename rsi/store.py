@@ -89,6 +89,15 @@ class Store:
                     started_at TEXT,
                     ended_at TEXT
                 );
+                CREATE TABLE IF NOT EXISTS fetches (
+                    kind TEXT NOT NULL,
+                    repo_id TEXT NOT NULL,
+                    local_path TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (kind, repo_id)
+                );
                 CREATE INDEX IF NOT EXISTS idx_steps_run ON steps(run_id, round_index, id);
                 CREATE INDEX IF NOT EXISTS idx_rounds_run ON rounds(run_id, round_index);
                 """)
@@ -302,6 +311,20 @@ class Store:
         else:
             conn.execute("UPDATE services SET status='stopped', ended_at=?, logs=? WHERE id=?",
                          (utcnow(), logs, service_id))
+
+    def upsert_fetch(self, row: dict) -> None:
+        with self.transaction() as conn:
+            conn.execute(
+                'INSERT INTO fetches (kind, repo_id, local_path, state, message, updated_at) VALUES (?, ?, ?, ?, ?, ?) '
+                'ON CONFLICT(kind, repo_id) DO UPDATE SET local_path=excluded.local_path, state=excluded.state, '
+                'message=excluded.message, updated_at=excluded.updated_at',
+                (row['kind'], row['repo_id'], row.get('local_path') or '', row['state'], row.get('message') or '',
+                 utcnow()))
+
+    def list_fetches(self) -> list:
+        with self.transaction() as conn:
+            rows = conn.execute('SELECT * FROM fetches ORDER BY updated_at DESC').fetchall()
+        return [dict(row) for row in rows]
 
     def list_services(self, run_id) -> list:
         with self.transaction() as conn:

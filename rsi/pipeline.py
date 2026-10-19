@@ -12,6 +12,7 @@ import yaml
 from rsi.backends import BackendError, swift_launch
 from rsi.commands import STAGE_COMMAND, build_argv, format_shell
 from rsi.dataset_validate import MAX_BYTES, validate_file, validate_public_id
+from rsi.model_fetch import ModelFetcher, benchmark_dir, dataset_block_message, hf_cloneable, is_repo_id, model_source
 from rsi.schemas import STAGE_META, STAGE_ORDER, presets
 from rsi.webui_catalog import match_model
 from rsi.serving import find_free_port, loopback, port_is_free
@@ -148,6 +149,7 @@ class Pipeline:
         self.store = Store(self.home / 'rsi.sqlite')
         self.store.recover_interrupted()
         self.examples = EXAMPLES
+        self.fetcher = ModelFetcher(self.home)
         from rsi.serving import ServeManager
         self.serve = ServeManager()
 
@@ -239,7 +241,32 @@ class Pipeline:
                 raise PipelineError(f'未知内置数据集：{name}')
             return str(path.resolve()), validate_file(path)
         if source == 'public':
-            report = validate_public_id(params.get('dataset') or '')
+            raw = params.get('dataset') or ''
+            blocked = dataset_block_message(raw)
+            if blocked:
+                raise PipelineError(blocked)
+            if model_source() in {'hope', 'local'} and hf_cloneable(raw):
+                status = self.fetcher.ensure('dataset', raw, background=True)
+                self._note_fetch(status)
+                if status.state == '就绪':
+                    return status.local_path, validate_file(Path(status.local_path)) if Path(status.local_path).is_file() else {
+                        'ok': True,
+                        'num_rows': None,
+                        'formats': {'dataset': 1},
+                        'errors': [],
+                        'error_count': 0,
+                        'warnings': [],
+                        'preview': [],
+                        'dataset': status.local_path,
+                    }
+                report = validate_public_id(raw)
+                report['ok'] = False
+                report['errors'] = [{'row': 0, 'error': status.message or '同步中'}]
+                report['error_count'] = 1
+                report['fetch_state'] = status.state
+                report['fetch_repo'] = raw
+                return status.local_path, report
+            report = validate_public_id(raw)
             return report.get('dataset') or '', report
         if source == 'upload':
             path = self._upload_path(params.get('dataset') or '')
@@ -251,6 +278,71 @@ class Pipeline:
                 raise PipelineError(f'本地文件不存在：{raw}')
             return str(path.resolve()), validate_file(path)
         raise PipelineError('未知数据来源')
+
+    def _note_fetch(self, status) -> None:
+        if status is None or status.state in {'保持', '缺少'}:
+            return
+        self.store.upsert_fetch(status.as_row())
+
+    def _pin_identity(self, merged: dict, run: dict) -> None:
+        model = str(merged.get('model') or '')
+        meta = match_model(model) or {}
+        if not merged.get('model_type'):
+            merged['model_type'] = (run or {}).get('model_type') or meta.get('model_type') or ''
+        if not merged.get('template'):
+            merged['template'] = (run or {}).get('template') or meta.get('template') or ''
+
+    def _rewrite_model(self, merged: dict, run: dict, side: dict, strict: bool) -> None:
+        if model_source() not in {'hope', 'local'}:
+            return
+        model = str(merged.get('model') or '')
+        if not model or not is_repo_id(model):
+            self._pin_identity(merged, run)
+            return
+        blocked = dataset_block_message(model)
+        if blocked:
+            raise PipelineError(blocked)
+        self._pin_identity(merged, run)
+        status = self.fetcher.ensure('model', model, background=True)
+        self._note_fetch(status)
+        merged['model'] = status.local_path
+        if status.state == '同步中':
+            side['fetch_state'] = '同步中'
+            side['fetch_repo'] = status.repo_id
+        elif strict and status.state == '失败':
+            raise PipelineError(status.message or '本地没有该文件')
+        elif strict and not merged.get('model_type'):
+            raise PipelineError('请填写模型类型和模板')
+
+    def _attach_eval_locals(self, merged: dict, strict: bool) -> None:
+        if model_source() not in {'hope', 'local'}:
+            return
+        raw = str(merged.get('eval_dataset') or '')
+        if not raw or raw == 'itops-heldout' or raw == 'general_qa':
+            return
+        names = [part for part in raw.split() if part]
+        extra = merged.get('eval_dataset_args') or {}
+        if isinstance(extra, str) and extra.strip():
+            extra = json.loads(extra)
+        if not isinstance(extra, dict):
+            extra = {}
+        missing = []
+        for name in names:
+            spec = dict(extra.get(name) or {})
+            local = spec.get('local_path') or ''
+            if local and Path(local).exists():
+                extra[name] = spec
+                continue
+            candidate = benchmark_dir(self.home, name)
+            if candidate.is_dir() and any(candidate.iterdir()):
+                spec['local_path'] = str(candidate)
+                extra[name] = spec
+            else:
+                missing.append(name)
+        if extra:
+            merged['eval_dataset_args'] = extra
+        if strict and missing:
+            raise PipelineError('评测集 ' + ', '.join(missing) + ' 需要放在本地后再运行')
 
     def validate_request(self, params: dict) -> dict:
         _dataset, report = self.resolve_dataset(params or {})
@@ -379,10 +471,13 @@ class Pipeline:
         side = {}
         if stage == 'data':
             dataset, report = self.resolve_dataset(merged)
-            if strict and not report['ok']:
-                raise PipelineError(_format_errors(report))
             merged['dataset'] = dataset
             side['validation'] = report
+            if report.get('fetch_state') == '同步中':
+                side['fetch_state'] = '同步中'
+                side['fetch_repo'] = report.get('fetch_repo') or ''
+            elif strict and not report['ok']:
+                raise PipelineError(_format_errors(report))
             return merged, side
 
         if stage in {'sft', 'rl'}:
@@ -395,7 +490,12 @@ class Pipeline:
                     report = validate_file(path)
                     if not report['ok']:
                         raise PipelineError(_format_errors(report))
+                elif path.is_dir():
+                    pass
                 else:
+                    blocked = dataset_block_message(dataset)
+                    if blocked:
+                        raise PipelineError(blocked)
                     report = validate_public_id(dataset)
                     if not report['ok']:
                         raise PipelineError(_format_errors(report))
@@ -405,6 +505,7 @@ class Pipeline:
                     merged['output_dir'] = str(self.stage_dir(run['id'], rnd['round_index'], stage))
             elif not dataset:
                 merged['dataset'] = '<dataset>'
+            self._rewrite_model(merged, run, side, strict)
             return merged, side
 
         if stage in {'sft_eval', 'rl_eval'}:
@@ -451,6 +552,8 @@ class Pipeline:
                 if strict:
                     raise PipelineError('请填写 eval_dataset')
                 merged['eval_dataset'] = 'itops-heldout'
+            self._rewrite_model(merged, run, side, strict)
+            self._attach_eval_locals(merged, strict)
             return merged, side
 
         if stage == 'promote':
@@ -473,7 +576,7 @@ class Pipeline:
 
     def _status_for(self, stage: str, active: dict) -> str:
         step = active.get(stage)
-        if step and step['status'] in {'succeeded', 'failed', 'running'}:
+        if step and step['status'] in {'succeeded', 'failed', 'running', 'syncing'}:
             return step['status']
         index = STAGE_ORDER.index(stage)
         for previous in STAGE_ORDER[:index]:
@@ -559,6 +662,7 @@ class Pipeline:
             'checkpoints': self.store.list_checkpoints(run_id),
             'service': service,
             'services': self._public_services(run_id),
+            'fetches': self.store.list_fetches(),
             'backend': self.backend.name,
         }
 
@@ -582,6 +686,22 @@ class Pipeline:
         for previous in STAGE_ORDER[:index]:
             if active.get(previous, {}).get('status') != 'succeeded':
                 raise PipelineError(f'请先完成「{LABELS[previous]}」')
+
+    def refresh_fetch(self, run_id: str, body: dict) -> dict:
+        self._require_run(run_id)
+        body = body or {}
+        jobs = []
+        for kind, raw in (('model', body.get('model') or ''), ('dataset', body.get('dataset') or '')):
+            if not raw or not is_repo_id(str(raw)):
+                continue
+            blocked = dataset_block_message(str(raw))
+            if blocked:
+                raise PipelineError(blocked)
+            jobs.append((kind, str(raw)))
+        for kind, raw in jobs:
+            status = self.fetcher.refresh(kind, raw, background=True)
+            self._note_fetch(status)
+        return {'fetches': self.store.list_fetches(), 'view': self.view(run_id)}
 
     def preview(self, run_id: str, stage: str, params: dict) -> dict:
         if stage == 'serve':
@@ -609,6 +729,21 @@ class Pipeline:
                 self.store.clear_promotion(conn, run_id, rnd['round_index'])
             self.store.set_current_stage(conn, run_id, stage)
             step_id = self.store.insert_step(conn, run_id, rnd['round_index'], stage, merged, self.backend.name)
+
+        if side.get('fetch_state') == '同步中':
+            repo = side.get('fetch_repo') or ''
+            with self.store.transaction() as conn:
+                self.store.finish_step(conn, step_id, 'syncing', {
+                    'fetch': {'state': '同步中', 'repo_id': repo},
+                }, '同步中\n' + repo + '\n', '')
+            return {
+                'ok': True,
+                'status': 'syncing',
+                'step_id': step_id,
+                'command': '',
+                'result': {'fetch': {'state': '同步中', 'repo_id': repo}},
+                'view': self.view(run_id),
+            }
 
         if stage in SWIFT_STAGES and self.backend.name != 'mock':
             thread = threading.Thread(
@@ -787,6 +922,10 @@ class Pipeline:
             port = find_free_port()
         merged['port'] = port
         merged['host'] = merged.get('host') or '127.0.0.1'
+        side = {}
+        self._rewrite_model(merged, run, side, strict)
+        if side.get('fetch_state') == '同步中' and strict:
+            raise PipelineError('同步中')
         return merged
 
     def _serve_backend_name(self) -> str:
