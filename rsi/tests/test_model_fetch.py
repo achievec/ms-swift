@@ -19,6 +19,8 @@ from rsi.model_fetch import (
     clone_argv,
     dataset_block_message,
     describe_startup,
+    hope_needs_login,
+    list_argv,
     model_source,
     parse_hope_list,
     public_clone_command,
@@ -174,7 +176,8 @@ def test_refresh_lists_then_clone_completes(tmp_path, hope_env):
     done = fetcher.refresh('model', REPO, background=False)
     assert done.state == '就绪'
     assert done.message == '已在本地'
-    assert calls[1] == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
+    assert calls[1] == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct',
+                        f'--username={USER}', f'--token={TOKEN}']
     assert calls[2][0:3] == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
     calls.clear()
     again = fetcher.ensure('model', REPO)
@@ -769,3 +772,80 @@ def test_describe_startup_reports_presence_only(monkeypatch, capsys, caplog):
     assert 'RSI 启动 model_source=hope hope_username=no hope_token=yes' in combined
     assert 'super-secret' not in combined
     assert 'alice' not in combined
+
+
+LOGIN_BANNER = (
+    'HOPE登录认证(帮助文档:https://km.sankuai.com/page/69700154)\n'
+    '用户名(misid): {user} HOPE_LOGIN_MODE: dx_confirm\n'
+    '认证消息已发送至大象，请关注万象机器学习公众号消息并确认登录\n'
+)
+
+
+def test_list_sends_username_and_login_banner_fails(tmp_path, hope_env, caplog):
+    caplog.set_level(logging.INFO, logger='rsi.model_fetch')
+    banner = LOGIN_BANNER.format(user=USER)
+    assert 'mis密码' not in banner
+    assert hope_needs_login(banner)
+    assert not hope_needs_login('已存在，等待同步')
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(list(argv))
+        return Completed(returncode=1, stdout=banner)
+
+    status = _fetcher(tmp_path, runner).refresh('model', REPO, background=False)
+    assert calls[0] == list_argv(REPO)
+    assert calls[0][:4] == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
+    assert f'--username={USER}' in calls[0]
+    assert f'--token={TOKEN}' in calls[0]
+    assert status.state == '失败'
+    assert status.message == LOGIN_MESSAGE
+    assert USER not in status.message
+    assert USER not in caplog.text
+    assert TOKEN not in caplog.text
+    assert '--username=' not in caplog.text
+    assert '--token=' not in caplog.text
+
+
+def test_list_timeout_on_login_banner_is_a_failure(tmp_path, hope_env, caplog):
+    caplog.set_level(logging.INFO, logger='rsi.model_fetch')
+    banner = LOGIN_BANNER.format(user=USER)
+
+    def runner(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs.get('timeout', 60), output=banner)
+
+    status = _fetcher(tmp_path, runner).refresh('model', REPO, background=False)
+    assert status.state == '失败'
+    assert status.message == LOGIN_MESSAGE
+    assert 'exit=超时' in caplog.text
+    assert USER not in caplog.text
+    assert TOKEN not in status.message
+
+
+def test_yaml_username_is_used_until_env_is_set(tmp_path, monkeypatch):
+    cfg = tmp_path / 'fetch.yaml'
+    cfg.write_text('model_source: hope\nhope_username: from-yaml\nhope_token: nope\n', encoding='utf-8')
+    monkeypatch.setenv('RSI_FETCH_CONFIG', str(cfg))
+    monkeypatch.setenv('RSI_MODEL_SOURCE', 'hope')
+    monkeypatch.delenv('RSI_HOPE_USERNAME', raising=False)
+    monkeypatch.delenv('RSI_HOPE_TOKEN', raising=False)
+    monkeypatch.delenv('RSI_HOPE_PARAMS', raising=False)
+    argv = list_argv(REPO)
+    assert argv[-1] == '--username=from-yaml'
+    assert not any(item.startswith('--token=') for item in argv)
+    assert describe_startup() == 'model_source=hope hope_username=yes hope_token=no'
+    monkeypatch.setenv('RSI_HOPE_USERNAME', 'from-env')
+    argv = list_argv(REPO)
+    assert '--username=from-env' in argv
+    assert '--username=from-yaml' not in argv
+    real, public = clone_argv('https://huggingface.co/Qwen/Qwen2.5-7B-Instruct')
+    assert '--username=from-env' in real
+    assert public == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
+
+
+def test_misid_is_not_hardcoded():
+    root = Path(__file__).resolve().parents[1]
+    for relative in ('model_fetch.py', 'configs/fetch.yaml', 'app.py'):
+        assert 'liyuhao03' not in (root / relative).read_text(encoding='utf-8')
+    readme = (root / 'README.md').read_text(encoding='utf-8')
+    assert 'export RSI_HOPE_USERNAME=liyuhao03' in readme

@@ -93,6 +93,14 @@ def _root(env_name: str, file_key: str, home: Path, folder: str) -> Path:
     return Path(home) / folder
 
 
+def hope_username() -> str:
+    """misid for hope. The environment wins over ``hope_username`` in fetch.yaml."""
+    env = os.environ.get('RSI_HOPE_USERNAME', '').strip()
+    if env:
+        return env
+    return str(_file_settings().get('hope_username') or '').strip()
+
+
 def redact(text: str) -> str:
     if not text:
         return ''
@@ -101,6 +109,9 @@ def redact(text: str) -> str:
         secret = os.environ.get(key, '').strip()
         if secret:
             cleaned = cleaned.replace(secret, '***')
+    username = hope_username()
+    if username:
+        cleaned = cleaned.replace(username, '***')
     cleaned = re.sub(r'--token=\S+', '--token=***', cleaned)
     cleaned = re.sub(r'--username=\S+', '--username=***', cleaned)
     cleaned = re.sub(r'--params=\S+', '--params=***', cleaned)
@@ -173,25 +184,31 @@ def public_clone_command(url: str) -> str:
     return f'hope clone {url}'
 
 
-def clone_argv(url: str) -> tuple:
-    """Return the real argv and the argv safe to show or store."""
-    public = ['hope', 'clone', url]
-    argv = list(public)
-    username = os.environ.get('RSI_HOPE_USERNAME', '').strip()
+def hope_credential_flags() -> list:
+    """Flags hope already accepts on clone and list. Token stays in the environment only."""
+    flags = []
+    username = hope_username()
     token = os.environ.get('RSI_HOPE_TOKEN', '').strip()
     params = os.environ.get('RSI_HOPE_PARAMS', '').strip()
     if username:
-        argv.append(f'--username={username}')
+        flags.append(f'--username={username}')
     if token:
-        argv.append(f'--token={token}')
+        flags.append(f'--token={token}')
     if params:
-        argv.append(f'--params={params}')
-    return argv, public
+        flags.append(f'--params={params}')
+    return flags
+
+
+def clone_argv(url: str) -> tuple:
+    """Return the real argv and the argv safe to show or store."""
+    public = ['hope', 'clone', url]
+    return public + hope_credential_flags(), public
 
 
 def list_argv(repo_id: str) -> list:
     _org, name = _split_repo(repo_id)
-    return ['hope', 'list', '--creator=all', f'--name_like={name}']
+    public = ['hope', 'list', '--creator=all', f'--name_like={name}']
+    return public + hope_credential_flags()
 
 
 def public_hope_command(argv: list) -> str:
@@ -207,18 +224,21 @@ def public_hope_command(argv: list) -> str:
 def hope_needs_login(text: str) -> bool:
     raw = text or ''
     lowered = raw.lower()
-    if 'mis密码' in raw or '请输入密码' in raw:
+    if 'password input may be echoed' in lowered or 'authentication failed' in lowered:
         return True
-    if 'password input may be echoed' in lowered:
+    if 'dx_confirm' in lowered or 'hope_login_mode' in lowered:
         return True
-    if 'authentication failed' in lowered or '认证失败' in raw or '登录失败' in raw:
-        return True
+    for marker in (
+            'mis密码', '请输入密码', '用户名(misid)', '用户名（misid）', 'HOPE登录认证',
+            '认证消息已发送至大象', '确认登录', '认证失败', '登录失败'):
+        if marker in raw:
+            return True
     return False
 
 
 def describe_startup() -> str:
     """One line for process start. Presence only, never the secret values."""
-    username = 'yes' if os.environ.get('RSI_HOPE_USERNAME', '').strip() else 'no'
+    username = 'yes' if hope_username() else 'no'
     token = 'yes' if os.environ.get('RSI_HOPE_TOKEN', '').strip() else 'no'
     return f'model_source={model_source()} hope_username={username} hope_token={token}'
 

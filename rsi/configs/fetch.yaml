@@ -2,3 +2,5 @@
 # Mac users who can reach ModelScope: RSI_MODEL_SOURCE=modelscope
 model_source: hope
 # model_root / data_root optional; env RSI_MODEL_ROOT and RSI_DATA_ROOT still win
+# hope_username is an optional misid. RSI_HOPE_USERNAME overrides it.
+# Do not put a token in this file; use RSI_HOPE_TOKEN.
