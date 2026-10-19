@@ -252,8 +252,40 @@ wait_until_ready() {
   return 1
 }
 
+configured_model_source() {
+  local raw cfg
+  raw="${RSI_MODEL_SOURCE:-}"
+  if [[ -n "${raw}" ]]; then
+    printf '%s\n' "${raw}"
+    return
+  fi
+  cfg="${RSI_FETCH_CONFIG:-${RSI_DIR}/configs/fetch.yaml}"
+  if [[ -f "${cfg}" ]]; then
+    raw="$(sed -n 's/^[[:space:]]*model_source:[[:space:]]*//p' "${cfg}" | head -n 1)"
+    raw="${raw%%#*}"
+    raw="${raw// /}"
+    raw="${raw//\"/}"
+    raw="${raw//\'/}"
+    if [[ -n "${raw}" ]]; then
+      printf '%s\n' "${raw}"
+      return
+    fi
+  fi
+  printf '%s\n' 'modelscope'
+}
+
+require_hope_if_needed() {
+  local source
+  source="$(configured_model_source | tr '[:upper:]' '[:lower:]')"
+  if [[ "${source}" == "hope" ]] && ! command -v hope >/dev/null 2>&1; then
+    echo "[依赖] 未找到 hope。安装：pip3 install hope==3.6.6 --no-cache-dir -i https://pypi.sankuai.com/simple" | tee -a "${LOG_FILE}"
+    exit 1
+  fi
+}
+
 cmd_start() {
   local pid existing url
+  require_hope_if_needed
   url="$(browser_url)"
   if [[ "${PORT_BLOCKED}" == "1" ]]; then
     echo "[启动] 端口 ${PORT} 被其他程序占用，未启动。可设置 WEBUI_PORT 换一个端口。"
@@ -279,9 +311,6 @@ cmd_start() {
     exit 1
   done
   ensure_deps
-  if [[ "${RSI_MODEL_SOURCE:-}" == "hope" ]] && ! command -v hope >/dev/null 2>&1; then
-    echo "[依赖] 未找到 hope。安装：pip3 install hope==3.6.6 --no-cache-dir -i https://pypi.sankuai.com/simple" | tee -a "${LOG_FILE}"
-  fi
   echo "[启动] 正在后台启动 python -m rsi …"
   {
     echo ""

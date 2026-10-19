@@ -1,10 +1,10 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 """Bring hub ids onto local disk before swift runs.
 
-The default source leaves ids untouched, which is what swift already does
-(ModelScope, or Hugging Face when ``USE_HF=1``). ``RSI_MODEL_SOURCE=hope``
-copies a Hugging Face repo with the hope client and rewrites the swift
-command to that directory. Credentials stay in the process environment.
+``rsi/configs/fetch.yaml`` sets the default source to hope. ``RSI_MODEL_SOURCE``
+still wins: ``modelscope`` leaves ids untouched, ``hf`` sets ``USE_HF=1``,
+and ``hope`` copies a Hugging Face repo locally before swift runs.
+Credentials stay in the process environment.
 """
 import os
 import re

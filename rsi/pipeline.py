@@ -312,7 +312,13 @@ class Pipeline:
         self._pin_identity(merged, run)
         status = self.fetcher.ensure('model', model, background=True)
         self._note_fetch(status)
-        merged['model'] = status.local_path
+        local = Path(status.local_path).expanduser() if status.local_path else None
+        if local is not None and not is_repo_id(status.local_path):
+            if not local.is_absolute():
+                local = local.resolve()
+            merged['model'] = str(local)
+        else:
+            merged['model'] = status.local_path
         if status.state == '同步中':
             side['fetch_state'] = '同步中'
             side['fetch_repo'] = status.repo_id
@@ -320,6 +326,20 @@ class Pipeline:
             raise PipelineError(status.message or '本地没有该文件')
         elif strict and not merged.get('model_type'):
             raise PipelineError('请填写模型类型和模板')
+
+    def _block_hub_model(self, stage: str, merged: dict, side: dict) -> bool:
+        """Hope and local must not start swift while --model is still a hub id."""
+        if stage not in SWIFT_STAGES or model_source() not in {'hope', 'local'}:
+            return False
+        model = str(merged.get('model') or '')
+        blocked = dataset_block_message(model)
+        if blocked:
+            raise PipelineError(blocked)
+        if is_repo_id(model):
+            side['fetch_state'] = '同步中'
+            side.setdefault('fetch_repo', model)
+            return True
+        return False
 
     def _attach_eval_locals(self, merged: dict, strict: bool) -> None:
         if model_source() not in {'hope', 'local'}:
@@ -829,6 +849,7 @@ class Pipeline:
             self.store.set_current_stage(conn, run_id, stage)
             step_id = self.store.insert_step(conn, run_id, rnd['round_index'], stage, merged, self.backend.name)
 
+        self._block_hub_model(stage, merged, side)
         if side.get('fetch_state') == '同步中':
             repo = side.get('fetch_repo') or ''
             with self.store.transaction() as conn:

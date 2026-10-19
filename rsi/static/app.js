@@ -371,9 +371,13 @@ function renderStage(stage) {
   const kicker = live
     ? `${escapeHtml(meta.label)} · ${runningMarkup(form.started_at)}`
     : `${escapeHtml(meta.label)} · ${escapeHtml(statusText(form.status))}`;
+  const sourceLine = state.schema && state.schema.model_source
+    ? `<p class="muted">模型来源：${escapeHtml(state.schema.model_source)}</p>`
+    : '';
   return `
     <section class="panel">
       <p class="kicker">${kicker}</p>
+      ${sourceLine}
       <h2>${escapeHtml(meta.summary)}</h2>
       ${view.mutable ? '' : '<p class="muted">这是历史轮次，只能查看。</p>'}
       ${promote}
@@ -1080,8 +1084,18 @@ document.addEventListener('scroll', (event) => {
   el.dataset.pinned = gap < 28 ? '1' : '0';
 }, true);
 
+function showModelSource() {
+  const source = state.schema && state.schema.model_source;
+  const text = source ? `模型来源：${source}` : '';
+  const side = document.getElementById('model-source');
+  const create = document.getElementById('create-source');
+  if (side) side.textContent = text;
+  if (create) create.textContent = text;
+}
+
 async function boot() {
   state.schema = await api('/api/schema');
+  showModelSource();
   fillCreateModel();
   await refreshRuns();
   render();

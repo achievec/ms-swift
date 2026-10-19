@@ -1,0 +1,4 @@
+# Default model source for this checkout. RSI_MODEL_SOURCE overrides this.
+# Mac users who can reach ModelScope: RSI_MODEL_SOURCE=modelscope
+model_source: hope
+# model_root / data_root optional; env RSI_MODEL_ROOT and RSI_DATA_ROOT still win

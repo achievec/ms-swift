@@ -89,13 +89,15 @@ Install ms-swift and a GPU stack on the training machine the usual way (`pip ins
 
 ## 内网部署
 
-外网机器不用改配置。swift 仍按原来的方式解析模型 id：默认 ModelScope，`USE_HF=1` 时走 Hugging Face。RSI 不会替它们下载。
+`rsi/configs/fetch.yaml` 的 `model_source` 默认是 **hope**。拉取这份代码后不用再设环境变量：训练前会用 hope 把 Hugging Face 模型同步到本地，`--model` 用本地绝对路径。环境变量 `RSI_MODEL_SOURCE` 仍然优先。Mac 上如果要走 ModelScope，启动前设置 `RSI_MODEL_SOURCE=modelscope`。
 
-内网只能用 hope 把 Hugging Face 仓库同步进来，不支持 ModelScope。在启动前设置：
+hope 或 local 下，同步还是「同步中」时不会启动 swift。`modelscope/...` 这种 id 会提示不能在当前网络下载。
+
+hope 模式下可以不装 modelscope 这个 pip 包：`swift/utils/logger.py` 在缺包时退回本地日志，`import swift` 不会因此失败。完整安装 `pip install -e .` 仍会装上 modelscope。
 
 | 变量 | 作用 |
 | --- | --- |
-| `RSI_MODEL_SOURCE` | `hope`、`hf`、`modelscope`（默认）、`local`。也可以写在 `rsi/configs/fetch.yaml` 的 `model_source`，环境变量优先 |
+| `RSI_MODEL_SOURCE` | 覆盖 fetch.yaml。可选 `hope`（配置文件里的默认）、`hf`、`modelscope`、`local` |
 | `RSI_MODEL_ROOT` | 模型目录。hope 会把 `org/name` 放到 `<根>/<org>/<name>`。对应 `fetch.yaml` 的 `model_root` |
 | `RSI_DATA_ROOT` | 数据集目录，对应 `data_root` |
 | `RSI_HOPE_USERNAME` / `RSI_HOPE_TOKEN` | 可选。只放在环境变量里，不会进日志、审计或界面上的命令 |
@@ -109,7 +111,7 @@ model_root: /data/models
 data_root: /data/datasets
 ```
 
-hope 本身要事先装好（`./run.sh` 不会安装它）。没找到命令时，启动日志里会有一行：
+hope 本身要事先装好（`./run.sh` 不会安装它）。来源是 hope 但找不到 `hope` 命令时，`./run.sh` 打印下面这一行并立刻以非 0 退出，不会把服务拉起来：
 
 ```text
 pip3 install hope==3.6.6 --no-cache-dir -i https://pypi.sankuai.com/simple

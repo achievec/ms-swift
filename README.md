@@ -267,7 +267,7 @@ pip install -r rsi/requirements.txt
 
 The server listens on `0.0.0.0:8418`. On this machine open http://127.0.0.1:8418/. `./run.sh` restarts; `start` / `stop` / `restart` are explicit. `python -m rsi` runs the same server in the foreground.
 
-On a network that cannot reach ModelScope or Hugging Face, set `RSI_MODEL_SOURCE=hope` and the directories in [`rsi/README.md`](rsi/README.md) under「内网部署」. `./run.sh` does not install the hope client.
+`rsi/configs/fetch.yaml` defaults the model source to hope. Set `RSI_MODEL_SOURCE=modelscope` on a Mac that should keep using ModelScope. `./run.sh` does not install the hope client; if `hope` is missing it prints the install hint and exits. See [`rsi/README.md`](rsi/README.md) under「内网部署」.
 
 ### Using Python
 

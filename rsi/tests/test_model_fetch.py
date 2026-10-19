@@ -150,13 +150,25 @@ def test_modelscope_ids_are_blocked_and_config_file_is_overridden_by_env(tmp_pat
     assert model_source() == 'local'
     monkeypatch.setenv('RSI_MODEL_SOURCE', 'nope')
     assert model_source() == 'modelscope'
+    monkeypatch.setenv('RSI_MODEL_SOURCE', 'modelscope')
+    assert dataset_block_message('modelscope/gsm8k') == ''
     monkeypatch.delenv('RSI_MODEL_SOURCE', raising=False)
     monkeypatch.delenv('RSI_FETCH_CONFIG', raising=False)
-    assert dataset_block_message('modelscope/gsm8k') == ''
+    assert model_source() == 'hope'
+    assert '不能在当前网络下载，请改用本地文件' in dataset_block_message('modelscope/gsm8k')
+
+
+def test_bundled_fetch_yaml_defaults_to_hope(monkeypatch):
+    monkeypatch.delenv('RSI_MODEL_SOURCE', raising=False)
+    monkeypatch.delenv('RSI_FETCH_CONFIG', raising=False)
+    bundled = Path(__file__).resolve().parents[1] / 'configs' / 'fetch.yaml'
+    text = bundled.read_text(encoding='utf-8')
+    assert 'model_source: hope' in text
+    assert model_source() == 'hope'
 
 
 def test_default_source_does_not_call_hope_or_force_offline(tmp_path, monkeypatch):
-    monkeypatch.delenv('RSI_MODEL_SOURCE', raising=False)
+    monkeypatch.setenv('RSI_MODEL_SOURCE', 'modelscope')
     monkeypatch.delenv('RSI_FETCH_CONFIG', raising=False)
     calls = []
     status = _fetcher(tmp_path, lambda *args, **kwargs: calls.append(args)).ensure('model', REPO)
@@ -339,6 +351,66 @@ def test_hope_with_swift_backend_keeps_general_qa(tmp_path, hope_env, monkeypatc
         assert TOKEN not in command
 
 
+def test_sft_does_not_launch_while_model_is_syncing(tmp_path, hope_env, monkeypatch):
+    import subprocess
+    import time
+    spawned = []
+
+    def boom(*args, **kwargs):
+        spawned.append(args)
+        raise AssertionError('swift must not start while the model is still syncing')
+
+    monkeypatch.setenv('RSI_BACKEND', 'swift')
+    monkeypatch.setenv('RSI_SERVE_BACKEND', 'mock')
+    monkeypatch.setattr(subprocess, 'Popen', boom)
+    monkeypatch.setattr('rsi.backends.subprocess.Popen', boom)
+    monkeypatch.setattr('rsi.backends.subprocess.run', boom)
+
+    def runner(argv, **kwargs):
+        return Completed(stdout='submitted, pending')
+
+    client, _app = _client(tmp_path, runner)
+    with client as api:
+        run_id = api.post('/api/runs', json={
+            'name': '先同步',
+            'scenario': '模型还在同步时不能启动训练',
+            'base_model': REPO,
+        }).json()['run']['id']
+        assert api.post(f'/api/runs/{run_id}/stages/data/run', json={
+            'params': {'source': 'bundled', 'bundled': 'itops_mix'},
+        }).status_code == 200
+        blocked = api.post('/api/runs', json={
+            'name': '魔搭 id',
+            'scenario': '不能在当前网络下载',
+            'base_model': 'modelscope/Qwen2.5-7B-Instruct',
+        }).json()['run']['id']
+        assert api.post(f'/api/runs/{blocked}/stages/data/run', json={
+            'params': {'source': 'bundled', 'bundled': 'itops_mix'},
+        }).status_code == 200
+        rejected = api.post(f'/api/runs/{blocked}/stages/sft/run', json={'params': {}})
+        assert rejected.status_code == 400
+        assert rejected.json()['detail'] == 'modelscope/Qwen2.5-7B-Instruct 不能在当前网络下载，请改用本地文件'
+        started = api.post(f'/api/runs/{run_id}/stages/sft/run', json={'params': {}})
+        assert started.status_code == 200, started.text
+        body = started.json()
+        assert body['status'] == 'syncing'
+        assert body['command'] == ''
+        step = [item for item in body['view']['steps'] if item['stage'] == 'sft'][-1]
+        assert step['status'] == 'syncing'
+        model = step['params']['model']
+        assert model != REPO
+        assert Path(model).is_absolute()
+        assert str(tmp_path / 'models') in model
+        preview = api.post(f'/api/runs/{run_id}/stages/sft/preview', json={'params': {}})
+        assert preview.status_code == 200, preview.text
+        command = preview.json()['command']
+        assert f'--model {REPO}' not in command
+        assert f'--model {preview.json()["params"]["model"]}' in command
+        assert Path(preview.json()['params']['model']).is_absolute()
+    time.sleep(0.2)
+    assert spawned == []
+
+
 def test_refresh_endpoint_and_local_source(tmp_path, hope_env):
     calls = []
 
@@ -382,13 +454,37 @@ def test_refresh_endpoint_and_local_source(tmp_path, hope_env):
         monkeypatch.undo()
 
 
+def test_run_sh_exits_when_hope_cli_is_missing():
+    import os
+    import shutil
+    import subprocess
+    env = os.environ.copy()
+    env.pop('RSI_MODEL_SOURCE', None)
+    env.pop('RSI_FETCH_CONFIG', None)
+    env['PATH'] = '/usr/bin:/bin'
+    if shutil.which('hope', path=env['PATH']):
+        return
+    root = Path(__file__).resolve().parents[2]
+    completed = subprocess.run(
+        ['bash', 'run.sh', 'start'], cwd=root, env=env, capture_output=True, text=True, timeout=20, check=False)
+    output = completed.stdout + completed.stderr
+    assert completed.returncode != 0, output
+    assert '未找到 hope' in output
+    assert 'pip3 install hope==3.6.6' in output
+
+
 def test_run_sh_does_not_install_hope():
     text = Path(__file__).resolve().parents[2].joinpath('run.sh').read_text(encoding='utf-8')
     assert 'command -v hope' in text
+    assert 'fetch.yaml' in text
     assert 'pip3 install hope==3.6.6' in text
+    assert 'exit 1' in text
     executable = '\n'.join(line for line in text.splitlines() if not line.strip().startswith('echo '))
     assert 'pip3 install hope' not in executable
     readme = Path(__file__).resolve().parents[1].joinpath('README.md').read_text(encoding='utf-8')
     assert '内网部署' in readme
     assert 'RSI_MODEL_SOURCE' in readme
+    assert 'RSI_MODEL_SOURCE=modelscope' in readme
     assert 'RSI_HOPE_TOKEN' in readme
+    page = Path(__file__).resolve().parents[1].joinpath('static', 'app.js').read_text(encoding='utf-8')
+    assert '模型来源：' in page
