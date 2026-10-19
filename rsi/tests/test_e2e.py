@@ -385,6 +385,58 @@ def test_delete_run_removes_audit_and_only_its_directory(client):
     assert api.delete(f'/api/experiments/{other_id}').status_code == 404
 
 
+def test_empty_post_body_is_not_internal_server_error(client):
+    api, _home = client
+    created = api.post('/api/runs', json={
+        'name': '空请求',
+        'scenario': '空 body 不能变成 500',
+        'base_model': 'Qwen/Qwen2.5-7B-Instruct',
+    })
+    assert created.status_code == 200, created.text
+    run_id = created.json()['run']['id']
+    headers = {'Content-Type': 'application/json'}
+    started = api.post(f'/api/runs/{run_id}/stages/sft/run', content=b'', headers=headers)
+    assert started.status_code != 500, started.text
+    assert started.headers['content-type'].startswith('application/json')
+    assert started.json()['detail']
+    assert 'Internal Server Error' not in started.text
+    blank = api.post(f'/api/runs/{run_id}/stages/sft/run', content=b'   \n', headers=headers)
+    assert blank.status_code != 500, blank.text
+    assert blank.headers['content-type'].startswith('application/json')
+    bad = api.post(f'/api/runs/{run_id}/stages/sft/run', content=b'not-json', headers=headers)
+    assert bad.status_code == 400
+    assert bad.json()['detail'] == '请求体不是合法的 JSON'
+    stopped = api.post(f'/api/runs/{run_id}/serve/stop', content=b'', headers=headers)
+    assert stopped.status_code == 400, stopped.text
+    assert stopped.headers['content-type'].startswith('application/json')
+    assert stopped.json()['detail']
+    assert 'Internal Server Error' not in stopped.text
+    script = Path(__file__).resolve().parents[1].joinpath('static', 'app.js').read_text(encoding='utf-8')
+    assert "body: '{}'" in script
+    assert '模型同步中' in script
+
+
+def test_unhandled_error_returns_json_detail(client, monkeypatch):
+    api, _home = client
+    created = api.post('/api/runs', json={
+        'name': '内部错误',
+        'scenario': '异常也要返回 JSON',
+        'base_model': 'Qwen/Qwen2.5-7B-Instruct',
+    })
+    run_id = created.json()['run']['id']
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError('训练进程异常')
+
+    monkeypatch.setattr(api.app.state.pipeline, 'run_stage', boom)
+    quiet = TestClient(api.app, raise_server_exceptions=False)
+    response = quiet.post(f'/api/runs/{run_id}/stages/sft/run', json={'params': {}})
+    assert response.status_code == 500, response.text
+    assert response.headers['content-type'].startswith('application/json')
+    assert response.json()['detail'] == '训练进程异常'
+    assert 'Internal Server Error' not in response.text
+
+
 def test_preset_yaml_matches_schema():
     from rsi.schemas import presets
     data = presets()

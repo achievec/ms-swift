@@ -587,17 +587,23 @@ function render() {
 async function runCurrent() {
   const stage = state.stage;
   const params = collectParams();
-  const payload = await api(`/api/runs/${state.view.run.id}/stages/${stage}/run`, {
-    method: 'POST',
-    body: JSON.stringify({ params }),
-  });
-  state.view = payload.view;
-  state.round = payload.view.round.round_index;
-  if (payload.status === 'succeeded' && payload.view.mutable) {
-    state.stage = payload.view.run.current_stage;
+  state.busy = true;
+  try {
+    const payload = await api(`/api/runs/${state.view.run.id}/stages/${stage}/run`, {
+      method: 'POST',
+      body: JSON.stringify({ params }),
+    });
+    state.view = payload.view;
+    state.round = payload.view.round.round_index;
+    if (payload.status === 'succeeded' && payload.view.mutable) {
+      state.stage = payload.view.run.current_stage;
+    }
+    const outcome = payload.status === 'syncing' ? '模型同步中' : payload.status === 'running' ? '已在后台启动' : '已完成';
+    toast(`${labelOf(stage)} ${outcome}`);
+    render();
+  } finally {
+    state.busy = false;
   }
-  toast(`${labelOf(stage)} ${payload.status === 'running' ? '已在后台启动' : '已完成'}`);
-  render();
 }
 
 async function previewCurrent() {
@@ -664,7 +670,7 @@ async function startServe() {
 }
 
 async function stopServe() {
-  const payload = await api(`/api/runs/${state.view.run.id}/serve/stop`, { method: 'POST' });
+  const payload = await api(`/api/runs/${state.view.run.id}/serve/stop`, { method: 'POST', body: '{}' });
   state.view = payload.view;
   toast('推理服务已停止');
   render();

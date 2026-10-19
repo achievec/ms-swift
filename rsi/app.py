@@ -1,4 +1,6 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
+import json
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -13,6 +15,21 @@ from rsi.pipeline import Pipeline, PipelineError
 from rsi.schemas import public_schema
 
 STATIC_DIR = Path(__file__).resolve().parent / 'static'
+logger = logging.getLogger(__name__)
+
+
+async def read_json(request: Request) -> dict:
+    """Parse a JSON object body. An empty body is an empty object, never a 500."""
+    raw = await request.body()
+    if not raw or not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise PipelineError('请求体不是合法的 JSON') from exc
+    if not isinstance(data, dict):
+        raise PipelineError('请求体必须是 JSON 对象')
+    return data
 
 
 def create_app(home: Path | None = None) -> FastAPI:
@@ -33,6 +50,12 @@ def create_app(home: Path | None = None) -> FastAPI:
     @app.exception_handler(PipelineError)
     async def _pipeline_error(_request: Request, exc: PipelineError):
         return JSONResponse({'detail': str(exc)}, status_code=exc.status)
+
+    @app.exception_handler(Exception)
+    async def _unhandled(_request: Request, exc: Exception):
+        logger.exception('未处理的请求错误')
+        detail = str(exc).strip() or '服务器内部错误'
+        return JSONResponse({'detail': detail}, status_code=500)
 
     @app.get('/api/health')
     def health():
@@ -56,7 +79,7 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.post('/api/runs')
     async def create_run(request: Request):
-        body = await request.json()
+        body = await read_json(request)
         return pipeline.create_run(
             body.get('name', ''), body.get('scenario', ''), body.get('base_model', ''),
             body.get('model_type', '') or '', body.get('template', '') or '')
@@ -88,7 +111,7 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.post('/api/datasets/validate')
     async def validate_dataset(request: Request):
-        body = await request.json()
+        body = await read_json(request)
         params = body.get('params') if isinstance(body, dict) and 'params' in body else body
         return pipeline.validate_request(params or {})
 
@@ -99,39 +122,40 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.post('/api/runs/{run_id}/fetch')
     async def refresh_fetch(run_id: str, request: Request):
-        body = await request.json()
+        body = await read_json(request)
         return pipeline.refresh_fetch(run_id, body or {})
 
     @app.post('/api/runs/{run_id}/stages/{stage}/preview')
     async def preview_stage(run_id: str, stage: str, request: Request):
-        body = await request.json()
+        body = await read_json(request)
         params = body.get('params') if isinstance(body, dict) else {}
         return pipeline.preview(run_id, stage, params or {})
 
     @app.post('/api/runs/{run_id}/decide')
     async def decide(run_id: str, request: Request):
-        body = await request.json()
+        body = await read_json(request)
         return pipeline.decide(run_id, (body or {}).get('action') or '')
 
     @app.post('/api/runs/{run_id}/stages/{stage}/run')
     async def run_stage(run_id: str, stage: str, request: Request):
-        body = await request.json()
+        body = await read_json(request)
         params = body.get('params') if isinstance(body, dict) else {}
         return pipeline.run_stage(run_id, stage, params or {})
 
     @app.post('/api/runs/{run_id}/serve')
     async def start_serve(run_id: str, request: Request):
-        body = await request.json()
+        body = await read_json(request)
         params = body.get('params') if isinstance(body, dict) else {}
         return pipeline.start_serve(run_id, params or {})
 
     @app.post('/api/runs/{run_id}/serve/stop')
-    def stop_serve(run_id: str):
+    async def stop_serve(run_id: str, request: Request):
+        await read_json(request)
         return pipeline.stop_serve(run_id)
 
     @app.post('/api/runs/{run_id}/chat')
     async def chat(run_id: str, request: Request):
-        body = await request.json()
+        body = await read_json(request)
         return pipeline.chat(run_id, body.get('messages') or [], body.get('temperature'))
 
     @app.get('/')
