@@ -233,7 +233,7 @@ class Pipeline:
         uploads = (self.home / 'uploads').resolve()
         path = Path(raw).resolve()
         if path != uploads and uploads not in path.parents:
-            raise PipelineError('上传文件必须位于 RSI 上传目录')
+            raise PipelineError('上传文件必须位于上传目录')
         if not path.is_file():
             raise PipelineError('上传文件不存在')
         return path

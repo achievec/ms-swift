@@ -26,7 +26,7 @@ def create_app(home: Path | None = None) -> FastAPI:
         yield
         app.state.pipeline.serve.stop_all()
 
-    app = FastAPI(title='ms-swift RSI', version=__version__, lifespan=lifespan)
+    app = FastAPI(title='大模型训练平台', version=__version__, lifespan=lifespan)
     app.state.pipeline = pipeline
     app.state.home = home
 

@@ -266,6 +266,10 @@ def test_page_hides_hardware_and_stop_copy():
     assert 'hardware-pill' not in script
     assert '终止' not in html
     assert '终止' not in script
+    assert '大模型训练平台' in html
+    assert '递归自改进' not in html
+    assert '新建 RSI' not in html
+    assert '>RSI<' not in html
 
 
 def test_displayed_times_use_shanghai():

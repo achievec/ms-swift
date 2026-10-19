@@ -22,7 +22,7 @@ _SWIFT_UI_FALLBACK = """<!DOCTYPE html>
   <main>
     <h1>SWIFT Web-UI</h1>
     <p>这个页面暂时打不开。</p>
-    <p><a href="/">返回 RSI 闭环</a></p>
+    <p><a href="/">返回大模型训练平台</a></p>
   </main>
 </body>
 </html>

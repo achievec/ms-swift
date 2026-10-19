@@ -3,18 +3,14 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ms-swift RSI 闭环</title>
+  <title>大模型训练平台</title>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=Montserrat:wght@400;600;700&amp;family=Noto+Sans+SC:wght@400;600;700&amp;display=swap" />
   <link rel="stylesheet" href="/static/app.css" />
 </head>
 <body>
   <header class="top">
     <div class="brand">
-      <span class="mark">RSI</span>
-      <div>
-        <strong>递归自改进闭环</strong>
-        <small>评测通过后可以进入 RL、下一轮数据，或完成</small>
-      </div>
+      <strong>大模型训练平台</strong>
     </div>
     <div class="top-meta">
       <a class="pill" href="/swift-ui/">打开 SWIFT Web-UI</a>
@@ -42,7 +38,7 @@
   </dialog>
   <dialog id="create-dialog">
     <form id="create-form" method="dialog">
-      <h2>新建 RSI 实验</h2>
+      <h2>新建实验</h2>
       <label>实验名称<input name="name" required maxlength="80" placeholder="实验名称" value="" /></label>
       <label>场景说明<textarea name="scenario" required maxlength="500" placeholder="场景说明"></textarea></label>
       <div id="create-model"></div>
