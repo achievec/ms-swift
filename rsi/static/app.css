@@ -92,6 +92,7 @@ aside {
 .ghost { background: #ffffff; color: var(--ink); }
 .ghost:hover { background: #f3f4f6; }
 .block { width: 100%; }
+#new-run { margin-bottom: 14px; }
 .run-card { position: relative; display: block; width: 100%; text-align: left; margin-bottom: 8px; padding: 0; box-shadow: none; }
 .run-card.active { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); background: var(--accent-softer); }
 .run-open {
