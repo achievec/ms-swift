@@ -299,7 +299,7 @@ function renderServe() {
   const endpoint = running ? `http://${service.host === '0.0.0.0' ? '127.0.0.1' : service.host}:${service.port}/v1` : '';
   return `<section class="panel">
     <h2>OpenAI 兼容推理</h2>
-    <p class="muted">晋级之后可以启动服务。Mock 会在本机拉起 <code>/v1/models</code> 和 <code>/v1/chat/completions</code>，不加载权重。真实 GPU 上把 <code>RSI_SERVE_BACKEND=swift</code>，同一张表单会变成 <code>swift deploy</code>。</p>
+    <p class="muted">晋级之后可以启动服务。默认执行 <code>swift deploy</code>，在 GPU 上提供 <code>/v1/models</code> 和 <code>/v1/chat/completions</code>。不想加载权重时，设置 <code>RSI_SERVE_BACKEND=mock</code>。</p>
     ${promoted ? '' : '<p>还没有晋级检查点，部署按钮会保持关闭。</p>'}
     ${renderGroups(fields, values)}
     <div class="row-actions">
@@ -325,7 +325,7 @@ function render() {
   if (!state.view) {
     main.innerHTML = `<div class="empty"><h1>从一轮可点击的后训练闭环开始</h1>
       <p>行业里常见的迭代是：场景 SFT 建立行为，评测做门禁，在线 RL（这里默认 GRPO）用奖励把策略从 SFT 上再推进一步，只有胜出的检查点才能当下一轮基座，最后用 OpenAI 兼容接口接走。</p>
-      <p>左边新建实验。没有 GPU 时全程走 Mock，SQLite 里仍能看到每一步的参数和日志。</p></div>`;
+      <p>左边新建实验。默认会在 GPU 0 上执行 swift sft / eval / rlhf / deploy。没有 GPU 时设置 RSI_BACKEND=mock。</p></div>`;
     return;
   }
   const view = state.view;
@@ -561,7 +561,10 @@ document.getElementById('create-form').addEventListener('submit', async (event) 
 async function boot() {
   state.schema = await api('/api/schema');
   const health = await api('/api/health');
-  document.getElementById('backend-pill').textContent = health.backend === 'mock' ? 'Mock 后端' : 'ms-swift 后端';
+  const gpuReady = health.gpu && health.gpu.available;
+  document.getElementById('backend-pill').textContent = health.backend === 'mock'
+    ? 'Mock 后端'
+    : (gpuReady ? 'ms-swift · GPU' : 'ms-swift · 无 GPU');
   if (health.hardware && health.hardware.label) {
     document.getElementById('hardware-pill').textContent = health.hardware.label;
   }

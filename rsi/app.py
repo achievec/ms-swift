@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from rsi import __version__
-from rsi.backends import build_backend
+from rsi.backends import build_backend, detect_gpu
 from rsi.pipeline import Pipeline, PipelineError
 from rsi.schemas import public_schema
 
@@ -42,6 +42,7 @@ def create_app(home: Path | None = None) -> FastAPI:
             'version': __version__,
             'backend': pipeline.backend.name,
             'serve_backend': pipeline._serve_backend_name(),
+            'gpu': detect_gpu(),
             'hardware': schema.get('hardware') or {},
         }
 

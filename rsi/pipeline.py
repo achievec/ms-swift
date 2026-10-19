@@ -8,7 +8,7 @@ from pathlib import Path
 
 import yaml
 
-from rsi.backends import BackendError
+from rsi.backends import BackendError, swift_launch
 from rsi.commands import STAGE_COMMAND, build_argv, format_shell
 from rsi.dataset_validate import MAX_BYTES, validate_file, validate_public_id
 from rsi.schemas import STAGE_META, STAGE_ORDER, presets
@@ -90,6 +90,39 @@ def _slug(name: str, round_index: int, kind: str) -> str:
     if not ascii_name:
         ascii_name = 'rsi-model'
     return f'{ascii_name}-r{round_index}-{kind or "ckpt"}'[:64]
+
+
+def materialize_general_qa(source: Path, dest_dir: Path):
+    """Turn a messages/query jsonl into the folder layout `swift eval --eval_dataset general_qa` expects."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    written = 0
+    with source.open(encoding='utf-8') as handle, (dest_dir / 'itops.jsonl').open('w', encoding='utf-8') as target:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            item = json.loads(line)
+            if item.get('query') and item.get('response'):
+                query, response = item['query'], item['response']
+            else:
+                query = ''
+                response = ''
+                for message in item.get('messages') or []:
+                    if not isinstance(message, dict):
+                        continue
+                    role = message.get('role')
+                    content = message.get('content') or ''
+                    if role == 'user' and not query:
+                        query = content
+                    elif role == 'assistant':
+                        response = content
+            if not query or not response:
+                continue
+            target.write(json.dumps({'query': query, 'response': response}, ensure_ascii=False) + '\n')
+            written += 1
+    if written == 0:
+        raise PipelineError(f'评测文件没有可交给 swift eval 的问答：{source}')
+    return dest_dir, written
 
 
 def _resolve_existing(value):
@@ -358,10 +391,27 @@ class Pipeline:
                 extra = json.loads(extra)
             if not isinstance(extra, dict):
                 extra = {}
-            if merged.get('custom_eval_config'):
+            if self.backend.name == 'swift' and str(merged.get('eval_dataset') or 'itops-heldout') == 'itops-heldout':
+                source = Path(str(merged.get('custom_eval_config') or ''))
+                if not source.is_file():
+                    source = EXAMPLES / 'itops_eval.jsonl'
+                qa_dir, rows = materialize_general_qa(
+                    source, self.stage_dir(run['id'], rnd['round_index'], stage) / 'general_qa')
+                side['eval_rows'] = rows
+                merged['eval_dataset'] = 'general_qa'
+                merged['eval_dataset_args'] = {
+                    'general_qa': {
+                        'local_path': str(qa_dir),
+                        'subset_list': ['itops'],
+                    },
+                }
+                extra.pop('custom_eval_config', None)
+            elif merged.get('custom_eval_config'):
                 extra['custom_eval_config'] = merged['custom_eval_config']
             if extra:
                 merged['extra_eval_args'] = extra
+            else:
+                merged.pop('extra_eval_args', None)
             if not merged.get('eval_dataset'):
                 if strict:
                     raise PipelineError('请填写 eval_dataset')
@@ -763,19 +813,17 @@ class Pipeline:
         return {'ok': True, 'result': result, 'command': command, 'view': self.view(run_id)}
 
     def _start_swift_serve(self, run, params, command):
-        import os
         import subprocess
-        argv = build_argv('serve', params)
-        binary = os.environ.get('RSI_SWIFT_BIN', 'swift')
-        argv = [binary, *argv[1:]]
-        env = os.environ.copy()
-        env.setdefault('CUDA_VISIBLE_DEVICES', '0')
+        logical = build_argv('serve', params)
+        argv, env = swift_launch(logical)
         log_dir = self.stage_dir(run['id'], run['round_index'], 'serve')
         log_path = log_dir / 'deploy.log'
         log_file = log_path.open('w', encoding='utf-8')
         log_file.write(command + '\n')
+        log_file.write('exec: ' + ' '.join(argv) + '\n')
         log_file.flush()
-        subprocess.Popen(argv, stdout=log_file, stderr=subprocess.STDOUT, env=env)
+        process = subprocess.Popen(argv, stdout=log_file, stderr=subprocess.STDOUT, env=env)
+        self.serve.track(run['id'], process)
 
     def stop_serve(self, run_id: str) -> dict:
         run = self._require_run(run_id)

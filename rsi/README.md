@@ -6,7 +6,7 @@ Click-through recursive self-improvement on top of ms-swift:
 
 The UI speaks Chinese. Parameter names match the existing Gradio Web-UI and the `swift sft` / `swift rlhf` / `swift eval` / `swift deploy` CLIs. ms-swift itself is not modified; this app shells out to it only when you ask.
 
-Default mode is **mock**. No GPU, no model download, no EvalScope. A deterministic score, a checkpoint directory, and an audit row are written so the whole loop can be clicked through on a laptop. Point the same forms at a real A100 later by changing one environment variable.
+Default mode calls **this checkout's ms-swift** (`python -m swift.cli.main`) on GPU 0: `swift sft`, `swift eval`, `swift rlhf`, and `swift deploy`. The held-out IT jsonl is converted to an EvalScope `general_qa` folder before eval. Set `RSI_BACKEND=mock` when you want the deterministic click-through that does not load weights.
 
 ```mermaid
 flowchart LR
@@ -64,14 +64,14 @@ A `solution` or `answer` field is kept for GRPO, including rows that only have a
 - `rsi/examples/itops_eval.jsonl` — four held-out tickets
 - `rsi/examples/itops_reward.py` — GRPO reward plugin (`itops_checklist`). Mock mode never imports it. Real `swift rlhf` loads it via `--external_plugins`.
 
-## Mock versus a real A100
+## Backend
 
-| Variable | Default | Real machine |
+| Variable | Default | Without a GPU |
 | --- | --- | --- |
-| `RSI_BACKEND` | `mock` | `swift` |
-| `RSI_SERVE_BACKEND` | same as `RSI_BACKEND` | `swift` to `swift deploy`, or `mock` to keep the fake API |
-| `RSI_SWIFT_BIN` | `swift` | path to the swift entry point if it is not on `PATH` |
-| `CUDA_VISIBLE_DEVICES` | `0` when the swift backend runs | the single A100 |
+| `RSI_BACKEND` | `swift` | `mock` |
+| `RSI_SERVE_BACKEND` | same as `RSI_BACKEND` | `mock` to keep the in-process API |
+| `RSI_SWIFT_BIN` | `python -m swift.cli.main` in this repo | a stub executable for tests |
+| `CUDA_VISIBLE_DEVICES` | `0` | unused in mock mode |
 
 `MsSwiftBackend` runs the recorded command with `subprocess` and marks the step failed if swift exits non-zero. Training steps return immediately in the UI and finish when the process exits; refresh the audit while a job is running. Serving with `RSI_SERVE_BACKEND=swift` launches `swift deploy` in the background. Mock serving is an in-process OpenAI-compatible server, which is what `pytest` talks to.
 

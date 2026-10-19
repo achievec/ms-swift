@@ -2,6 +2,7 @@
 """OpenAI-compatible server used when serving is mocked."""
 import json
 import socket
+import subprocess
 import threading
 import time
 import urllib.error
@@ -144,6 +145,22 @@ def wait_http(url: str, timeout: float = 5.0):
     raise TimeoutError(f'服务未就绪：{url} ({last_error})')
 
 
+class _ProcessServer:
+
+    def __init__(self, process: subprocess.Popen):
+        self.process = process
+
+    def stop(self):
+        if self.process.poll() is not None:
+            return
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=5)
+
+
 class ServeManager:
 
     def __init__(self):
@@ -163,6 +180,12 @@ class ServeManager:
             raise
         with self._lock:
             self._handles[run_id] = server
+
+    def track(self, run_id: str, process: subprocess.Popen):
+        """Remember a real `swift deploy` process so stop can terminate it."""
+        self.stop(run_id)
+        with self._lock:
+            self._handles[run_id] = _ProcessServer(process)
 
     def stop(self, run_id: str):
         with self._lock:

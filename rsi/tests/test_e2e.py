@@ -1,5 +1,6 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 import ast
+import json
 import sqlite3
 import textwrap
 import time
@@ -12,8 +13,8 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    monkeypatch.delenv('RSI_BACKEND', raising=False)
-    monkeypatch.delenv('RSI_SERVE_BACKEND', raising=False)
+    monkeypatch.setenv('RSI_BACKEND', 'mock')
+    monkeypatch.setenv('RSI_SERVE_BACKEND', 'mock')
     from rsi.app import create_app
     home = tmp_path / 'rsi-home'
     app = create_app(home)
@@ -250,6 +251,41 @@ def test_swift_backend_subprocess(tmp_path, monkeypatch):
         checkpoint = view['forms']['sft']['result']['checkpoint']
         assert checkpoint.endswith('checkpoint-7')
         assert view['forms']['sft']['result']['mock'] is False
+
+
+def test_default_backend_calls_real_swift(tmp_path, monkeypatch):
+    monkeypatch.delenv('RSI_BACKEND', raising=False)
+    monkeypatch.delenv('RSI_SERVE_BACKEND', raising=False)
+    monkeypatch.delenv('RSI_SWIFT_BIN', raising=False)
+    from rsi.app import create_app
+    from rsi.backends import swift_launch
+    app = create_app(tmp_path / 'home')
+    with TestClient(app) as api:
+        health = api.get('/api/health').json()
+        assert health['backend'] == 'swift'
+        assert health['serve_backend'] == 'swift'
+        assert 'gpu' in health
+        run_id = api.post('/api/runs', json={
+            'name': 'real-swift',
+            'scenario': '确认默认后端会生成真实 swift eval 参数',
+            'base_model': 'Qwen/Qwen2.5-7B-Instruct',
+        }).json()['run']['id']
+        preview = api.post(f'/api/runs/{run_id}/stages/sft_eval/preview', json={'params': {}})
+        assert preview.status_code == 200, preview.text
+        command = preview.json()['command']
+        assert 'swift eval' in command
+        assert 'general_qa' in command
+        assert 'eval_dataset_args' in command
+        assert 'itops-heldout' not in command
+        params = preview.json()['params']
+        qa_dir = Path(params['eval_dataset_args']['general_qa']['local_path'])
+        assert (qa_dir / 'itops.jsonl').is_file()
+        first = json.loads((qa_dir / 'itops.jsonl').read_text(encoding='utf-8').splitlines()[0])
+        assert first['query'] and first['response']
+    argv, env = swift_launch(['swift', 'sft', '--model', 'Qwen/Qwen2.5-7B-Instruct'])
+    assert argv[1:4] == ['-m', 'swift.cli.main', 'sft']
+    assert env['CUDA_VISIBLE_DEVICES'] == '0'
+    assert str(Path(__file__).resolve().parents[2]) in env['PYTHONPATH'].split(':')
 
 
 def test_reward_plugin_parses():

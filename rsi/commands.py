@@ -54,6 +54,8 @@ def build_argv(stage: str, params: dict) -> list:
             continue
         if key == 'quant_method' and value in {'', 'none'}:
             continue
+        if key == 'quant_bits' and not params.get('quant_method'):
+            continue
         flag = f'--{key}'
         if isinstance(value, bool):
             argv.extend([flag, 'true' if value else 'false'])

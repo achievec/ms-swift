@@ -1,11 +1,15 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
-"""Training backends. MockBackend is the default. MsSwiftBackend shells out to swift."""
+"""Training backends. MsSwiftBackend is the default and shells out to this repo's swift CLI."""
 import os
 import re
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from rsi.commands import build_argv, format_shell
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class BackendError(Exception):
@@ -17,12 +21,51 @@ class BackendError(Exception):
 
 def parse_metrics(text: str) -> dict:
     metrics = {}
-    for match in re.finditer(r'["\'](accuracy|train_loss|eval_loss|reward|kl|token_acc)["\']\s*:\s*([0-9.]+)', text):
-        metrics[match.group(1)] = float(match.group(2))
+    for match in re.finditer(
+            r'["\'](accuracy|train_loss|eval_loss|reward|kl|token_acc|rouge-l-f)["\']\s*:\s*([0-9.]+)', text):
+        key = 'accuracy' if match.group(1) == 'rouge-l-f' else match.group(1)
+        metrics[key] = float(match.group(2))
+        if match.group(1) == 'rouge-l-f':
+            metrics['score_name'] = 'rouge-l-f'
     losses = re.findall(r'["\']loss["\']\s*:\s*([0-9.]+)', text)
     if losses and 'train_loss' not in metrics:
         metrics['train_loss'] = float(losses[-1])
     return metrics
+
+
+def detect_gpu() -> dict:
+    """Report NVIDIA devices without importing torch. Empty when this machine has no GPU."""
+    if not shutil.which('nvidia-smi'):
+        return {'available': False, 'devices': []}
+    try:
+        completed = subprocess.run(['nvidia-smi', '-L'], check=False, capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return {'available': False, 'devices': []}
+    devices = [line.strip() for line in (completed.stdout or '').splitlines() if line.strip().startswith('GPU')]
+    return {'available': bool(devices), 'devices': devices}
+
+
+def swift_launch(argv: list) -> tuple:
+    """Turn a logical `swift <cmd> ...` argv into a process that runs this checkout on GPU 0.
+
+    `RSI_SWIFT_BIN` replaces the launcher (used by tests). Otherwise the command is
+    `python -m swift.cli.main`, which is the same entry point as the `swift` script.
+    """
+    if not argv:
+        return [], os.environ.copy()
+    override = os.environ.get('RSI_SWIFT_BIN', '').strip()
+    if override:
+        command = [override, *argv[1:]]
+    else:
+        command = [sys.executable, '-m', 'swift.cli.main', *argv[1:]]
+    env = os.environ.copy()
+    env.setdefault('CUDA_VISIBLE_DEVICES', '0')
+    root = str(REPO_ROOT)
+    current = env.get('PYTHONPATH', '')
+    parts = [part for part in current.split(':') if part]
+    if root not in parts:
+        env['PYTHONPATH'] = ':'.join([root, *parts]) if parts else root
+    return command, env
 
 
 def find_checkpoint(output_dir: Path):
@@ -141,19 +184,17 @@ class MsSwiftBackend:
     name = 'swift'
 
     def execute(self, stage: str, params: dict, context: dict) -> dict:
-        argv = build_argv(stage, params)
-        if not argv:
+        logical = build_argv(stage, params)
+        if not logical:
             raise BackendError(f'{stage} 没有对应的 swift 子命令')
-        binary = os.environ.get('RSI_SWIFT_BIN', 'swift')
-        argv = [binary, *argv[1:]]
-        env = os.environ.copy()
-        env.setdefault('CUDA_VISIBLE_DEVICES', '0')
+        argv, env = swift_launch(logical)
         workdir = Path(context.get('workdir') or params.get('output_dir') or '.')
         workdir.mkdir(parents=True, exist_ok=True)
-        command = format_shell(argv)
+        command = format_shell(logical)
         log_path = workdir / 'swift.log'
         with log_path.open('w', encoding='utf-8') as log_file:
             log_file.write(command + '\n')
+            log_file.write('exec: ' + ' '.join(argv) + '\n')
             log_file.flush()
             completed = subprocess.run(argv, stdout=log_file, stderr=subprocess.STDOUT, env=env, check=False)
         logs = log_path.read_text(encoding='utf-8', errors='replace')
@@ -180,9 +221,9 @@ class MsSwiftBackend:
 
 
 def build_backend():
-    kind = os.environ.get('RSI_BACKEND', 'mock').strip().lower()
-    if kind in {'', 'mock'}:
+    kind = os.environ.get('RSI_BACKEND', 'swift').strip().lower() or 'swift'
+    if kind == 'mock':
         return MockBackend()
     if kind == 'swift':
         return MsSwiftBackend()
-    raise RuntimeError(f'未知 RSI_BACKEND={kind}，可选 mock 或 swift')
+    raise RuntimeError(f'未知 RSI_BACKEND={kind}，可选 swift 或 mock')

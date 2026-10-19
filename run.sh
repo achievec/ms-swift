@@ -289,6 +289,8 @@ cmd_start() {
     PYTHONUNBUFFERED=1 \
     WEBUI_PORT="${PORT}" \
     WEBUI_SERVER="${HOST}" \
+    RSI_BACKEND="${RSI_BACKEND:-swift}" \
+    RSI_SERVE_BACKEND="${RSI_SERVE_BACKEND:-${RSI_BACKEND:-swift}}" \
     nohup "${PY}" -m rsi >> "${LOG_FILE}" 2>&1 9>&- </dev/null &
   pid="$!"
   disown "${pid}" 2>/dev/null || true
