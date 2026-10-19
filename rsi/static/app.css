@@ -163,6 +163,7 @@ h3 { margin: 16px 0 8px; font-size: 14px; font-weight: 600; color: var(--accent-
 }
 
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
+.grid + .grid { margin-top: 12px; }
 .field { display: flex; flex-direction: column; gap: 4px; }
 .field span { font-size: 13px; font-weight: 600; color: #374151; }
 .field small { color: var(--muted); font-size: 12px; font-weight: 400; }
@@ -281,7 +282,9 @@ dialog {
 #confirm-name { margin: 8px 0 0; font-weight: 700; }
 #confirm-body { margin: 8px 0 0; }
 dialog::backdrop { background: rgb(17 24 39 / 0.4); }
-dialog label { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; font-weight: 600; color: #374151; }
+dialog label { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; font-weight: 600; color: #374151; }
+dialog .grid label { margin-bottom: 0; }
+dialog .row-actions { margin-top: 12px; }
 dialog label input, dialog label textarea { font-weight: 400; color: var(--ink); }
 
 @media (max-width: 900px) {
