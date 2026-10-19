@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from rsi.commands import build_argv, format_shell
+from rsi.logtail import normalize_log, run_and_tee
 from rsi.model_fetch import apply_runtime_env
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -189,14 +190,14 @@ class MsSwiftBackend:
         workdir.mkdir(parents=True, exist_ok=True)
         command = format_shell(logical)
         log_path = workdir / 'swift.log'
-        with log_path.open('w', encoding='utf-8') as log_file:
-            log_file.write(command + '\n')
-            log_file.write('exec: ' + ' '.join(argv) + '\n')
+        prefix = f'[{stage} {context.get("run_id") or "-"}]'
+        with log_path.open('wb') as log_file:
+            log_file.write((command + '\nexec: ' + ' '.join(argv) + '\n').encode('utf-8'))
             log_file.flush()
-            completed = subprocess.run(argv, stdout=log_file, stderr=subprocess.STDOUT, env=env, check=False)
-        logs = log_path.read_text(encoding='utf-8', errors='replace')
-        if completed.returncode != 0:
-            raise BackendError(f'swift 退出码 {completed.returncode}', logs=logs)
+            returncode = run_and_tee(argv, env, log_file, prefix)
+        logs = normalize_log(log_path.read_text(encoding='utf-8', errors='replace'))
+        if returncode != 0:
+            raise BackendError(f'swift 退出码 {returncode}', logs=logs)
         metrics = parse_metrics(logs)
         checkpoint = None
         if stage in {'sft', 'rl'}:

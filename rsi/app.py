@@ -81,6 +81,11 @@ def create_app(home: Path | None = None) -> FastAPI:
         view = pipeline.view(run_id)
         return {'steps': view['steps'], 'services': view['services'], 'checkpoints': view['checkpoints']}
 
+    @app.get('/api/runs/{run_id}/stages/{stage}/log')
+    def stage_log(run_id: str, stage: str, round: int | None = None, offset: int | None = None,
+                  limit: int | None = None):
+        return pipeline.stage_log(run_id, stage, round, offset, limit)
+
     @app.post('/api/datasets/validate')
     async def validate_dataset(request: Request):
         body = await request.json()

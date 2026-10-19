@@ -18,6 +18,7 @@ from rsi.backends import BackendError, swift_launch
 from rsi.commands import STAGE_COMMAND, build_argv, format_shell
 from rsi.dataset_validate import MAX_BYTES, validate_file, validate_public_id
 from rsi.flow import ACTION_LABELS, assemble_flow, blocked_message, decision_actions, stage_unlocked
+from rsi.logtail import read_log_window, slice_bytes
 from rsi.model_fetch import ModelFetcher, benchmark_dir, dataset_block_message, hf_cloneable, is_repo_id, model_source
 from rsi.schemas import STAGE_META, STAGE_ORDER, presets
 from rsi.webui_catalog import match_model
@@ -743,6 +744,73 @@ class Pipeline:
         merged, _side = self._prepare(run, rnd, stage, params or {}, strict=False)
         command = format_shell(build_argv(stage, merged)) if stage in STAGE_COMMAND else ''
         return {'params': merged, 'command': command}
+
+    def stage_log(self, run_id: str, stage: str, round_index=None, offset=None, limit=None) -> dict:
+        """Return a normalized slice of this stage's swift.log.
+
+        Omit ``offset`` to read the last 64KB (what the panel shows on open).
+        Pass ``offset`` to read forward from that byte. Carriage returns and ANSI
+        are collapsed so a tqdm bar is one line. The path must stay inside this run.
+        """
+        if stage not in STAGE_ORDER:
+            raise PipelineError('未知阶段')
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', run_id or ''):
+            raise PipelineError('实验不存在', 404)
+        run = self._require_run(run_id)
+        if round_index is None:
+            round_index = run['round_index']
+        else:
+            round_index = int(round_index)
+        if round_index < 1:
+            raise PipelineError('轮次不存在', 404)
+        rnd = self.store.get_round(run_id, round_index)
+        if not rnd:
+            raise PipelineError('轮次不存在', 404)
+        step = self.store.latest_active_steps(run_id, round_index).get(stage)
+        path = self._stage_log_path(run_id, round_index, stage, step)
+        window = read_log_window(path, offset, limit)
+        if window['size'] == 0 and step and step.get('logs') and offset in (None, 0):
+            window = slice_bytes((step['logs'] or '').encode('utf-8'), offset, limit)
+        status = step['status'] if step else 'locked'
+        return {
+            'stage': stage,
+            'round': round_index,
+            'status': status,
+            'done': status not in {'running', 'syncing'},
+            'started_at': step.get('started_at') if step else None,
+            'ended_at': step.get('ended_at') if step else None,
+            **window,
+        }
+
+    def _stage_log_path(self, run_id: str, round_index: int, stage: str, step) -> Path | None:
+        params = _loads(step['params_json']) if step else {}
+        base = self.home / 'runs' / run_id / f'round_{int(round_index)}' / stage
+        candidates = []
+        if params.get('output_dir'):
+            candidates.append(Path(str(params['output_dir'])) / 'swift.log')
+        if params.get('eval_output_dir'):
+            candidates.append(Path(str(params['eval_output_dir'])) / 'swift.log')
+        candidates.append(base / 'swift.log')
+        candidates.append(base / 'eval_output' / 'swift.log')
+        owned = [path for path in (self._owned_log(run_id, item) for item in candidates) if path]
+        for path in owned:
+            if path.is_file():
+                return path
+        return owned[0] if owned else None
+
+    def _owned_log(self, run_id: str, candidate: Path | None) -> Path | None:
+        if candidate is None:
+            return None
+        root = (self.home / 'runs' / run_id).resolve()
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            return None
+        if resolved.name != 'swift.log':
+            return None
+        if resolved != root and root not in resolved.parents:
+            return None
+        return resolved
 
     def run_stage(self, run_id: str, stage: str, params: dict) -> dict:
         run = self._require_run(run_id)

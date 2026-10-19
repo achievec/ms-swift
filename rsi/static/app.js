@@ -8,6 +8,8 @@ const state = {
   expanded: null,
   chat: [],
   busy: false,
+  liveTimer: null,
+  liveBusy: false,
 };
 
 function visibleResult(result) {
@@ -76,6 +78,27 @@ function statusText(status) {
     superseded: '已作废',
     syncing: '同步中',
   }[status] || status;
+}
+
+function formatElapsed(startedAt) {
+  const start = Date.parse(startedAt || '');
+  if (!startedAt || Number.isNaN(start)) return '';
+  let secs = Math.max(0, Math.floor((Date.now() - start) / 1000));
+  const hours = Math.floor(secs / 3600);
+  secs -= hours * 3600;
+  const mins = Math.floor(secs / 60);
+  const rem = secs - mins * 60;
+  const clock = `${String(mins).padStart(2, '0')}:${String(rem).padStart(2, '0')}`;
+  return hours > 0 ? `${hours}:${clock}` : clock;
+}
+
+function elapsedLabel(startedAt) {
+  const clock = formatElapsed(startedAt);
+  return clock ? `运行中 · ${clock}` : '运行中';
+}
+
+function runningMarkup(startedAt) {
+  return `<i class="spin" aria-hidden="true"></i><span data-started="${escapeHtml(startedAt || '')}">${escapeHtml(elapsedLabel(startedAt))}</span>`;
 }
 
 async function refreshRuns(selectId) {
@@ -342,11 +365,15 @@ function renderStage(stage) {
     </div>` : '';
   const validate = stage === 'data' ? '<button type="button" class="ghost" data-action="validate">校验格式</button>' : '';
   const result = form.result ? `<h3>结果</h3><pre class="log">${escapeHtml(JSON.stringify(visibleResult(form.result), null, 2))}</pre>` : '';
-  const logs = form.logs ? `<h3>日志</h3><pre class="log">${escapeHtml(form.logs)}</pre>` : '';
+  const live = form.status === 'running';
+  const logs = (form.logs || live) ? `<h3>日志</h3><pre class="log live-log" data-pinned="1"${live ? ` data-live-log="1" data-live-stage="${escapeHtml(stage)}" data-live-round="${view.round.round_index}"` : ''}>${escapeHtml(form.logs || '')}</pre>` : '';
   const command = form.command ? `<h3>命令</h3><pre class="command">${escapeHtml(form.command)}</pre>` : '';
+  const kicker = live
+    ? `${escapeHtml(meta.label)} · ${runningMarkup(form.started_at)}`
+    : `${escapeHtml(meta.label)} · ${escapeHtml(statusText(form.status))}`;
   return `
     <section class="panel">
-      <p class="kicker">${escapeHtml(meta.label)} · ${escapeHtml(statusText(form.status))}</p>
+      <p class="kicker">${kicker}</p>
       <h2>${escapeHtml(meta.summary)}</h2>
       ${view.mutable ? '' : '<p class="muted">这是历史轮次，只能查看。</p>'}
       ${promote}
@@ -421,14 +448,19 @@ function renderGraph() {
       ? `<text class="flow-edge-label ${edge.live ? 'live' : ''}" x="${geom.x}" y="${geom.y}" text-anchor="${geom.anchor}">${escapeHtml(edge.label)}</text>`
       : '';
     const taken = edge.taken ? ' taken' : '';
-    return `<path class="flow-edge ${edge.live ? 'live' : ''}${taken}" d="${geom.d}" marker-end="${marker}"/>${label}`;
+    const flowing = to.status === 'running' ? ' flowing' : '';
+    return `<path class="flow-edge ${edge.live ? 'live' : ''}${taken}${flowing}" d="${geom.d}" marker-end="${marker}"/>${label}`;
   }).join('');
   const nodes = flow.nodes.map((node) => {
-    const caption = node.verdict || statusText(node.status);
+    const form = (state.view.forms || {})[node.id] || {};
+    const caption = node.status === 'running'
+      ? runningMarkup(form.started_at)
+      : escapeHtml(node.verdict || statusText(node.status));
     const disabled = node.clickable ? '' : 'disabled';
     const selected = flowNodeSelected(node) ? 'selected' : '';
     const minor = node.minor ? 'minor' : '';
-    return `<button type="button" class="flow-node ${node.status} ${selected} ${minor}" data-stage="${node.id}" ${disabled} style="left:${node.x}px;top:${node.y}px;width:${node.w}px;height:${node.h}px"><b>${escapeHtml(node.label)}</b><small>${escapeHtml(caption)}</small></button>`;
+    const busy = node.status === 'running' ? ' aria-busy="true"' : '';
+    return `<button type="button" class="flow-node ${node.status} ${selected} ${minor}" data-stage="${node.id}" ${disabled}${busy} style="left:${node.x}px;top:${node.y}px;width:${node.w}px;height:${node.h}px"><b>${escapeHtml(node.label)}</b><small>${caption}</small></button>`;
   }).join('');
   const actions = (flow.actions || []).map((action) => `<button type="button" class="${action.danger ? 'danger' : 'primary'}" data-decision="${action.id}">${escapeHtml(action.label)}</button>`).join('');
   const actionBar = actions
@@ -467,7 +499,7 @@ function renderAudit() {
       <p><b>开始</b> ${escapeHtml(formatShanghai(step.started_at))} · <b>结束</b> ${escapeHtml(formatShanghai(step.ended_at || ''))}</p>
       <h3>参数</h3><pre class="log">${escapeHtml(JSON.stringify(step.params, null, 2))}</pre>
       <h3>结果</h3><pre class="log">${escapeHtml(JSON.stringify(visibleResult(step.result), null, 2))}</pre>
-      <h3>日志</h3><pre class="log">${escapeHtml(step.logs || '')}</pre>
+      <h3>日志</h3><pre class="log live-log" data-pinned="1"${step.status === 'running' ? ` data-live-log="1" data-live-stage="${escapeHtml(step.stage)}" data-live-round="${step.round_index}"` : ''}>${escapeHtml(step.logs || '')}</pre>
       ${step.command ? `<h3>命令</h3><pre class="command">${escapeHtml(step.command)}</pre>` : ''}
     </td></tr>` : '';
     return `<tr data-step="${step.id}">
@@ -525,6 +557,7 @@ function render() {
   if (!state.view) {
     main.innerHTML = `<div class="empty"><h1>从一轮可点击的后训练闭环开始</h1>
       <p>从左边新建实验开始。</p></div>`;
+    syncLive();
     return;
   }
   const view = state.view;
@@ -544,6 +577,7 @@ function render() {
     </div>
     ${body}`;
   syncSource();
+  syncLive();
 }
 
 async function runCurrent() {
@@ -966,6 +1000,85 @@ document.addEventListener('focusout', (event) => {
     }
   }, 120);
 });
+
+function syncLive() {
+  const needs = document.querySelector('[data-started], [data-live-log]');
+  if (!needs) {
+    if (state.liveTimer) {
+      clearInterval(state.liveTimer);
+      state.liveTimer = null;
+    }
+    return;
+  }
+  if (!state.liveTimer) state.liveTimer = setInterval(pollLive, 1000);
+  if (!state.liveBusy) pollLive();
+}
+
+function paintElapsed() {
+  document.querySelectorAll('[data-started]').forEach((el) => {
+    const label = elapsedLabel(el.dataset.started);
+    if (el.textContent !== label) el.textContent = label;
+  });
+}
+
+function paintLog(el, text) {
+  const next = text || '';
+  if (el.textContent === next) {
+    if (el.dataset.pinned !== '0') el.scrollTop = el.scrollHeight;
+    return;
+  }
+  const pinned = el.dataset.pinned !== '0';
+  el.textContent = next;
+  if (pinned) el.scrollTop = el.scrollHeight;
+}
+
+async function pollLive() {
+  paintElapsed();
+  if (state.liveBusy || !state.view) return;
+  const panels = [...document.querySelectorAll('[data-live-log]')];
+  if (!panels.length) return;
+  state.liveBusy = true;
+  try {
+    const groups = new Map();
+    panels.forEach((el) => {
+      const key = `${el.dataset.liveStage}|${el.dataset.liveRound || ''}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(el);
+    });
+    for (const [key, els] of groups) {
+      const [stage, round] = key.split('|');
+      const query = new URLSearchParams();
+      if (round) query.set('round', round);
+      let payload;
+      try {
+        payload = await api(`/api/runs/${state.view.run.id}/stages/${encodeURIComponent(stage)}/log?${query}`);
+      } catch (_err) {
+        continue;
+      }
+      els.forEach((el) => {
+        if (el.isConnected) paintLog(el, payload.text);
+      });
+      const current = ((state.view.forms || {})[stage] || {}).status;
+      if (payload.done && (current === 'running' || current === 'syncing')) {
+        const view = await api(`/api/runs/${state.view.run.id}?round=${state.view.round.round_index}`);
+        state.view = view;
+        state.round = view.round.round_index;
+        toast(`${labelOf(stage)} ${statusText(payload.status)}`);
+        render();
+        return;
+      }
+    }
+  } finally {
+    state.liveBusy = false;
+  }
+}
+
+document.addEventListener('scroll', (event) => {
+  const el = event.target;
+  if (!el || !el.classList || !el.classList.contains('live-log')) return;
+  const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+  el.dataset.pinned = gap < 28 ? '1' : '0';
+}, true);
 
 async function boot() {
   state.schema = await api('/api/schema');
