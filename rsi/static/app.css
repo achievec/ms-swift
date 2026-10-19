@@ -275,7 +275,8 @@ dialog {
   box-shadow: none;
   color: #1f2937;
 }
-.combo-list button:hover { background: var(--accent-soft); color: var(--accent-ink); }
+.combo-list button:hover,
+.combo-list button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent-ink); }
 .model-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 #confirm-dialog { width: min(440px, calc(100vw - 24px)); }
 #confirm-dialog .row-actions { justify-content: flex-end; margin-top: 16px; }

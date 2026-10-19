@@ -282,6 +282,15 @@ def test_default_backend_calls_real_swift(tmp_path, monkeypatch):
         assert (qa_dir / 'itops.jsonl').is_file()
         first = json.loads((qa_dir / 'itops.jsonl').read_text(encoding='utf-8').splitlines()[0])
         assert first['query'] and first['response']
+        kept = api.post(f'/api/runs/{run_id}/stages/sft_eval/preview', json={
+            'params': {'eval_backend': 'OpenCompass', 'eval_dataset': 'gsm8k ceval'},
+        })
+        assert kept.status_code == 200, kept.text
+        kept_params = kept.json()['params']
+        assert kept_params['eval_dataset'] == 'gsm8k ceval'
+        assert 'eval_dataset_args' not in kept_params
+        assert '--eval_dataset gsm8k ceval' in kept.json()['command'] or (
+            'gsm8k' in kept.json()['command'] and 'ceval' in kept.json()['command'])
     argv, env = swift_launch(['swift', 'sft', '--model', 'Qwen/Qwen2.5-7B-Instruct'])
     assert argv[1:4] == ['-m', 'swift.cli.main', 'sft']
     assert env['CUDA_VISIBLE_DEVICES'] == '0'

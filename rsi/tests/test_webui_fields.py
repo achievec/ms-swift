@@ -1,5 +1,35 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
+import re
+from pathlib import Path
+
 from fastapi.testclient import TestClient
+
+DOC_MARKERS = (
+    ('Native', '1. Native', '2. OpenCompass'),
+    ('OpenCompass', '2. OpenCompass', '3. VLMEvalKit'),
+    ('VLMEvalKit', '3. VLMEvalKit', '## 环境准备'),
+)
+
+
+def _documented_eval_datasets():
+    text = Path(__file__).resolve().parents[2].joinpath('docs/source/Instruction/Evaluation.md').read_text(encoding='utf-8')
+    found = {}
+    for name, start, end in DOC_MARKERS:
+        chunk = text[text.find(start):text.find(end)]
+        found[name] = re.findall(r"'([^']+)'", chunk)
+    return found
+
+
+def test_eval_datasets_are_the_documented_lists():
+    from rsi import webui_catalog
+    source = Path(webui_catalog.__file__).read_text(encoding='utf-8')
+    assert 'evalscope' not in source
+    listed = webui_catalog.eval_datasets_by_backend()
+    assert listed == _documented_eval_datasets()
+    assert listed['Native'] == webui_catalog.eval_dataset_choices()
+    assert 'itops-heldout' not in listed['Native']
+    assert 'general_qa' not in listed['OpenCompass']
+    assert 'Video-MME' == listed['VLMEvalKit'][-1]
 
 
 def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
@@ -23,8 +53,11 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         assert 'qwen2_5' in catalog['templates']
         assert 'AI-ModelScope/alpaca-gpt4-data-zh' in catalog['datasets']
         assert 'modelscope/gsm8k' in catalog['datasets']
-        assert 'general_qa' in catalog['eval_datasets']
-        assert 'gsm8k' in catalog['eval_datasets']
+        assert catalog['eval_datasets'] == catalog['eval_datasets_by_backend']['Native']
+        assert catalog['eval_datasets_by_backend']['OpenCompass'][0] == 'obqa'
+        assert 'AX_b' in catalog['eval_datasets_by_backend']['OpenCompass']
+        assert catalog['eval_datasets_by_backend']['VLMEvalKit'][0] == 'COCO_VAL'
+        assert 'MMBench-Video' in catalog['eval_datasets_by_backend']['VLMEvalKit']
 
         def by_key(stage):
             return {field['key']: field for field in schema['fields'][stage]}
@@ -47,6 +80,12 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         assert data['dataset']['type'] == 'combo'
         assert data['dataset']['choices_from'] == 'datasets'
         assert data['dataset']['label'] == '数据集名称(--dataset)'
+
+        sft_eval = by_key('sft_eval')
+        assert sft_eval['eval_backend']['choices'] == ['Native', 'OpenCompass', 'VLMEvalKit']
+        assert sft_eval['eval_dataset']['type'] == 'multicombo'
+        assert sft_eval['eval_dataset']['choices_from'] == 'eval_datasets_by_backend'
+        assert by_key('rl_eval')['eval_dataset']['type'] == 'multicombo'
 
         rl = by_key('rl')
         assert rl['reward_funcs']['type'] == 'multiselect'

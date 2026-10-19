@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from rsi.webui_catalog import eval_dataset_choices, load_catalog
+from rsi.webui_catalog import eval_datasets_by_backend, load_catalog
 
 CONFIG_PATH = Path(__file__).resolve().parent / 'configs' / 'a100_80g.yaml'
 
@@ -212,8 +212,8 @@ FIELDS = {
         *_model_block(),
         _field('eval_backend', '评测后端(--eval_backend)', '--eval_backend', 'select', '评测',
                ['Native', 'OpenCompass', 'VLMEvalKit']),
-        _field('eval_dataset', '评测数据集(--eval_dataset)', '--eval_dataset', 'combo', '评测',
-               choices_from='eval_datasets'),
+        _field('eval_dataset', '评测数据集(--eval_dataset)', '--eval_dataset', 'multicombo', '评测',
+               choices_from='eval_datasets_by_backend'),
         _field('eval_limit', '每个数据集取样数', '--eval_limit', 'number', '评测', step='1'),
         _field('custom_eval_config', '自定义评测配置', '--extra_eval_args', 'text', '评测'),
         _field('temperature', '温度', '--temperature', 'number', '生成', step='0.1'),
@@ -286,8 +286,8 @@ FIELDS = {
         *_model_block(),
         _field('eval_backend', '评测后端(--eval_backend)', '--eval_backend', 'select', '评测',
                ['Native', 'OpenCompass', 'VLMEvalKit']),
-        _field('eval_dataset', '评测数据集(--eval_dataset)', '--eval_dataset', 'combo', '评测',
-               choices_from='eval_datasets'),
+        _field('eval_dataset', '评测数据集(--eval_dataset)', '--eval_dataset', 'multicombo', '评测',
+               choices_from='eval_datasets_by_backend'),
         _field('eval_limit', '每个数据集取样数', '--eval_limit', 'number', '评测', step='1'),
         _field('custom_eval_config', '自定义评测配置', '--extra_eval_args', 'text', '评测'),
         _field('temperature', '温度', '--temperature', 'number', '生成', step='0.1'),
@@ -358,7 +358,8 @@ def public_schema() -> dict:
             'model_types': sorted(catalog['model_types']),
             'templates': sorted(catalog['templates']),
             'datasets': datasets,
-            'eval_datasets': sorted(set(eval_dataset_choices())),
+            'eval_datasets': eval_datasets_by_backend()['Native'],
+            'eval_datasets_by_backend': eval_datasets_by_backend(),
             'by_model': catalog['by_model'],
         },
     }

@@ -213,9 +213,10 @@ function renderField(field, values) {
     const multi = multiple ? 'multiple data-multi size="5"' : '';
     return `<label class="field" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><select data-field="${field.key}" ${multi}>${options}</select></label>`;
   }
-  if (field.type === 'combo') {
+  if (field.type === 'combo' || field.type === 'multicombo') {
     const source = field.choices_from ? `data-choices-from="${escapeHtml(field.choices_from)}"` : '';
-    return `<label class="field combo" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><div class="combo-anchor"><input type="text" data-field="${field.key}" data-combo="1" ${source} value="${escapeHtml(value)}" autocomplete="off" /><div class="combo-list" hidden></div></div></label>`;
+    const multi = field.type === 'multicombo' ? 'data-multi="1"' : '';
+    return `<label class="field combo" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><div class="combo-anchor"><input type="text" data-field="${field.key}" data-combo="1" ${multi} ${source} value="${escapeHtml(value)}" autocomplete="off" /><div class="combo-list" hidden></div></div></label>`;
   }
   if (field.type === 'textarea') {
     return `<label class="field" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><textarea data-field="${field.key}" rows="4">${escapeHtml(value)}</textarea></label>`;
@@ -644,6 +645,13 @@ document.addEventListener('click', (event) => {
 
 document.addEventListener('change', async (event) => {
   if (event.target.dataset && event.target.dataset.field === 'source') syncSource();
+  if (event.target.dataset && event.target.dataset.field === 'eval_backend') {
+    const scope = event.target.closest('section, form') || document;
+    scope.querySelectorAll('[data-choices-from="eval_datasets_by_backend"]').forEach((input) => {
+      const list = input.parentElement.querySelector('.combo-list');
+      if (list && !list.hidden) showCombo(input, true);
+    });
+  }
   if (event.target.id === 'file-input' && event.target.files[0]) {
     try {
       await uploadFile(event.target.files[0]);
@@ -675,32 +683,65 @@ document.getElementById('create-form').addEventListener('submit', async (event) 
   }
 });
 
-function catalogNames(source) {
+function catalogNames(source, input) {
+  if (source === 'eval_datasets_by_backend') {
+    const scope = (input && input.closest('section, form')) || document;
+    const backend = scope.querySelector('[data-field="eval_backend"]');
+    const key = backend && backend.value ? backend.value : 'Native';
+    const table = state.schema && state.schema.catalog ? state.schema.catalog.eval_datasets_by_backend || {} : {};
+    return table[key] || [];
+  }
   const raw = source && state.schema && state.schema.catalog ? state.schema.catalog[source] : [];
   return raw || [];
+}
+
+function comboFilterText(input) {
+  if (input.dataset.multi !== '1') return input.value.trim();
+  if (/\s$/.test(input.value)) return '';
+  const parts = input.value.trim().split(/\s+/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : '';
+}
+
+function toggleMultiValue(input, value) {
+  const raw = input.value;
+  const trailingSpace = /\s$/.test(raw);
+  let tokens = raw.trim().split(/\s+/).filter(Boolean);
+  if (!trailingSpace && tokens.length) {
+    const last = tokens[tokens.length - 1];
+    if (last !== value && value.toLowerCase().includes(last.toLowerCase())) tokens.pop();
+  }
+  if (tokens.includes(value)) tokens = tokens.filter((token) => token !== value);
+  else tokens.push(value);
+  return tokens.join(' ');
 }
 
 function showCombo(input, browse) {
   const list = input.parentElement.querySelector('.combo-list');
   if (!list) return;
-  const query = input.value.trim().toLowerCase();
-  const all = catalogNames(input.dataset.choicesFrom).map((item) => String(item));
-  const exact = query ? all.findIndex((item) => item.toLowerCase() === query) : -1;
+  const multi = input.dataset.multi === '1';
+  const query = (browse && multi ? '' : (multi ? comboFilterText(input) : input.value.trim())).toLowerCase();
+  const all = catalogNames(input.dataset.choicesFrom, input).map((item) => String(item));
+  const cap = input.dataset.choicesFrom === 'eval_datasets_by_backend' ? all.length : 40;
+  const exact = !multi && query ? all.findIndex((item) => item.toLowerCase() === query) : -1;
   let shown;
   if (browse && exact >= 0) {
     const start = Math.max(0, exact - 8);
-    shown = all.slice(start, start + 40);
+    shown = all.slice(start, start + cap);
   } else if (!query) {
-    shown = all.slice(0, 40);
+    shown = all.slice(0, cap);
   } else {
-    shown = all.filter((item) => item.toLowerCase().includes(query)).slice(0, 40);
+    shown = all.filter((item) => item.toLowerCase().includes(query)).slice(0, cap);
   }
   if (!shown.length) {
     list.hidden = true;
     list.innerHTML = '';
     return;
   }
-  list.innerHTML = shown.map((item) => `<button type="button" data-combo-value="${escapeHtml(item)}">${escapeHtml(item)}</button>`).join('');
+  const selected = new Set(multi ? input.value.trim().split(/\s+/).filter(Boolean) : []);
+  list.innerHTML = shown.map((item) => {
+    const pressed = selected.has(item) ? ' aria-pressed="true"' : '';
+    return `<button type="button" data-combo-value="${escapeHtml(item)}"${pressed}>${escapeHtml(item)}</button>`;
+  }).join('');
   list.hidden = false;
 }
 
@@ -748,8 +789,13 @@ document.addEventListener('mousedown', (event) => {
   if (!option) return;
   event.preventDefault();
   const input = option.closest('.combo').querySelector('input');
-  input.value = option.dataset.comboValue;
-  option.closest('.combo-list').hidden = true;
+  if (input.dataset.multi === '1') {
+    input.value = toggleMultiValue(input, option.dataset.comboValue);
+    showCombo(input, true);
+  } else {
+    input.value = option.dataset.comboValue;
+    option.closest('.combo-list').hidden = true;
+  }
   if (input.dataset.field === 'model' || input.name === 'base_model') {
     applyModelMatch(input.closest('dialog, section, form') || document, input.value.trim());
   }

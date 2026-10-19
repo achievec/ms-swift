@@ -234,23 +234,156 @@ def match_model(model_id: str) -> dict | None:
     return load_catalog()['by_model'].get(model_id.strip())
 
 
-def eval_dataset_choices() -> list:
-    """Native eval dataset names. Prefer EvalScope's registry; otherwise the documented list."""
-    try:
-        from evalscope.api.registry import BENCHMARK_REGISTRY
-        names = sorted(BENCHMARK_REGISTRY)
-        if names:
-            return names
-    except Exception:
-        pass
-    doc = REPO_ROOT / 'docs' / 'source_en' / 'Instruction' / 'Evaluation.md'
-    if not doc.is_file():
-        return ['general_qa']
-    text = doc.read_text(encoding='utf-8')
-    start = text.find('1. Native')
-    end = text.find('2. OpenCompass', start)
-    chunk = text[start:end if end > start else start + 800]
-    names = re.findall(r"'([A-Za-z0-9_]+)'", chunk)
-    if 'general_qa' not in names:
-        names.append('general_qa')
-    return names
+# Documented in docs/source/Instruction/Evaluation.md. Fixed here so the form
+# does not import EvalScope or need a network call to discover dataset names.
+EVAL_DATASETS_BY_BACKEND = {
+    'Native': (
+        'arc',
+        'bbh',
+        'ceval',
+        'cmmlu',
+        'competition_math',
+        'general_qa',
+        'gpqa',
+        'gsm8k',
+        'hellaswag',
+        'humaneval',
+        'ifeval',
+        'iquiz',
+        'mmlu',
+        'mmlu_pro',
+        'race',
+        'trivia_qa',
+        'truthful_qa',
+    ),
+    'OpenCompass': (
+        'obqa',
+        'cmb',
+        'AX_b',
+        'siqa',
+        'nq',
+        'mbpp',
+        'winogrande',
+        'mmlu',
+        'BoolQ',
+        'cluewsc',
+        'ocnli',
+        'lambada',
+        'CMRC',
+        'ceval',
+        'csl',
+        'cmnli',
+        'bbh',
+        'ReCoRD',
+        'math',
+        'humaneval',
+        'eprstmt',
+        'WSC',
+        'storycloze',
+        'MultiRC',
+        'RTE',
+        'chid',
+        'gsm8k',
+        'AX_g',
+        'bustm',
+        'afqmc',
+        'piqa',
+        'lcsts',
+        'strategyqa',
+        'Xsum',
+        'agieval',
+        'ocnli_fc',
+        'C3',
+        'tnews',
+        'race',
+        'triviaqa',
+        'CB',
+        'WiC',
+        'hellaswag',
+        'summedits',
+        'GaokaoBench',
+        'ARC_e',
+        'COPA',
+        'ARC_c',
+        'DRCD',
+    ),
+    'VLMEvalKit': (
+        'COCO_VAL',
+        'MME',
+        'HallusionBench',
+        'POPE',
+        'MMBench_DEV_EN',
+        'MMBench_TEST_EN',
+        'MMBench_DEV_CN',
+        'MMBench_TEST_CN',
+        'MMBench',
+        'MMBench_CN',
+        'MMBench_DEV_EN_V11',
+        'MMBench_TEST_EN_V11',
+        'MMBench_DEV_CN_V11',
+        'MMBench_TEST_CN_V11',
+        'MMBench_V11',
+        'MMBench_CN_V11',
+        'SEEDBench_IMG',
+        'SEEDBench2',
+        'SEEDBench2_Plus',
+        'ScienceQA_VAL',
+        'ScienceQA_TEST',
+        'MMT-Bench_ALL_MI',
+        'MMT-Bench_ALL',
+        'MMT-Bench_VAL_MI',
+        'MMT-Bench_VAL',
+        'AesBench_VAL',
+        'AesBench_TEST',
+        'CCBench',
+        'AI2D_TEST',
+        'MMStar',
+        'RealWorldQA',
+        'MLLMGuard_DS',
+        'BLINK',
+        'OCRVQA_TEST',
+        'OCRVQA_TESTCORE',
+        'TextVQA_VAL',
+        'DocVQA_VAL',
+        'DocVQA_TEST',
+        'InfoVQA_VAL',
+        'InfoVQA_TEST',
+        'ChartQA_TEST',
+        'MathVision',
+        'MathVision_MINI',
+        'MMMU_DEV_VAL',
+        'MMMU_TEST',
+        'OCRBench',
+        'MathVista_MINI',
+        'LLaVABench',
+        'MMVet',
+        'MTVQA_TEST',
+        'MMLongBench_DOC',
+        'VCR_EN_EASY_500',
+        'VCR_EN_EASY_100',
+        'VCR_EN_EASY_ALL',
+        'VCR_EN_HARD_500',
+        'VCR_EN_HARD_100',
+        'VCR_EN_HARD_ALL',
+        'VCR_ZH_EASY_500',
+        'VCR_ZH_EASY_100',
+        'VCR_ZH_EASY_ALL',
+        'VCR_ZH_HARD_500',
+        'VCR_ZH_HARD_100',
+        'VCR_ZH_HARD_ALL',
+        'MMDU',
+        'MMBench-Video',
+        'Video-MME',
+    ),
+}
+
+
+def eval_datasets_by_backend() -> dict:
+    return {backend: list(names) for backend, names in EVAL_DATASETS_BY_BACKEND.items()}
+
+
+def eval_dataset_choices(backend: str = 'Native') -> list:
+    names = EVAL_DATASETS_BY_BACKEND.get(backend)
+    if names is None:
+        names = EVAL_DATASETS_BY_BACKEND['Native']
+    return list(names)
