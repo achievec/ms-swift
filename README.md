@@ -256,6 +256,15 @@ SWIFT_UI_LANG=en swift web-ui
 
 ![image.png](./docs/resources/web-ui-en.jpg)
 
+### RSI closed-loop UI
+
+A click-through recursive self-improvement loop (data → SFT → eval → online RL → eval → promote → next round → OpenAI-compatible serve) lives in [`rsi/`](rsi/README.md). It reuses ms-swift parameter names and defaults to a mock backend so the full loop runs without a GPU. Set `RSI_BACKEND=swift` on a machine with an A100 to call the real `swift` CLIs.
+
+```shell
+pip install -r rsi/requirements.txt
+python -m rsi
+```
+
 ### Using Python
 
 ms-swift also supports training and inference using Python. Below is pseudocode for training and inference. For more details, you can refer to [here](https://github.com/modelscope/ms-swift/blob/main/examples/notebook/qwen2_5-self-cognition/self-cognition-sft.ipynb).

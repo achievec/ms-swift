@@ -140,7 +140,7 @@ if __name__ == '__main__':
         author_email='contact@modelscope.cn',
         keywords=['transformers', 'LLM', 'lora', 'megatron', 'grpo', 'sft'],
         url='https://github.com/modelscope/ms-swift',
-        packages=find_packages(exclude=('tests', 'tests.*')),
+        packages=find_packages(exclude=('tests', 'tests.*', 'rsi', 'rsi.*')),
         include_package_data=True,
         package_data={'': ['utils/*', 'dataset/data/*.*', 'config/*.json', 'loss_scale/config/*.json']},
         python_requires='>=3.9.0',

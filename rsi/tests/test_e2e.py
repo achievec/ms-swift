@@ -1,0 +1,273 @@
+# Copyright (c) ModelScope Contributors. All rights reserved.
+import ast
+import sqlite3
+import textwrap
+import time
+from pathlib import Path
+
+import httpx
+import pytest
+from fastapi.testclient import TestClient
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    monkeypatch.delenv('RSI_BACKEND', raising=False)
+    monkeypatch.delenv('RSI_SERVE_BACKEND', raising=False)
+    from rsi.app import create_app
+    home = tmp_path / 'rsi-home'
+    app = create_app(home)
+    with TestClient(app) as test_client:
+        yield test_client, home
+
+
+def _run(client, run_id, stage, params=None):
+    response = client.post(f'/api/runs/{run_id}/stages/{stage}/run', json={'params': params or {}})
+    return response
+
+
+def test_happy_path_records_audit_and_serves(client, monkeypatch):
+    def explode(*_args, **_kwargs):
+        raise AssertionError('mock mode must not spawn a process')
+
+    monkeypatch.setattr('subprocess.run', explode)
+    monkeypatch.setattr('subprocess.Popen', explode)
+    api, home = client
+    health = api.get('/api/health')
+    assert health.status_code == 200
+    assert health.json()['backend'] == 'mock'
+    assert 'A100' in health.json()['hardware']['gpu']
+
+    created = api.post('/api/runs', json={
+        'name': 'IT 运维助手',
+        'scenario': '企业内部 IT 工单分诊与处理建议',
+        'base_model': 'Qwen/Qwen2.5-7B-Instruct',
+    })
+    assert created.status_code == 200, created.text
+    run_id = created.json()['run']['id']
+
+    skipped = _run(api, run_id, 'sft', {})
+    assert skipped.status_code == 400
+    assert '数据' in skipped.json()['detail']
+
+    data = _run(api, run_id, 'data', {'source': 'bundled', 'bundled': 'itops_mix'})
+    assert data.status_code == 200, data.text
+    validation = data.json()['result']['validation']
+    assert validation['ok'] is True
+    assert validation['num_rows'] == 6
+
+    sft = _run(api, run_id, 'sft', {'extra_yaml': 'learning_rate: 2e-5\n'})
+    assert sft.status_code == 200, sft.text
+    sft_body = sft.json()
+    assert 'swift sft' in sft_body['command']
+    assert '2e-5' in sft_body['command']
+    assert 'itops_mix.jsonl' in sft_body['command']
+    assert sft_body['result']['mock'] is True
+    sft_ckpt = sft_body['result']['checkpoint']
+    assert sft_ckpt.endswith('checkpoint-final')
+    assert json_file(Path(sft_ckpt) / 'args.json')['rsi_mock'] is True
+
+    sft_eval = _run(api, run_id, 'sft_eval', {})
+    assert sft_eval.status_code == 200, sft_eval.text
+    assert 'swift eval' in sft_eval.json()['command']
+    sft_acc = sft_eval.json()['result']['metrics']['accuracy']
+    assert sft_eval.json()['result']['metrics']['eval_rows'] == 4
+
+    rl = _run(api, run_id, 'rl', {})
+    assert rl.status_code == 200, rl.text
+    rl_command = rl.json()['command']
+    assert 'swift rlhf' in rl_command
+    assert 'grpo' in rl_command
+    assert 'colocate' in rl_command
+    assert 'itops_checklist' in rl_command
+    assert 'itops_reward.py' in rl_command
+    assert sft_ckpt in rl_command
+
+    rl_eval = _run(api, run_id, 'rl_eval', {})
+    assert rl_eval.status_code == 200, rl_eval.text
+    rl_acc = rl_eval.json()['result']['metrics']['accuracy']
+    assert rl_acc > sft_acc
+
+    rejected = _run(api, run_id, 'promote', {'choice': 'nope'})
+    assert rejected.status_code == 400
+
+    view = api.get(f'/api/runs/{run_id}').json()
+    assert view['recommendation'] == 'rl'
+    promoted = next(item['path'] for item in view['candidates'] if item['kind'] == 'rl')
+
+    promote = _run(api, run_id, 'promote', {'choice': 'rl', 'reason': 'RL accuracy 更高'})
+    assert promote.status_code == 200, promote.text
+    assert promote.json()['result']['promoted_checkpoint'] == promoted
+
+    nxt = _run(api, run_id, 'next_round', {'reuse_dataset': True, 'note': '用 RL 检查点开下一轮'})
+    assert nxt.status_code == 200, nxt.text
+    assert nxt.json()['view']['run']['round_index'] == 2
+    assert nxt.json()['view']['run']['current_stage'] == 'data'
+    assert nxt.json()['view']['round']['base_model'] == promoted
+
+    again = _run(api, run_id, 'data', {})
+    assert again.status_code == 200, again.text
+    round2 = api.get(f'/api/runs/{run_id}').json()
+    assert round2['forms']['sft']['values']['model'] == promoted
+    assert round2['run']['current_stage'] == 'sft'
+
+    import socket
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+
+    served = api.post(f'/api/runs/{run_id}/serve', json={'params': {'port': port, 'api_key': 'rsi-test-key'}})
+    assert served.status_code == 200, served.text
+    body = served.json()
+    assert 'swift deploy' in body['command']
+    assert body['result']['checkpoint'] == promoted
+    base = body['result']['base_url']
+
+    missing = httpx.get(f'{base}/models', timeout=5)
+    assert missing.status_code == 401
+    headers = {'Authorization': 'Bearer rsi-test-key'}
+    models = httpx.get(f'{base}/models', headers=headers, timeout=5)
+    assert models.status_code == 200
+    assert models.json()['data'][0]['id'] == body['result']['served_model_name']
+
+    completion = httpx.post(
+        f'{base}/chat/completions',
+        headers=headers,
+        json={'model': body['result']['served_model_name'], 'messages': [{'role': 'user', 'content': 'VPN 连不上'}]},
+        timeout=5)
+    assert completion.status_code == 200
+    text = completion.json()['choices'][0]['message']['content']
+    assert 'mock' in text
+    assert 'checkpoint-final' in text
+
+    proxied = api.post(f'/api/runs/{run_id}/chat', json={'messages': [{'role': 'user', 'content': '打印机脱机'}]})
+    assert proxied.status_code == 200
+    assert '打印机脱机' in proxied.json()['choices'][0]['message']['content']
+
+    stopped = api.post(f'/api/runs/{run_id}/serve/stop')
+    assert stopped.status_code == 200
+    assert stopped.json()['view']['service']['status'] == 'stopped'
+
+    conn = sqlite3.connect(home / 'rsi.sqlite')
+    columns = [row[1] for row in conn.execute('PRAGMA table_info(steps)')]
+    for name in ('started_at', 'ended_at', 'params_json', 'result_json', 'logs', 'status', 'command'):
+        assert name in columns
+    rows = conn.execute(
+        'SELECT stage, status, started_at, ended_at, params_json, result_json, logs FROM steps ORDER BY id').fetchall()
+    stages = [row[0] for row in rows]
+    for stage in ('data', 'sft', 'sft_eval', 'rl', 'rl_eval', 'promote', 'next_round', 'serve'):
+        assert stage in stages
+    for stage, status, started, ended, params, result, logs in rows:
+        assert status in {'succeeded', 'failed', 'superseded', 'running'}
+        assert started and ended and params and result is not None and logs
+        assert ended >= started
+    assert conn.execute('SELECT COUNT(*) FROM rounds').fetchone()[0] == 2
+    assert conn.execute("SELECT promoted_kind FROM rounds WHERE round_index=1").fetchone()[0] == 'rl'
+
+
+def test_rerun_supersedes_later_stages(client):
+    api, _home = client
+    run_id = api.post('/api/runs', json={
+        'name': '回退',
+        'scenario': '验证作废后续阶段',
+        'base_model': 'Qwen/Qwen2.5-7B-Instruct',
+    }).json()['run']['id']
+    assert _run(api, run_id, 'data', {'source': 'bundled'}).status_code == 200
+    assert _run(api, run_id, 'sft', {}).status_code == 200
+    assert _run(api, run_id, 'data', {'source': 'bundled'}).status_code == 200
+    view = api.get(f'/api/runs/{run_id}').json()
+    sft_steps = [step for step in view['steps'] if step['stage'] == 'sft']
+    assert sft_steps and all(step['status'] == 'superseded' for step in sft_steps)
+    assert view['forms']['sft']['status'] == 'ready'
+    blocked = _run(api, run_id, 'sft_eval', {})
+    assert blocked.status_code == 400
+
+
+def test_upload_and_public_dataset(client, tmp_path):
+    api, home = client
+    good = tmp_path / 'alpaca.jsonl'
+    good.write_text('{"instruction": "hi", "output": "there"}\n', encoding='utf-8')
+    public = api.post('/api/datasets/validate', json={'params': {'source': 'public', 'dataset': 'modelscope/gsm8k'}})
+    assert public.status_code == 200
+    assert public.json()['ok'] is True
+    local = api.post('/api/datasets/validate', json={'params': {'source': 'path', 'dataset': str(good)}})
+    assert local.json()['ok'] is True
+    assert local.json()['formats']['alpaca'] == 1
+
+    upload = api.post('/api/datasets/upload', files={'file': ('bad.jsonl', b'{"nope": 1}\n', 'application/jsonl')})
+    assert upload.status_code == 200
+    assert upload.json()['validation']['ok'] is False
+    uploaded = Path(upload.json()['path'])
+    assert uploaded.is_file()
+    assert home in uploaded.parents or uploaded.parent == home / 'uploads'
+
+
+def test_swift_backend_subprocess(tmp_path, monkeypatch):
+    script = tmp_path / 'fake-swift.py'
+    script.write_text(textwrap.dedent("""\
+        #!/usr/bin/env python3
+        import sys
+        from pathlib import Path
+        args = sys.argv[1:]
+        print('SWIFT_OK', args[0] if args else '')
+        if '--output_dir' in args:
+            out = Path(args[args.index('--output_dir') + 1])
+            ckpt = out / 'checkpoint-7'
+            ckpt.mkdir(parents=True, exist_ok=True)
+            (ckpt / 'args.json').write_text('{"model": "fake"}')
+        if args and args[0] == 'eval':
+            print('{"accuracy": 0.42}')
+        raise SystemExit(0)
+    """), encoding='utf-8')
+    script.chmod(0o755)
+    monkeypatch.setenv('RSI_BACKEND', 'swift')
+    monkeypatch.setenv('RSI_SWIFT_BIN', str(script))
+    from rsi.app import create_app
+    home = tmp_path / 'home'
+    app = create_app(home)
+    with TestClient(app) as api:
+        assert api.get('/api/health').json()['backend'] == 'swift'
+        run_id = api.post('/api/runs', json={
+            'name': 'swift-stub',
+            'scenario': '确认真实后端会拉起 swift 进程',
+            'base_model': 'Qwen/Qwen2.5-7B-Instruct',
+        }).json()['run']['id']
+        assert _run(api, run_id, 'data', {'source': 'bundled'}).status_code == 200
+        started = _run(api, run_id, 'sft', {})
+        assert started.status_code == 200, started.text
+        view = started.json()['view']
+        status = view['forms']['sft']['status']
+        logs = view['forms']['sft']['logs'] or ''
+        deadline = time.time() + 8
+        while time.time() < deadline and status == 'running':
+            time.sleep(0.1)
+            view = api.get(f'/api/runs/{run_id}').json()
+            status = view['forms']['sft']['status']
+            logs = view['forms']['sft']['logs'] or ''
+        assert status == 'succeeded', logs
+        assert 'SWIFT_OK' in logs
+        assert logs
+        checkpoint = view['forms']['sft']['result']['checkpoint']
+        assert checkpoint.endswith('checkpoint-7')
+        assert view['forms']['sft']['result']['mock'] is False
+
+
+def test_reward_plugin_parses():
+    path = Path(__file__).resolve().parents[1] / 'examples' / 'itops_reward.py'
+    ast.parse(path.read_text(encoding='utf-8'))
+
+
+def test_preset_yaml_matches_schema():
+    from rsi.schemas import presets
+    data = presets()
+    assert data['sft']['tuner_type'] == 'lora'
+    assert data['sft']['per_device_train_batch_size'] == 1
+    assert data['rl']['rlhf_type'] == 'grpo'
+    assert data['rl']['vllm_mode'] == 'colocate'
+    assert data['rl']['num_generations'] == 4
+    assert data['hardware']['gpu'].startswith('1x NVIDIA A100')
+
+
+def json_file(path: Path):
+    import json
+    return json.loads(path.read_text(encoding='utf-8'))
