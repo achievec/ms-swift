@@ -9,7 +9,7 @@ RSI_DIR="${ROOT}/rsi"
 PID_FILE="${RSI_DIR}/.rsi.pid"
 LOG_FILE="${RSI_DIR}/.rsi.log"
 LOCK_FILE="${RSI_DIR}/.rsi.lock"
-PORT="${WEBUI_PORT:-${RSI_PORT:-7860}}"
+PORT="${WEBUI_PORT:-${RSI_PORT:-8418}}"
 HOST="${WEBUI_SERVER:-${RSI_HOST:-127.0.0.1}}"
 PY=""
 PORT_BLOCKED=0
@@ -25,7 +25,7 @@ browser_url() {
 usage() {
   cat <<EOF
 用法：./run.sh [start|stop|restart]
-  start    后台启动 python -m rsi（默认 http://127.0.0.1:7860/）
+  start    后台启动 python -m rsi（默认 http://127.0.0.1:8418/）
   stop     结束本应用的进程，以及它占用的 ${PORT} 端口
   restart  先停止再启动
 不带参数时等同于 restart。
