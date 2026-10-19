@@ -469,6 +469,70 @@ def test_server_log_endpoint_reads_only_the_launch_log(client, tmp_path, monkeyp
     assert tailed.text.endswith('A' * 28 + 'TAIL')
 
 
+def test_server_log_page_follows_new_lines(client, tmp_path, monkeypatch):
+    import rsi.app as app_module
+    api, _home = client
+    log = tmp_path / '.rsi.log'
+    secret = tmp_path / 'secret.txt'
+    secret.write_text('secret-not-the-log', encoding='utf-8')
+    monkeypatch.setattr(app_module, 'server_log_path', lambda: log)
+
+    page = api.get('/api/server-log', headers={'accept': 'text/html'})
+    assert page.status_code == 200
+    assert page.headers['content-type'].startswith('text/html')
+    assert '<h1>进程日志</h1>' in page.text
+    assert '/api/server-log/stream' in page.text
+    assert 'setInterval' in page.text
+    assert 'scrollTop' in page.text
+    assert 'secret-not-the-log' not in page.text
+    dedicated = api.get('/server-log')
+    assert dedicated.status_code == 200
+    assert dedicated.text == page.text
+    home = Path(__file__).resolve().parents[1].joinpath('static', 'index.html').read_text(encoding='utf-8')
+    assert 'href="/server-log"' in home
+
+    missing = api.get('/api/server-log/stream', params={'path': str(secret)})
+    assert missing.status_code == 200
+    assert missing.headers['content-type'].startswith('application/json')
+    assert missing.json()['missing'] is True
+    assert 'secret-not-the-log' not in missing.text
+
+    log.write_text('启动 RSI\n', encoding='utf-8')
+    first = api.get('/api/server-log/stream', params={'path': str(secret)})
+    body = first.json()
+    assert body['missing'] is False
+    assert body['reset'] is True
+    assert body['text'] == '启动 RSI\n'
+    assert body['offset'] == 0
+    assert body['next_offset'] == body['size']
+    assert 'secret-not-the-log' not in first.text
+
+    with log.open('a', encoding='utf-8') as handle:
+        handle.write('第二行\n')
+    second = api.get('/api/server-log/stream', params={'offset': body['next_offset'], 'path': str(secret)})
+    appended = second.json()
+    assert appended['reset'] is False
+    assert appended['text'] == '第二行\n'
+    assert appended['offset'] == body['next_offset']
+    assert '启动 RSI' not in appended['text']
+
+    monkeypatch.setattr(app_module, 'SERVER_LOG_TAIL', 32)
+    log.write_bytes(('A' * 40 + 'TAIL').encode('ascii'))
+    tailed = api.get('/api/server-log/stream').json()
+    assert tailed['reset'] is True
+    assert tailed['offset'] == 12
+    assert tailed['next_offset'] == 44
+    assert tailed['text'].startswith('[截断] 文件共 44 字节，以下为最后 32 字节。\n')
+    assert tailed['text'].endswith('A' * 28 + 'TAIL')
+    caught_up = api.get('/api/server-log/stream', params={'offset': tailed['next_offset']}).json()
+    assert caught_up['text'] == ''
+    assert caught_up['reset'] is False
+    assert caught_up['next_offset'] == 44
+    shrunk = api.get('/api/server-log/stream', params={'offset': 10_000}).json()
+    assert shrunk['reset'] is True
+    assert shrunk['next_offset'] == 44
+
+
 def test_preset_yaml_matches_schema():
     from rsi.schemas import presets
     data = presets()

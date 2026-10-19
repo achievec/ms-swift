@@ -6,11 +6,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from rsi import __version__
 from rsi.backends import build_backend, detect_gpu
+from rsi.logtail import read_log_window
 from rsi.pipeline import Pipeline, PipelineError
 from rsi.schemas import public_schema
 
@@ -34,6 +35,99 @@ def read_server_log(path: Path, limit: int | None = None) -> str:
     tail = data[-size_limit:]
     text = tail.decode('utf-8', errors='replace')
     return f'[截断] 文件共 {len(data)} 字节，以下为最后 {size_limit} 字节。\n{text}'
+
+
+def wants_html(request: Request) -> bool:
+    """Browser navigation asks for text/html. curl's ``*/*`` does not."""
+    return 'text/html' in (request.headers.get('accept') or '').lower()
+
+
+def server_log_window(path: Path, offset: int | None) -> dict:
+    """Tail on the first read, then bytes after ``offset``. The file is fixed."""
+    tail = SERVER_LOG_TAIL
+    empty = {'offset': 0, 'next_offset': 0, 'size': 0, 'text': '', 'missing': True, 'reset': True}
+    if not path.is_file():
+        return empty
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return empty
+    reset = offset is None or offset > size
+    if offset is not None and offset > size:
+        offset = None
+    window = read_log_window(path, offset, tail, tail=tail)
+    text = window['text']
+    if reset and window['offset'] > 0:
+        kept = window['size'] - window['offset']
+        text = f'[截断] 文件共 {window["size"]} 字节，以下为最后 {kept} 字节。\n{text}'
+    window['text'] = text
+    window['missing'] = False
+    window['reset'] = reset
+    return window
+
+
+_SERVER_LOG_PAGE = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>进程日志</title>
+  <style>
+    html, body { height: 100%; margin: 0; background: #1c1915; color: #f4efe6; }
+    body { display: flex; flex-direction: column; font-family: "Noto Sans SC", "PingFang SC", "Source Han Sans SC", sans-serif; }
+    header { display: flex; align-items: baseline; gap: 16px; padding: 12px 16px; border-bottom: 1px solid #3a332c; }
+    h1 { margin: 0; font-size: 16px; font-weight: 600; }
+    a { color: #e7c27a; text-decoration: none; }
+    p { margin: 0; color: #b5aa9e; font-size: 13px; }
+    pre { flex: 1; min-height: 0; margin: 0; padding: 12px 16px 28px; overflow: auto;
+      white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.45;
+      font-family: ui-monospace, "Sarasa Mono SC", "Noto Sans Mono CJK SC", "Source Han Mono SC", monospace; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>进程日志</h1>
+    <p>自动跟上新日志</p>
+    <a href="/">返回</a>
+  </header>
+  <pre id="log"></pre>
+  <script>
+    const view = document.getElementById('log');
+    let offset = null;
+    let pinned = true;
+    view.addEventListener('scroll', () => {
+      const gap = view.scrollHeight - view.scrollTop - view.clientHeight;
+      pinned = gap < 40;
+    });
+    function follow() {
+      if (pinned) view.scrollTop = view.scrollHeight;
+    }
+    async function pull(depth) {
+      const url = offset == null ? '/api/server-log/stream' : '/api/server-log/stream?offset=' + offset;
+      const response = await fetch(url, {headers: {accept: 'application/json'}});
+      if (!response.ok) return;
+      const body = await response.json();
+      if (body.missing) {
+        view.textContent = 'rsi/.rsi.log 不存在\n';
+        offset = null;
+        follow();
+        return;
+      }
+      if (body.reset || offset == null) view.textContent = body.text || '';
+      else if (body.text) view.textContent += body.text;
+      offset = body.next_offset;
+      follow();
+      if (depth < 8 && body.size > body.next_offset) await pull(depth + 1);
+    }
+    async function tick() {
+      try { await pull(0); } catch (_err) {}
+    }
+    tick();
+    setInterval(tick, 1000);
+  </script>
+</body>
+</html>
+"""
 
 
 async def read_json(request: Request) -> dict:
@@ -92,7 +186,9 @@ def create_app(home: Path | None = None) -> FastAPI:
         return public_schema()
 
     @app.get('/api/server-log')
-    def server_log():
+    def server_log(request: Request):
+        if wants_html(request):
+            return HTMLResponse(_SERVER_LOG_PAGE)
         path = server_log_path()
         if not path.is_file():
             return PlainTextResponse('rsi/.rsi.log 不存在\n', status_code=404)
@@ -101,6 +197,14 @@ def create_app(home: Path | None = None) -> FastAPI:
         except OSError:
             return PlainTextResponse('rsi/.rsi.log 无法读取\n', status_code=404)
         return PlainTextResponse(text)
+
+    @app.get('/server-log')
+    def server_log_page():
+        return HTMLResponse(_SERVER_LOG_PAGE)
+
+    @app.get('/api/server-log/stream')
+    def server_log_stream(offset: int | None = None):
+        return server_log_window(server_log_path(), offset)
 
     @app.get('/api/runs')
     def list_runs():

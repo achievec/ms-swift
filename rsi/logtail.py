@@ -57,12 +57,14 @@ def normalize_log(text: str) -> str:
     return collapse_cr(strip_ansi(text or ''))
 
 
-def window_bounds(size: int, offset: int | None, limit: int | None) -> tuple[int, int]:
+def window_bounds(size: int, offset: int | None, limit: int | None, tail: int | None = None) -> tuple[int, int]:
+    """Byte window. Omit ``offset`` to keep the tail. ``tail`` overrides the default tail size."""
+    tail_bytes = TAIL_BYTES if tail is None else max(1, int(tail))
     if limit is None or int(limit) <= 0:
-        limit = TAIL_BYTES
-    limit = min(int(limit), MAX_READ)
+        limit = tail_bytes
+    limit = min(int(limit), max(MAX_READ, tail_bytes))
     if offset is None:
-        window = min(TAIL_BYTES, limit)
+        window = min(tail_bytes, limit)
         start = max(0, size - window)
         return start, size - start
     start = min(max(0, int(offset)), size)
@@ -81,12 +83,12 @@ def slice_bytes(raw: bytes, offset: int | None, limit: int | None) -> dict:
     }
 
 
-def read_log_window(path: Path | None, offset: int | None, limit: int | None) -> dict:
+def read_log_window(path: Path | None, offset: int | None, limit: int | None, tail: int | None = None) -> dict:
     if path is None or not path.is_file():
         return slice_bytes(b'', offset, limit)
     try:
         size = path.stat().st_size
-        start, count = window_bounds(size, offset, limit)
+        start, count = window_bounds(size, offset, limit, tail=tail)
         with path.open('rb') as handle:
             handle.seek(start)
             blob = handle.read(count)
