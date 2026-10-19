@@ -98,8 +98,8 @@ hope 模式下可以不装 modelscope 这个 pip 包：`swift/utils/logger.py` �
 | 变量 | 作用 |
 | --- | --- |
 | `RSI_MODEL_SOURCE` | 覆盖 fetch.yaml。可选 `hope`（配置文件里的默认）、`hf`、`modelscope`、`local` |
-| `RSI_MODEL_ROOT` | 模型目录。hope 会把 `org/name` 放到 `<根>/<org>/<name>`。对应 `fetch.yaml` 的 `model_root` |
-| `RSI_DATA_ROOT` | 数据集目录，对应 `data_root` |
+| `RSI_MODEL_ROOT` | 模型目录，对应 `fetch.yaml` 的 `model_root`。`~` 和 `$HOME` 会展开。`hope clone` 的工作目录就是这一层，仓库落在 `<根>/<org>/<name>` |
+| `RSI_DATA_ROOT` | 数据集目录，对应 `data_root`，同样展开 `~` / `$HOME`。`hope clone` 的工作目录是这一层 |
 | `RSI_HOPE_USERNAME` / `RSI_HOPE_TOKEN` | 用户名同时用于 `hope login <misid>` 和 `hope clone --username=`。token 只作为 `hope clone` 的 git token（`--token=`），不是平台登录。`hope list` 不接受这些参数。token 不要写进 yaml |
 | `RSI_FETCH_CONFIG` | 另选一份 yaml，键与 `fetch.yaml` 相同 |
 
@@ -108,9 +108,11 @@ hope 模式下可以不装 modelscope 这个 pip 包：`swift/utils/logger.py` �
 ```yaml
 model_source: hope
 hope_username: liyuhao03
-model_root: /data/models
-data_root: /data/datasets
+model_root: ~/models
+data_root: ~/datasets
 ```
+
+仓库里的 `fetch.yaml` 就是这样写的。`~/models` 会展开成这台机器当前用户的家目录，例如 `/home/hadoop-sailorqa-ai/models`。拉取模型时先进入这个目录，再执行 `hope clone https://huggingface.co/<org>/<name>`。本地就绪路径是 `<model_root>/<org>/<name>`，里面有 `config.json` 才算就绪。数据集同样落在 `<data_root>/<org>/<name>`。
 
 仓库里的 `fetch.yaml` 已写 `hope_username: liyuhao03`。这个 misid 会传给 `hope login`，也会作为 `hope clone` 的 `--username=`。`hope list` 只有 `hope list --creator=all --name_like=<模型名>`，不带用户名或 token。换 misid 改这一行，或用 `RSI_HOPE_USERNAME` 覆盖。token 仍只走 `RSI_HOPE_TOKEN`，只给 `hope clone` 当 git 凭据，不能代替平台登录。
 

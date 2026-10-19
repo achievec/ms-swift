@@ -98,7 +98,9 @@ def test_syncing_submits_clone_without_leaking_credentials(tmp_path, hope_env):
     assert argv[:3] == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
     assert f'--username={USER}' in argv
     assert f'--token={TOKEN}' in argv
-    assert cwd == str(tmp_path / 'models' / 'Qwen')
+    assert cwd == str(tmp_path / 'models')
+    assert (tmp_path / 'models').is_dir()
+    assert not (tmp_path / 'models' / 'Qwen').exists()
     real, public = clone_argv('https://huggingface.co/Qwen/Qwen2.5-7B-Instruct')
     assert public == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
     assert TOKEN not in public
@@ -110,6 +112,48 @@ def test_syncing_submits_clone_without_leaking_credentials(tmp_path, hope_env):
     blob = json.dumps(status.as_row(), ensure_ascii=False)
     assert TOKEN not in blob
     assert USER not in blob
+
+
+def test_tilde_model_root_is_the_clone_cwd(tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger='rsi.model_fetch')
+    house = tmp_path / 'house'
+    house.mkdir()
+    cfg = tmp_path / 'fetch.yaml'
+    cfg.write_text('model_source: hope\nmodel_root: ~/models\ndata_root: $HOME/datasets\n', encoding='utf-8')
+    monkeypatch.setenv('HOME', str(house))
+    monkeypatch.setenv('RSI_FETCH_CONFIG', str(cfg))
+    monkeypatch.setenv('RSI_MODEL_SOURCE', 'hope')
+    monkeypatch.setenv('RSI_FETCH_INLINE', '1')
+    monkeypatch.setenv('RSI_HOPE_USERNAME', USER)
+    monkeypatch.delenv('RSI_MODEL_ROOT', raising=False)
+    monkeypatch.delenv('RSI_DATA_ROOT', raising=False)
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append((list(argv), kwargs.get('cwd')))
+        if argv[1] == 'login':
+            return Completed(stdout='登录成功')
+        return Completed(stdout='submitted, pending')
+
+    fetcher = ModelFetcher(tmp_path / 'rsi-home', runner=runner)
+    assert fetcher.model_root() == house / 'models'
+    assert fetcher.data_root() == house / 'datasets'
+    assert fetcher.model_root().is_absolute()
+    status = fetcher.ensure('model', REPO, background=False)
+    root = house / 'models'
+    assert root.is_dir()
+    assert not (root / 'Qwen').exists()
+    clone = next(item for item in calls if item[0][1] == 'clone')
+    assert clone[0][:3] == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
+    assert clone[1] == str(root)
+    assert status.local_path == str(root / 'Qwen' / 'Qwen2.5-7B-Instruct')
+    assert status.state == '同步中'
+    text = caplog.text
+    assert f'cwd={root} target={root / "Qwen" / "Qwen2.5-7B-Instruct"}' in text
+    assert 'hope 开始 hope clone https://huggingface.co/Qwen/Qwen2.5-7B-Instruct ' in text
+    assert f'cwd={root / "Qwen"}' not in text
+    monkeypatch.setenv('RSI_MODEL_ROOT', '~/other-models')
+    assert fetcher.model_root() == house / 'other-models'
 
 
 def test_parse_hope_list_copies_status_and_does_not_invent_percent():
@@ -176,7 +220,7 @@ def test_refresh_lists_then_clone_completes(tmp_path, hope_env):
         if argv[1] == 'clone':
             clones['n'] += 1
             if clones['n'] > 1:
-                dest = Path(kwargs['cwd']) / 'Qwen2.5-7B-Instruct'
+                dest = Path(kwargs['cwd']) / 'Qwen' / 'Qwen2.5-7B-Instruct'
                 dest.mkdir(parents=True, exist_ok=True)
                 (dest / 'config.json').write_text('{"model_type":"qwen2"}', encoding='utf-8')
         return Completed(returncode=1, stdout='已存在，等待同步')
@@ -244,6 +288,8 @@ def test_bundled_fetch_yaml_defaults_to_hope(monkeypatch):
     text = bundled.read_text(encoding='utf-8')
     assert 'model_source: hope' in text
     assert 'hope_username: liyuhao03' in text
+    assert 'model_root: ~/models' in text
+    assert 'data_root: ~/datasets' in text
     assert 'hope_token' not in text
     assert model_source() == 'hope'
     startup = describe_startup()
@@ -370,7 +416,8 @@ def test_pipeline_syncing_audit_and_modelscope_error(tmp_path, hope_env):
         assert 'huggingface.co' not in blob
         clone = next(item for item in calls if item[0][1] == 'clone')
         assert clone[0][:3] == ['hope', 'clone', 'https://huggingface.co/datasets/openai/gsm8k']
-        assert clone[1] == str(tmp_path / 'datasets' / 'openai')
+        assert clone[1] == str(tmp_path / 'datasets')
+        assert not (tmp_path / 'datasets' / 'openai').exists()
         assert calls[0][0] == ['hope', 'login', USER]
         view = body['view']
         assert view['forms']['data']['status'] == 'syncing'
@@ -512,8 +559,8 @@ def test_refresh_endpoint_and_local_source(tmp_path, hope_env):
 
     def runner(argv, **kwargs):
         calls.append(list(argv))
-        if argv[1] == 'clone':
-            dest = Path(kwargs['cwd']) / 'Qwen2.5-7B-Instruct'
+        if argv[1] == 'clone' and argv[2].rstrip('/').endswith('Qwen/Qwen2.5-7B-Instruct'):
+            dest = Path(kwargs['cwd']) / 'Qwen' / 'Qwen2.5-7B-Instruct'
             dest.mkdir(parents=True, exist_ok=True)
             (dest / 'config.json').write_text('{}', encoding='utf-8')
         return Completed()
@@ -662,8 +709,8 @@ def test_hope_clone_and_list_log_redacted_commands(tmp_path, hope_env, caplog, m
     assert 'hope 开始 hope clone https://huggingface.co/Qwen/Qwen2.5-7B-Instruct ' in text
     assert 'hope 开始 hope list --creator=all --name_like=Qwen2.5-7B-Instruct ' in text
     assert 'exit=0' in text
-    assert f'cwd={tmp_path / "models" / "Qwen"}' in text
-    assert f'target={tmp_path / "models" / "Qwen" / "Qwen2.5-7B-Instruct"}' in text
+    assert f'cwd={tmp_path / "models"} target={tmp_path / "models" / "Qwen" / "Qwen2.5-7B-Instruct"}' in text
+    assert f'cwd={tmp_path / "models" / "Qwen"}' not in text
     assert TOKEN not in text
     assert USER not in text
     assert 'secret-params' not in text
@@ -773,9 +820,10 @@ def test_clone_ready_flip_is_logged(tmp_path, hope_env, caplog):
     caplog.set_level(logging.INFO, logger='rsi.model_fetch')
 
     def runner(argv, **kwargs):
-        dest = Path(kwargs['cwd']) / 'Qwen2.5-7B-Instruct'
-        dest.mkdir(parents=True, exist_ok=True)
-        (dest / 'config.json').write_text('{}', encoding='utf-8')
+        if argv[1] == 'clone':
+            dest = Path(kwargs['cwd']) / 'Qwen' / 'Qwen2.5-7B-Instruct'
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / 'config.json').write_text('{}', encoding='utf-8')
         return Completed(stdout='done')
 
     status = _fetcher(tmp_path, runner).ensure('model', REPO, background=False)

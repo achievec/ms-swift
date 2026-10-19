@@ -93,13 +93,22 @@ def model_source() -> str:
     return raw
 
 
+def _expand_path(value: str) -> Path:
+    """Turn ``~`` and ``$HOME`` into an absolute directory hope can use as cwd."""
+    text = os.path.expandvars(os.path.expanduser((value or '').strip()))
+    path = Path(text)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path
+
+
 def _root(env_name: str, file_key: str, home: Path, folder: str) -> Path:
     env = os.environ.get(env_name, '').strip()
     if env:
-        return Path(env).expanduser()
+        return _expand_path(env)
     file_value = str(_file_settings().get(file_key) or '').strip()
     if file_value:
-        return Path(file_value).expanduser()
+        return _expand_path(file_value)
     return Path(home) / folder
 
 
@@ -616,13 +625,15 @@ class ModelFetcher:
                 logger.info('hope 跳过 %s %s 已在进行', kind, repo_id)
                 return
             _INFLIGHT.add(key)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        root = self.model_root() if kind == 'model' else self.data_root()
+        root.mkdir(parents=True, exist_ok=True)
 
         def job():
             ready_now = False
             try:
                 argv, _public = clone_argv(self._url_for(kind, repo_id))
-                result = self._run(argv, cwd=path.parent, target=path, repo_key=key)
+                # hope clone writes <org>/<name> under its cwd. Do not cd into org/ first.
+                result = self._run(argv, cwd=root, target=path, repo_key=key)
                 if result == 'missing-tool':
                     with _LOCK:
                         self._notes[key] = _TOOL_FAILURE

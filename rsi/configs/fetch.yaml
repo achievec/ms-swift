@@ -1,7 +1,10 @@
 # Default model source for this checkout. RSI_MODEL_SOURCE overrides this.
 # Mac users who can reach ModelScope: RSI_MODEL_SOURCE=modelscope
 model_source: hope
-# model_root / data_root optional; env RSI_MODEL_ROOT and RSI_DATA_ROOT still win
+# hope clone uses these directories as cwd (~ and $HOME are expanded).
+# The repo lands at <root>/<org>/<name>. RSI_MODEL_ROOT and RSI_DATA_ROOT still win.
+model_root: ~/models
+data_root: ~/datasets
 # misid for `hope login` and `hope clone --username`. RSI_HOPE_USERNAME overrides this.
 # Do not put a token in this file; use RSI_HOPE_TOKEN.
 hope_username: liyuhao03
