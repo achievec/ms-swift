@@ -141,6 +141,18 @@ class Store:
             rows = conn.execute('SELECT * FROM runs ORDER BY updated_at DESC').fetchall()
         return [dict(row) for row in rows]
 
+    def delete_run(self, run_id) -> bool:
+        with self.transaction() as conn:
+            row = conn.execute('SELECT id FROM runs WHERE id=?', (run_id, )).fetchone()
+            if not row:
+                return False
+            conn.execute('DELETE FROM services WHERE run_id=?', (run_id, ))
+            conn.execute('DELETE FROM checkpoints WHERE run_id=?', (run_id, ))
+            conn.execute('DELETE FROM steps WHERE run_id=?', (run_id, ))
+            conn.execute('DELETE FROM rounds WHERE run_id=?', (run_id, ))
+            conn.execute('DELETE FROM runs WHERE id=?', (run_id, ))
+        return True
+
     def get_run(self, run_id) -> dict | None:
         with self.transaction() as conn:
             row = conn.execute('SELECT * FROM runs WHERE id=?', (run_id, )).fetchone()

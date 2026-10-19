@@ -78,10 +78,41 @@ function renderRuns() {
     return;
   }
   root.innerHTML = state.runs.map((run) => `
-    <button type="button" class="run-card ${state.view && state.view.run.id === run.id ? 'active' : ''}" data-run="${run.id}">
-      <b>${escapeHtml(run.name)}</b>
-      <small>第 ${run.round_index} 轮 · ${escapeHtml(labelOf(run.current_stage))}</small>
-    </button>`).join('');
+    <div class="run-card ${state.view && state.view.run.id === run.id ? 'active' : ''}">
+      <button type="button" class="run-open" data-run="${run.id}">
+        <b>${escapeHtml(run.name)}</b>
+        <small>第 ${run.round_index} 轮 · ${escapeHtml(labelOf(run.current_stage))}</small>
+      </button>
+      <button type="button" class="run-delete" data-delete-run="${run.id}" title="删除实验" aria-label="删除 ${escapeHtml(run.name)}">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M6.2 2.2h3.6l.4.8H13v1.3H3V3h2.8l.4-.8zM4.2 5.2h7.6l-.5 8.1a1 1 0 0 1-1 .9H5.7a1 1 0 0 1-1-.9l-.5-8.1z"/></svg>
+      </button>
+    </div>`).join('');
+}
+
+async function deleteRun(id) {
+  const run = state.runs.find((item) => item.id === id);
+  const name = run ? run.name : id;
+  const index = state.runs.findIndex((item) => item.id === id);
+  const confirmed = window.confirm(
+    `删除实验「${name}」？\n审计里的轮次、阶段和检查点记录会去掉，该实验目录下的阶段产物也会清理。上传的数据文件会保留。`
+  );
+  if (!confirmed) return;
+  await api(`/api/runs/${id}`, { method: 'DELETE' });
+  const wasCurrent = state.view && state.view.run.id === id;
+  const neighbor = state.runs[index + 1] || state.runs[index - 1];
+  if (wasCurrent) {
+    state.chat = [];
+    state.view = null;
+    if (neighbor) await refreshRuns(neighbor.id);
+    else {
+      await refreshRuns();
+      render();
+    }
+  } else {
+    await refreshRuns();
+    render();
+  }
+  toast('实验已删除');
 }
 
 async function openRun(id, round, keepStage) {
@@ -503,6 +534,10 @@ document.addEventListener('click', async (event) => {
     }
     if (target.id === 'create-cancel') {
       document.getElementById('create-dialog').close();
+      return;
+    }
+    if (target.dataset.deleteRun) {
+      await deleteRun(target.dataset.deleteRun);
       return;
     }
     if (target.dataset.run) {

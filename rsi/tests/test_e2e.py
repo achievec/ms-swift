@@ -309,6 +309,72 @@ def test_reward_plugin_parses():
     ast.parse(path.read_text(encoding='utf-8'))
 
 
+def test_delete_run_removes_audit_and_only_its_directory(client):
+    api, home = client
+    created = api.post('/api/runs', json={
+        'name': '要删除的实验',
+        'scenario': '删除后审计和实验目录都应消失',
+        'base_model': 'Qwen/Qwen2.5-7B-Instruct',
+    })
+    assert created.status_code == 200, created.text
+    run_id = created.json()['run']['id']
+    other = api.post('/api/runs', json={
+        'name': '留下的实验',
+        'scenario': '删除邻居时这个实验还在',
+        'base_model': 'Qwen/Qwen2.5-7B-Instruct',
+    })
+    other_id = other.json()['run']['id']
+    data = _run(api, run_id, 'data', {'source': 'bundled', 'bundled': 'itops_mix'})
+    assert data.status_code == 200, data.text
+
+    workspace = home / 'runs' / run_id / 'round_1' / 'sft'
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / 'marker.txt').write_text('artifact', encoding='utf-8')
+    uploads = home / 'uploads'
+    uploads.mkdir(exist_ok=True)
+    kept = uploads / 'user-dataset.jsonl'
+    kept.write_text('{"messages":[]}\n', encoding='utf-8')
+    neighbor = home / 'runs' / 'not-this-run'
+    neighbor.mkdir()
+    (neighbor / 'stay.txt').write_text('stay', encoding='utf-8')
+
+    missing = api.delete('/api/runs/does-not-exist')
+    assert missing.status_code == 404
+
+    removed = api.delete(f'/api/runs/{run_id}')
+    assert removed.status_code == 200, removed.text
+    body = removed.json()
+    assert body['ok'] is True
+    assert body['id'] == run_id
+    assert body['workspace_removed'] is True
+    assert api.get(f'/api/runs/{run_id}').status_code == 404
+    listed = {item['id'] for item in api.get('/api/runs').json()['runs']}
+    assert run_id not in listed
+    assert other_id in listed
+    assert not (home / 'runs' / run_id).exists()
+    assert kept.is_file()
+    assert (neighbor / 'stay.txt').read_text(encoding='utf-8') == 'stay'
+    pipeline = api.app.state.pipeline
+    assert pipeline._remove_run_workspace('../uploads') is False
+    assert pipeline._remove_run_workspace('..') is False
+    assert kept.is_file()
+
+    db = sqlite3.connect(home / 'rsi.sqlite')
+    try:
+        assert db.execute('SELECT COUNT(*) FROM runs WHERE id=?', (run_id, )).fetchone()[0] == 0
+        for table in ('rounds', 'steps', 'checkpoints', 'services'):
+            count = db.execute(f'SELECT COUNT(*) FROM {table} WHERE run_id=?', (run_id, )).fetchone()[0]
+            assert count == 0, table
+        assert db.execute('SELECT COUNT(*) FROM runs WHERE id=?', (other_id, )).fetchone()[0] == 1
+    finally:
+        db.close()
+
+    alias = api.delete(f'/api/experiments/{other_id}')
+    assert alias.status_code == 200, alias.text
+    assert api.get('/api/runs').json()['runs'] == []
+    assert api.delete(f'/api/experiments/{other_id}').status_code == 404
+
+
 def test_preset_yaml_matches_schema():
     from rsi.schemas import presets
     data = presets()

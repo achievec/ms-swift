@@ -2,6 +2,7 @@
 """Stage machine for one RSI run: data → SFT → eval → RL → eval → promote → next round."""
 import json
 import re
+import shutil
 import threading
 import uuid
 from pathlib import Path
@@ -180,6 +181,26 @@ class Pipeline:
 
     def list_runs(self) -> list:
         return self.store.list_runs()
+
+    def delete_run(self, run_id: str) -> dict:
+        if not self.store.get_run(run_id):
+            raise PipelineError('实验不存在', 404)
+        self.serve.stop(run_id)
+        deleted = self.store.delete_run(run_id)
+        if not deleted:
+            raise PipelineError('实验不存在', 404)
+        return {'ok': True, 'id': run_id, 'workspace_removed': self._remove_run_workspace(run_id)}
+
+    def _remove_run_workspace(self, run_id: str) -> bool:
+        """Remove only this experiment's directory under RSI home/runs."""
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', run_id or ''):
+            return False
+        root = (self.home / 'runs').resolve()
+        target = (root / run_id).resolve()
+        if target.parent != root or not target.is_dir():
+            return False
+        shutil.rmtree(target)
+        return True
 
     def _require_run(self, run_id: str) -> dict:
         run = self.store.get_run(run_id)

@@ -65,6 +65,17 @@ def create_app(home: Path | None = None) -> FastAPI:
     def get_run(run_id: str, round: int | None = None):
         return pipeline.view(run_id, round)
 
+    def _delete_run(run_id: str):
+        return pipeline.delete_run(run_id)
+
+    @app.delete('/api/runs/{run_id}')
+    def delete_run(run_id: str):
+        return _delete_run(run_id)
+
+    @app.delete('/api/experiments/{experiment_id}')
+    def delete_experiment(experiment_id: str):
+        return _delete_run(experiment_id)
+
     @app.get('/api/runs/{run_id}/audit')
     def audit(run_id: str):
         view = pipeline.view(run_id)

@@ -92,10 +92,23 @@ aside {
 .ghost { background: #ffffff; color: var(--ink); }
 .ghost:hover { background: #f3f4f6; }
 .block { width: 100%; }
-.run-card { display: block; width: 100%; text-align: left; margin-bottom: 8px; box-shadow: none; }
+.run-card { position: relative; display: block; width: 100%; text-align: left; margin-bottom: 8px; padding: 0; box-shadow: none; }
 .run-card.active { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); background: var(--accent-softer); }
+.run-open {
+  display: block; width: 100%; text-align: left;
+  background: transparent; border: 0; box-shadow: none;
+  padding: 8px 34px 8px 12px; border-radius: 8px;
+}
 .run-card b { display: block; }
 .run-card small { color: var(--muted); }
+.run-delete {
+  position: absolute; top: 6px; right: 6px;
+  width: 26px; height: 26px; padding: 0;
+  display: grid; place-items: center;
+  border-radius: 6px; border: 1px solid transparent;
+  background: transparent; color: #6b7280; box-shadow: none;
+}
+.run-delete:hover { background: var(--red-soft); color: var(--red); border-color: var(--red-line); }
 
 main { padding: 22px 26px 48px; }
 .panel {
