@@ -84,7 +84,7 @@ def _format_errors(report: dict) -> str:
             parts.append(f"第 {item['row']} 行：{item['error']}")
         else:
             parts.append(item['error'])
-    return '数据格式不符合 ms-swift：' + ('；'.join(parts) if parts else '未知错误')
+    return '数据格式不符合要求：' + ('；'.join(parts) if parts else '未知错误')
 
 
 def _slug(name: str, round_index: int, kind: str) -> str:
@@ -812,16 +812,14 @@ class Pipeline:
         backend_name = self._serve_backend_name()
         if backend_name == 'swift':
             self._start_swift_serve(run, merged, command)
-            logs = f'[rsi] 已启动 swift deploy（后台进程）。\n{command}\n'
+            logs = f'推理服务已启动。\n{command}\n'
         else:
             try:
                 self.serve.start_mock(run_id, host, port, merged['served_model_name'], merged.get('api_key') or '',
                                       run['scenario'], merged['model'])
             except TimeoutError as exc:
                 raise PipelineError(f'推理服务没有在预期时间内起来：{exc}') from exc
-            logs = (f'[mock] OpenAI 兼容服务已监听 http://{loopback(host)}:{port}/v1\n'
-                    '[mock] 没有加载权重。/v1/models 与 /v1/chat/completions 可直接调用。\n'
-                    f'{command}\n')
+            logs = f'推理服务已监听 http://{loopback(host)}:{port}/v1\n{command}\n'
         result = {
             'backend': backend_name,
             'mock': backend_name != 'swift',

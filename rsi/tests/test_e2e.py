@@ -138,8 +138,8 @@ def test_happy_path_records_audit_and_serves(client, monkeypatch):
         timeout=5)
     assert completion.status_code == 200
     text = completion.json()['choices'][0]['message']['content']
-    assert 'mock' in text
     assert 'checkpoint-final' in text
+    assert 'VPN 连不上' in text
 
     proxied = api.post(f'/api/runs/{run_id}/chat', json={'messages': [{'role': 'user', 'content': '打印机脱机'}]})
     assert proxied.status_code == 200

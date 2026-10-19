@@ -236,10 +236,10 @@ def validate_public_id(dataset_id: str) -> dict:
     return {
         'ok': True,
         'num_rows': None,
-        'formats': {'ms-swift-ref': 1},
+        'formats': {'dataset': 1},
         'errors': [],
         'error_count': 0,
-        'warnings': ['公开数据集不在本地解析。真实训练时由 ms-swift AutoPreprocessor 下载并转换。Mock 模式不会下载数据。'],
+        'warnings': ['公开数据集 id 已记录，训练时再下载。'],
         'preview': [],
         'dataset': dataset_id,
     }

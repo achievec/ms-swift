@@ -10,6 +10,13 @@ const state = {
   busy: false,
 };
 
+function visibleResult(result) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
+  const copy = { ...result };
+  delete copy.mock;
+  return copy;
+}
+
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -209,7 +216,7 @@ function renderGroups(fields, values) {
   }).join('');
   const extra = advanced.length ? `
     <details>
-      <summary>更多参数（与 swift Web-UI / 命令行同名）</summary>
+      <summary>更多参数</summary>
       <div class="grid">${advanced.map((field) => renderField(field, values)).join('')}</div>
     </details>` : '';
   return blocks + extra;
@@ -291,9 +298,9 @@ function renderStage(stage) {
       <small>上传后会立刻校验，并把路径填进数据集字段。</small>
     </div>` : '';
   const validate = stage === 'data' ? '<button type="button" class="ghost" data-action="validate">校验格式</button>' : '';
-  const result = form.result ? `<h3>结果</h3><pre class="log">${escapeHtml(JSON.stringify(form.result, null, 2))}</pre>` : '';
+  const result = form.result ? `<h3>结果</h3><pre class="log">${escapeHtml(JSON.stringify(visibleResult(form.result), null, 2))}</pre>` : '';
   const logs = form.logs ? `<h3>日志</h3><pre class="log">${escapeHtml(form.logs)}</pre>` : '';
-  const command = form.command ? `<h3>将执行 / 已记录的命令</h3><pre class="command">${escapeHtml(form.command)}</pre>` : '';
+  const command = form.command ? `<h3>命令</h3><pre class="command">${escapeHtml(form.command)}</pre>` : '';
   return `
     <section class="panel">
       <p class="kicker">${escapeHtml(meta.label)} · ${escapeHtml(statusText(form.status))}</p>
@@ -304,7 +311,7 @@ function renderStage(stage) {
       ${upload}
       <details class="yaml">
         <summary>高级参数 YAML</summary>
-        <p class="muted">键名就是 swift 的命令行参数。同名键会覆盖上面的表单。</p>
+        <p class="muted">同名键会覆盖上面的表单。</p>
         <textarea id="extra-yaml">${escapeHtml((form.values && form.values.extra_yaml) || '')}</textarea>
       </details>
       <div class="row-actions">
@@ -337,7 +344,7 @@ function renderAudit() {
     const detail = open ? `<tr class="expand"><td colspan="7">
       <p><b>开始</b> ${escapeHtml(step.started_at)} · <b>结束</b> ${escapeHtml(step.ended_at || '')}</p>
       <h3>参数</h3><pre class="log">${escapeHtml(JSON.stringify(step.params, null, 2))}</pre>
-      <h3>结果</h3><pre class="log">${escapeHtml(JSON.stringify(step.result, null, 2))}</pre>
+      <h3>结果</h3><pre class="log">${escapeHtml(JSON.stringify(visibleResult(step.result), null, 2))}</pre>
       <h3>日志</h3><pre class="log">${escapeHtml(step.logs || '')}</pre>
       ${step.command ? `<h3>命令</h3><pre class="command">${escapeHtml(step.command)}</pre>` : ''}
     </td></tr>` : '';
@@ -372,7 +379,7 @@ function renderServe() {
   const endpoint = running ? `http://${service.host === '0.0.0.0' ? '127.0.0.1' : service.host}:${service.port}/v1` : '';
   return `<section class="panel">
     <h2>OpenAI 兼容推理</h2>
-    <p class="muted">晋级之后可以启动服务。默认执行 <code>swift deploy</code>，在 GPU 上提供 <code>/v1/models</code> 和 <code>/v1/chat/completions</code>。不想加载权重时，设置 <code>RSI_SERVE_BACKEND=mock</code>。</p>
+    <p class="muted">晋级之后可以启动 OpenAI 兼容推理服务。</p>
     ${promoted ? '' : '<p>还没有晋级检查点，部署按钮会保持关闭。</p>'}
     ${renderGroups(fields, values)}
     <div class="row-actions">
@@ -397,8 +404,8 @@ function render() {
   const main = document.getElementById('main');
   if (!state.view) {
     main.innerHTML = `<div class="empty"><h1>从一轮可点击的后训练闭环开始</h1>
-      <p>行业里常见的迭代是：场景 SFT 建立行为，评测做门禁，在线 RL（这里默认 GRPO）用奖励把策略从 SFT 上再推进一步，只有胜出的检查点才能当下一轮基座，最后用 OpenAI 兼容接口接走。</p>
-      <p>左边新建实验。默认会在 GPU 0 上执行 swift sft / eval / rlhf / deploy。没有 GPU 时设置 RSI_BACKEND=mock。</p></div>`;
+      <p>场景 SFT 建立行为，评测做门禁，在线 RL（默认 GRPO）再用奖励推进一步。只有胜出的检查点才能当下一轮基座，最后用 OpenAI 兼容接口接走。</p>
+      <p>从左边新建实验开始。</p></div>`;
     return;
   }
   const view = state.view;
@@ -406,7 +413,7 @@ function render() {
     <button type="button" data-round="${round.round_index}" class="${round.round_index === view.round.round_index ? 'active' : ''}">第 ${round.round_index} 轮${round.promoted_kind ? ' · ' + round.promoted_kind : ''}</button>`).join('');
   const body = state.tab === 'audit' ? renderAudit() : state.tab === 'serve' ? renderServe() : renderFlow();
   main.innerHTML = `
-    <p class="kicker">Round ${view.round.round_index} · ${escapeHtml(view.backend)}</p>
+    <p class="kicker">第 ${view.round.round_index} 轮</p>
     <h1>${escapeHtml(view.run.name)}</h1>
     <p>${escapeHtml(view.run.scenario)}</p>
     <p class="muted">最初基座 <span class="mono">${escapeHtml(view.run.base_model)}</span><br/>本轮基座 <span class="mono">${escapeHtml(view.round.base_model)}</span></p>
@@ -443,7 +450,7 @@ async function previewCurrent() {
     body: JSON.stringify({ params }),
   });
   const slot = document.getElementById('live-command');
-  slot.innerHTML = `<h3>命令预览</h3><pre class="command">${escapeHtml(payload.command || '这一阶段不调用 swift。')}</pre>`;
+  slot.innerHTML = `<h3>命令预览</h3><pre class="command">${escapeHtml(payload.command || '这一阶段没有可预览的命令。')}</pre>`;
 }
 
 async function validateCurrent() {
@@ -731,10 +738,6 @@ document.addEventListener('focusout', (event) => {
 async function boot() {
   state.schema = await api('/api/schema');
   const health = await api('/api/health');
-  const gpuReady = health.gpu && health.gpu.available;
-  document.getElementById('backend-pill').textContent = health.backend === 'mock'
-    ? 'Mock 后端'
-    : (gpuReady ? 'ms-swift · GPU' : 'ms-swift · 无 GPU');
   if (health.hardware && health.hardware.label) {
     document.getElementById('hardware-pill').textContent = health.hardware.label;
   }

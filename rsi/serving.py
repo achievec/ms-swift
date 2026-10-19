@@ -70,10 +70,7 @@ def build_openai_app(model_name: str, api_key: str, scenario: str, checkpoint: s
                 content = message.get('content')
                 user_text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
                 break
-        reply = (f'【mock 推理】已挂载模型 {model_name}。'
-                 f'检查点：{checkpoint}。场景：{scenario}。'
-                 f'针对「{user_text}」，这里返回的是本地 Mock 文本，权重没有加载。'
-                 '在 A100 上把 RSI_SERVE_BACKEND 设为 swift 后，同一条路径会换成 swift deploy。')
+        reply = f'已收到「{user_text}」。当前检查点：{checkpoint}。'
         now = int(time.time())
         return {
             'id': f'chatcmpl-mock-{now}',
@@ -100,7 +97,7 @@ def build_openai_app(model_name: str, api_key: str, scenario: str, checkpoint: s
         authorize(request)
         body = await request.json()
         prompt = body.get('prompt') or ''
-        text = f'【mock 推理】{model_name} / {checkpoint} / {prompt}'
+        text = f'{model_name} / {checkpoint} / {prompt}'
         return {
             'id': 'cmpl-mock',
             'object': 'text_completion',

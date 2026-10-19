@@ -134,11 +134,7 @@ class MockBackend:
         command = format_shell(build_argv(stage, params))
         round_index = int(context.get('round_index') or 1)
         metrics = _mock_metrics(stage, round_index)
-        lines = [
-            '[mock] RSI_BACKEND=mock。没有加载模型，也没有占用 GPU。',
-            '[mock] 下面是切到真实后端时会执行的命令：',
-            command,
-        ]
+        lines = [command] if command else []
         checkpoint = None
         if stage in {'sft', 'rl'}:
             output_dir = Path(params['output_dir'])
@@ -157,12 +153,11 @@ class MockBackend:
                     )
             checkpoint_path = _write_mock_checkpoint(output_dir, params, stage, round_index, metrics)
             checkpoint = str(checkpoint_path)
-            lines.append(f'[mock] checkpoint saved to {checkpoint}')
+            lines.append(f'检查点：{checkpoint}')
         elif stage in {'sft_eval', 'rl_eval'}:
             rows = context.get('eval_rows')
-            lines.append(f"[mock] eval_dataset={params.get('eval_dataset')} eval_limit={params.get('eval_limit')} "
+            lines.append(f"eval_dataset={params.get('eval_dataset')} eval_limit={params.get('eval_limit')} "
                          f'heldout_rows={rows}')
-            lines.append('[mock] 分数是按轮次生成的确定性 mock_score，不是 EvalScope 的真实准确率。')
             lines.append(str({'accuracy': metrics.get('accuracy')}))
             if rows is not None:
                 metrics = dict(metrics)

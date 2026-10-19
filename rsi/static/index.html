@@ -13,19 +13,18 @@
       <span class="mark">RSI</span>
       <div>
         <strong>递归自改进闭环</strong>
-        <small>建在 ms-swift 之上 · 数据 → SFT → 评测 → 在线 RL → 评测 → 晋级 → 下一轮 → 推理</small>
+        <small>数据 → SFT → 评测 → 在线 RL → 评测 → 晋级 → 下一轮 → 推理</small>
       </div>
     </div>
     <div class="top-meta">
       <a class="pill" href="/swift-ui/">打开 SWIFT Web-UI</a>
       <span id="hardware-pill">1× A100-80G · 18 核 · 约 60GB 可用内存</span>
-      <span id="backend-pill">后端</span>
+      <span id="backend-pill" hidden></span>
     </div>
   </header>
   <div class="shell">
     <aside>
       <button id="new-run" class="primary block" type="button">新建实验</button>
-      <p class="aside-note">每一轮都是人工点下一步。SFT、评测、RL 和部署调用本机 ms-swift，占用 GPU。审计写在 SQLite。</p>
       <div id="run-list"></div>
     </aside>
     <main id="main"></main>
