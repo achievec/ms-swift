@@ -783,7 +783,7 @@ The rollout parameters inherit from the [deployment parameters](#deployment-argu
 
 ### Web-UI Arguments
 - server_name: Host for the web UI, default is '0.0.0.0'.
-- server_port: Port for the web UI, default is 7860.
+- server_port: Port for the web UI, default is 8418.
 - share: Default is False.
 - lang: Language for the web UI, options are 'zh', 'en'. Default is 'zh'.
 

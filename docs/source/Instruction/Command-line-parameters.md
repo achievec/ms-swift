@@ -763,7 +763,7 @@ Rollout参数继承于[部署参数](#部署参数)
 
 ### Web-UI参数
 - server_name: web-ui的host，默认为'0.0.0.0'。
-- server_port: web-ui的port，默认为7860。
+- server_port: web-ui的port，默认为8418。
 - share: 默认为False。
 - lang: web-ui的语言，可选为'zh', 'en'。默认为'zh'。
 
