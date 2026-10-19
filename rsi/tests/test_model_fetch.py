@@ -4,6 +4,7 @@ import logging
 import re
 import subprocess
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,14 +14,17 @@ from fastapi.testclient import TestClient
 import rsi.model_fetch as model_fetch
 from rsi.backends import swift_launch
 from rsi.model_fetch import (
-    LOGIN_MESSAGE,
+    LOGIN_WAITING,
     ModelFetcher,
     apply_runtime_env,
     clone_argv,
     dataset_block_message,
     describe_startup,
+    hope_login_succeeded,
     hope_needs_login,
+    kick_hope_login,
     list_argv,
+    login_unconfirmed_message,
     model_source,
     parse_hope_list,
     public_clone_command,
@@ -44,8 +48,10 @@ class Completed:
 def _reset_fetch_globals():
     model_fetch._INFLIGHT.clear()
     model_fetch._HOPE_WARNED = False
+    model_fetch.reset_hope_login_state()
     yield
     model_fetch._INFLIGHT.clear()
+    model_fetch.reset_hope_login_state()
 
 
 @pytest.fixture
@@ -87,7 +93,8 @@ def test_syncing_submits_clone_without_leaking_credentials(tmp_path, hope_env):
     status = _fetcher(tmp_path, runner).ensure('model', REPO, background=False)
     assert status.state == '同步中'
     assert status.message == '同步中'
-    argv, cwd = calls[0]
+    assert calls[0][0] == ['hope', 'login', USER]
+    argv, cwd = calls[1]
     assert argv[:3] == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
     assert f'--username={USER}' in argv
     assert f'--token={TOKEN}' in argv
@@ -160,24 +167,31 @@ def test_hope_list_progress_is_shown_until_local_files_exist(tmp_path, hope_env)
 def test_refresh_lists_then_clone_completes(tmp_path, hope_env):
     calls = []
 
+    clones = {'n': 0}
+
     def runner(argv, **kwargs):
         calls.append(list(argv))
-        if argv[1] == 'clone' and len(calls) > 1:
-            dest = Path(kwargs['cwd']) / 'Qwen2.5-7B-Instruct'
-            dest.mkdir(parents=True, exist_ok=True)
-            (dest / 'config.json').write_text('{"model_type":"qwen2"}', encoding='utf-8')
+        if argv[1] == 'login':
+            return Completed(stdout='登录成功')
+        if argv[1] == 'clone':
+            clones['n'] += 1
+            if clones['n'] > 1:
+                dest = Path(kwargs['cwd']) / 'Qwen2.5-7B-Instruct'
+                dest.mkdir(parents=True, exist_ok=True)
+                (dest / 'config.json').write_text('{"model_type":"qwen2"}', encoding='utf-8')
         return Completed(returncode=1, stdout='已存在，等待同步')
 
     fetcher = _fetcher(tmp_path, runner)
     waiting = fetcher.ensure('model', REPO, background=False)
     assert waiting.state == '同步中'
-    assert calls == [['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct', f'--username={USER}',
-                      f'--token={TOKEN}']]
+    assert calls[0] == ['hope', 'login', USER]
+    assert calls[1] == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct', f'--username={USER}',
+                        f'--token={TOKEN}']
     done = fetcher.refresh('model', REPO, background=False)
     assert done.state == '就绪'
     assert done.message == '已在本地'
-    assert calls[1] == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
-    assert calls[2][0:3] == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
+    assert calls[2] == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
+    assert calls[3][0:3] == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
     calls.clear()
     again = fetcher.ensure('model', REPO)
     assert again.state == '就绪'
@@ -354,8 +368,10 @@ def test_pipeline_syncing_audit_and_modelscope_error(tmp_path, hope_env):
         assert TOKEN not in blob
         assert USER not in blob
         assert 'huggingface.co' not in blob
-        assert calls[0][0][:3] == ['hope', 'clone', 'https://huggingface.co/datasets/openai/gsm8k']
-        assert calls[0][1] == str(tmp_path / 'datasets' / 'openai')
+        clone = next(item for item in calls if item[0][1] == 'clone')
+        assert clone[0][:3] == ['hope', 'clone', 'https://huggingface.co/datasets/openai/gsm8k']
+        assert clone[1] == str(tmp_path / 'datasets' / 'openai')
+        assert calls[0][0] == ['hope', 'login', USER]
         view = body['view']
         assert view['forms']['data']['status'] == 'syncing'
         assert view['fetches'][0]['state'] == '同步中'
@@ -656,15 +672,23 @@ def test_hope_clone_and_list_log_redacted_commands(tmp_path, hope_env, caplog, m
     assert '--params=' not in text
     assert '***' in text
     assert '…截断' in text
-    clone_kwargs = seen[0][1]
-    list_kwargs = seen[1][1]
+    logins = [item for item in seen if item[0][1] == 'login']
+    clones = [item for item in seen if item[0][1] == 'clone']
+    lists = [item for item in seen if item[0][1] == 'list']
+    assert logins[0][0] == ['hope', 'login', USER]
+    assert logins[0][1]['stdin'] is subprocess.DEVNULL
+    assert logins[0][1]['timeout'] == model_fetch.LOGIN_TIMEOUT
+    assert '-p' not in logins[0][0]
+    clone_kwargs = clones[0][1]
+    list_kwargs = lists[0][1]
     assert clone_kwargs['stdin'] is subprocess.DEVNULL
     assert 'timeout' not in clone_kwargs
     assert list_kwargs['stdin'] is subprocess.DEVNULL
     assert list_kwargs['timeout'] == model_fetch.LIST_TIMEOUT
-    assert seen[0][0][:3] == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
-    assert f'--token={TOKEN}' in seen[0][0]
-    assert seen[1][0] == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
+    assert clones[0][0][:3] == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
+    assert f'--token={TOKEN}' in clones[0][0]
+    assert lists[0][0] == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
+    assert 'hope 开始 hope login ***' in text
     formatted = _hope_handler().format(caplog.records[0])
     assert re.search(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}', formatted)
     assert '%(asctime)s' in _hope_handler().formatter._fmt
@@ -675,21 +699,20 @@ def test_password_prompt_fails_fetch_and_does_not_inherit_stdin(tmp_path, hope_e
     seen = []
 
     def runner(argv, **kwargs):
-        seen.append(dict(kwargs))
-        dest = Path(kwargs['cwd']) / 'Qwen2.5-7B-Instruct'
-        dest.mkdir(parents=True, exist_ok=True)
+        seen.append((list(argv), dict(kwargs)))
         return Completed(returncode=1, stderr=PASSWORD_PROMPT)
 
     status = _fetcher(tmp_path, runner).ensure('model', REPO, background=False)
     assert status.state == '失败'
-    assert status.message == LOGIN_MESSAGE
-    assert 'RSI_HOPE_USERNAME' in status.message
-    assert 'RSI_HOPE_TOKEN' in status.message
+    assert status.message == login_unconfirmed_message()
+    assert status.message == f'hope 登录未确认：请点重新拉取再发一次，或在终端执行 hope login {USER}'
+    assert 'RSI_HOPE_TOKEN' not in status.message
     assert TOKEN not in status.message
-    assert USER not in status.message
-    assert seen[0]['stdin'] is subprocess.DEVNULL
-    assert 'timeout' not in seen[0]
-    assert 'hope 需要登录' in caplog.text
+    assert seen[0][0] == ['hope', 'login', USER]
+    assert seen[0][1]['stdin'] is subprocess.DEVNULL
+    assert seen[0][1]['timeout'] == model_fetch.LOGIN_TIMEOUT
+    assert all(item[0][1] != 'clone' for item in seen)
+    assert status.message in caplog.text
     assert TOKEN not in caplog.text
 
 
@@ -702,11 +725,11 @@ def test_list_password_prompt_stops_before_clone(tmp_path, hope_env):
 
     status = _fetcher(tmp_path, runner).refresh('model', REPO, background=False)
     assert status.state == '失败'
-    assert status.message == LOGIN_MESSAGE
-    assert len(calls) == 1
-    assert calls[0][0][1] == 'list'
+    assert status.message == login_unconfirmed_message()
+    assert f'hope login {USER}' in status.message
+    assert [item[0][1] for item in calls] == ['login']
     assert calls[0][1]['stdin'] is subprocess.DEVNULL
-    assert calls[0][1]['timeout'] == model_fetch.LIST_TIMEOUT
+    assert calls[0][1]['timeout'] == model_fetch.LOGIN_TIMEOUT
     assert TOKEN not in status.message
 
 
@@ -773,7 +796,10 @@ def test_describe_startup_reports_presence_only(tmp_path, monkeypatch, capsys, c
     text = describe_startup()
     assert text == 'model_source=hope hope_username=no hope_token=yes'
     assert 'super-secret' not in text
+    assert login_unconfirmed_message() == 'hope 未登录：请设置 hope_username'
+    assert 'super-secret' not in login_unconfirmed_message()
     monkeypatch.setenv('RSI_HOPE_USERNAME', 'alice')
+    assert 'hope login alice' in login_unconfirmed_message()
     monkeypatch.delenv('RSI_HOPE_TOKEN', raising=False)
     present = describe_startup()
     assert present == 'model_source=hope hope_username=yes hope_token=no'
@@ -785,6 +811,8 @@ def test_describe_startup_reports_presence_only(tmp_path, monkeypatch, capsys, c
     monkeypatch.setattr(entry, 'create_app', lambda: app)
     monkeypatch.setattr(entry, 'mount_swift_ui', lambda _app: True)
     monkeypatch.setattr(entry.uvicorn, 'run', lambda *args, **kwargs: None)
+    kicked = []
+    monkeypatch.setattr(entry, 'kick_hope_login', lambda: kicked.append(True))
     monkeypatch.setenv('RSI_HOPE_TOKEN', 'super-secret')
     monkeypatch.delenv('RSI_HOPE_USERNAME', raising=False)
     entry.main()
@@ -793,6 +821,7 @@ def test_describe_startup_reports_presence_only(tmp_path, monkeypatch, capsys, c
     assert 'RSI 启动 model_source=hope hope_username=no hope_token=yes' in combined
     assert 'super-secret' not in combined
     assert 'alice' not in combined
+    assert kicked == [True]
 
 
 LOGIN_BANNER = (
@@ -815,31 +844,40 @@ def test_list_sends_username_and_login_banner_fails(tmp_path, hope_env, caplog):
         return Completed(returncode=1, stdout=banner)
 
     status = _fetcher(tmp_path, runner).refresh('model', REPO, background=False)
-    assert calls[0] == list_argv(REPO)
-    assert calls[0] == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
-    assert not any(item.startswith(('--username=', '--token=', '--params=')) for item in calls[0])
+    assert calls[0] == ['hope', 'login', USER]
+    assert '-p' not in calls[0]
     assert status.state == '失败'
-    assert status.message == LOGIN_MESSAGE
-    assert USER not in status.message
-    assert USER not in caplog.text
+    assert status.message == login_unconfirmed_message()
+    assert f'hope login {USER}' in status.message
+    assert '重新拉取' in status.message
+    assert f'hope login {USER}' in caplog.text
     assert TOKEN not in caplog.text
     assert '--username=' not in caplog.text
     assert '--token=' not in caplog.text
+    assert all(item[1] != 'list' for item in calls)
 
 
 def test_list_timeout_on_login_banner_is_a_failure(tmp_path, hope_env, caplog):
     caplog.set_level(logging.INFO, logger='rsi.model_fetch')
     banner = LOGIN_BANNER.format(user=USER)
+    calls = []
 
     def runner(argv, **kwargs):
-        raise subprocess.TimeoutExpired(argv, kwargs.get('timeout', 60), output=banner)
+        calls.append(list(argv))
+        if argv[1] == 'login':
+            raise subprocess.TimeoutExpired(argv, kwargs.get('timeout', 90), output='快速登录超时')
+        raise AssertionError('list should wait until login succeeds')
 
     status = _fetcher(tmp_path, runner).refresh('model', REPO, background=False)
+    assert calls == [['hope', 'login', USER]]
     assert status.state == '失败'
-    assert status.message == LOGIN_MESSAGE
+    assert status.message == login_unconfirmed_message()
+    assert f'hope login {USER}' in status.message
     assert 'exit=超时' in caplog.text
-    assert USER not in caplog.text
+    assert f'hope login {USER}' in caplog.text
     assert TOKEN not in status.message
+    assert hope_needs_login('快速登录超时')
+    assert hope_needs_login(banner)
 
 
 def test_yaml_username_is_used_until_env_is_set(tmp_path, monkeypatch):
@@ -856,6 +894,8 @@ def test_yaml_username_is_used_until_env_is_set(tmp_path, monkeypatch):
     assert not any(item.startswith('--token=') for item in real)
     assert public == ['hope', 'clone', 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct']
     assert describe_startup() == 'model_source=hope hope_username=yes hope_token=no'
+    assert login_unconfirmed_message() == (
+        'hope 登录未确认：请点重新拉取再发一次，或在终端执行 hope login from-yaml')
     monkeypatch.setenv('RSI_HOPE_USERNAME', 'from-env')
     assert list_argv(REPO) == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
     real, public = clone_argv('https://huggingface.co/Qwen/Qwen2.5-7B-Instruct')
@@ -872,4 +912,183 @@ def test_committed_username_is_not_in_code_or_token_file():
     assert 'liyuhao03' not in (root / 'model_fetch.py').read_text(encoding='utf-8')
     readme = (root / 'README.md').read_text(encoding='utf-8')
     assert 'hope_username: liyuhao03' in readme
+    assert 'hope login liyuhao03' in readme
+    assert '已向大象发送登录确认，请在大象里确认' in readme
     assert 'RSI_HOPE_TOKEN' in readme
+
+
+REAL_LOGIN = (
+    '2026-10-19 19:56:36 HOPE登录认证(帮助文档:https://km.sankuai.com/page/69700154)\n'
+    '2026-10-19 19:56:36 HOPE_LOGIN_MODE: dx_confirm\n'
+    '2026-10-19 19:56:36 认证消息已发送至大象，请关注万象机器学习公众号消息并确认登录\n'
+    '2026-10-19 19:56:45 登录成功\n'
+)
+
+
+def test_confirmed_login_is_success_and_is_not_repeated(tmp_path, hope_env, caplog):
+    caplog.set_level(logging.INFO, logger='rsi.model_fetch')
+    assert hope_needs_login(REAL_LOGIN)
+    assert hope_login_succeeded(Completed(returncode=0, stdout=REAL_LOGIN))
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(list(argv))
+        if argv[1] == 'login':
+            assert kwargs['stdin'] is subprocess.DEVNULL
+            assert kwargs['timeout'] == model_fetch.LOGIN_TIMEOUT
+            assert '-p' not in argv
+            return Completed(returncode=0, stdout=REAL_LOGIN)
+        return Completed(stdout='submitted, pending')
+
+    fetcher = _fetcher(tmp_path, runner)
+    status = fetcher.ensure('model', REPO, background=False)
+    assert status.state == '同步中'
+    assert calls[0] == ['hope', 'login', USER]
+    assert calls[1][1] == 'clone'
+    other = fetcher.ensure('dataset', 'openai/gsm8k', background=False)
+    assert other.state == '同步中'
+    assert [item[1] for item in calls] == ['login', 'clone', 'clone']
+    assert 'hope 开始 hope login ***' in caplog.text
+    assert 'exit=0' in caplog.text
+    assert '登录成功' in caplog.text
+    assert USER not in caplog.text
+    assert TOKEN not in caplog.text
+
+
+def test_login_wait_is_shared_and_shown_on_the_fetch_bar(tmp_path, hope_env, monkeypatch):
+    monkeypatch.delenv('RSI_FETCH_INLINE', raising=False)
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append((list(argv), kwargs.get('timeout')))
+        if argv[1] == 'login':
+            started.set()
+            assert release.wait(3)
+            return Completed(stdout='登录成功')
+        return Completed(stdout='submitted, pending')
+
+    fetcher = _fetcher(tmp_path, runner)
+    fetcher.ensure('model', REPO, background=True)
+    assert started.wait(3)
+    assert fetcher.status_of('model', REPO).state == '同步中'
+    assert fetcher.status_of('model', REPO).message == LOGIN_WAITING
+    fetcher.ensure('dataset', 'openai/gsm8k', background=True)
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        if fetcher.status_of('dataset', 'openai/gsm8k').message == LOGIN_WAITING:
+            break
+        time.sleep(0.05)
+    assert fetcher.status_of('dataset', 'openai/gsm8k').message == LOGIN_WAITING
+    assert [item[0][1] for item in calls] == ['login']
+    assert calls[0][1] == model_fetch.LOGIN_TIMEOUT
+    release.set()
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        model_done = fetcher.status_of('model', REPO).message != LOGIN_WAITING
+        data_done = fetcher.status_of('dataset', 'openai/gsm8k').state == '同步中'
+        if model_done and data_done and not model_fetch._login_inflight:
+            break
+        time.sleep(0.05)
+    assert [item[0][1] for item in calls].count('login') == 1
+    assert [item[0][1] for item in calls].count('clone') == 2
+    assert fetcher.status_of('model', REPO).message != LOGIN_WAITING
+
+
+def test_login_timeout_does_not_spam_until_refetch(tmp_path, hope_env, caplog):
+    caplog.set_level(logging.INFO, logger='rsi.model_fetch')
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(list(argv))
+        assert kwargs['stdin'] is subprocess.DEVNULL
+        if argv[1] == 'login':
+            raise subprocess.TimeoutExpired(argv, kwargs.get('timeout', 90), output='快速登录超时')
+        raise AssertionError(argv)
+
+    fetcher = _fetcher(tmp_path, runner)
+    first = fetcher.ensure('model', REPO, background=False)
+    assert first.state == '失败'
+    assert first.message == f'hope 登录未确认：请点重新拉取再发一次，或在终端执行 hope login {USER}'
+    assert TOKEN not in first.message
+    second = fetcher.ensure('model', REPO, background=False)
+    assert second.state == '失败'
+    assert second.message == first.message
+    assert calls == [['hope', 'login', USER]]
+    again = fetcher.refresh('model', REPO, background=False)
+    assert again.state == '失败'
+    assert calls == [['hope', 'login', USER], ['hope', 'login', USER]]
+    assert caplog.text.count('exit=超时') == 2
+
+
+def test_list_banner_retries_login_once_then_cools_down(tmp_path, hope_env):
+    calls = []
+    banner = LOGIN_BANNER.format(user=USER)
+
+    def runner(argv, **kwargs):
+        calls.append(list(argv))
+        if argv[1] == 'login':
+            return Completed(returncode=0, stdout='登录成功')
+        return Completed(returncode=1, stdout=banner)
+
+    fetcher = _fetcher(tmp_path, runner)
+    status = fetcher.refresh('model', REPO, background=False)
+    assert [item[1] for item in calls] == ['login', 'list', 'login', 'list']
+    assert calls[1] == ['hope', 'list', '--creator=all', '--name_like=Qwen2.5-7B-Instruct']
+    assert not any(item.startswith(('--username=', '--token=', '--params=')) for item in calls[1])
+    assert status.state == '失败'
+    assert status.message == login_unconfirmed_message()
+    calls.clear()
+    held = fetcher.ensure('model', REPO, background=False)
+    assert held.state == '失败'
+    assert calls == []
+    fetcher.refresh('model', REPO, background=False)
+    assert calls[0] == ['hope', 'login', USER]
+
+
+def test_missing_username_asks_to_set_hope_username(tmp_path, monkeypatch):
+    cfg = tmp_path / 'fetch.yaml'
+    cfg.write_text('model_source: hope\n', encoding='utf-8')
+    monkeypatch.setenv('RSI_FETCH_CONFIG', str(cfg))
+    monkeypatch.setenv('RSI_MODEL_SOURCE', 'hope')
+    monkeypatch.setenv('RSI_FETCH_INLINE', '1')
+    monkeypatch.delenv('RSI_HOPE_USERNAME', raising=False)
+    monkeypatch.delenv('RSI_HOPE_TOKEN', raising=False)
+    calls = []
+    status = _fetcher(tmp_path, lambda *args, **kwargs: calls.append(args)).ensure(
+        'model', REPO, background=False)
+    assert calls == []
+    assert status.state == '失败'
+    assert status.message == 'hope 未登录：请设置 hope_username'
+
+
+def test_kick_hope_login_is_nonblocking(tmp_path, hope_env, monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(list(argv))
+        assert kwargs['stdin'] is subprocess.DEVNULL
+        assert kwargs['timeout'] == model_fetch.LOGIN_TIMEOUT
+        started.set()
+        assert release.wait(3)
+        return Completed(stdout='登录成功')
+
+    kick_hope_login(runner=runner)
+    assert started.wait(3)
+    assert calls == [['hope', 'login', USER]]
+    release.set()
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and model_fetch._login_inflight:
+        time.sleep(0.05)
+    assert model_fetch._login_ok
+    monkeypatch.setenv('RSI_MODEL_SOURCE', 'modelscope')
+    kick_hope_login(runner=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('logged in again')))
+    cfg = tmp_path / 'fetch.yaml'
+    cfg.write_text('model_source: hope\n', encoding='utf-8')
+    monkeypatch.setenv('RSI_FETCH_CONFIG', str(cfg))
+    monkeypatch.setenv('RSI_MODEL_SOURCE', 'hope')
+    monkeypatch.delenv('RSI_HOPE_USERNAME', raising=False)
+    kick_hope_login(runner=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('missing misid')))

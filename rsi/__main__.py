@@ -6,7 +6,7 @@ import uvicorn
 from fastapi.responses import HTMLResponse
 
 from rsi.app import create_app
-from rsi.model_fetch import describe_startup
+from rsi.model_fetch import describe_startup, kick_hope_login
 
 _SWIFT_UI_FALLBACK = """<!DOCTYPE html>
 <html lang="zh-CN">
@@ -68,6 +68,7 @@ def main():
     startup = describe_startup()
     print(f'RSI 启动 {startup}')
     logging.getLogger('rsi.model_fetch').info('RSI 启动 %s', startup)
+    kick_hope_login()
     print(f'RSI UI: http://{shown}:{port}/  (listen {host}:{port}, backend={app.state.pipeline.backend.name})')
     uvicorn.run(app, host=host, port=port, log_level='info')
 

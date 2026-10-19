@@ -100,7 +100,7 @@ hope 模式下可以不装 modelscope 这个 pip 包：`swift/utils/logger.py` �
 | `RSI_MODEL_SOURCE` | 覆盖 fetch.yaml。可选 `hope`（配置文件里的默认）、`hf`、`modelscope`、`local` |
 | `RSI_MODEL_ROOT` | 模型目录。hope 会把 `org/name` 放到 `<根>/<org>/<name>`。对应 `fetch.yaml` 的 `model_root` |
 | `RSI_DATA_ROOT` | 数据集目录，对应 `data_root` |
-| `RSI_HOPE_USERNAME` / `RSI_HOPE_TOKEN` | 只加在 `hope clone` 的 `--username=` / `--token=` 上。`hope list` 不接受这些参数。token 只放环境变量，不会进日志。不要把 token 写进 yaml |
+| `RSI_HOPE_USERNAME` / `RSI_HOPE_TOKEN` | 用户名同时用于 `hope login <misid>` 和 `hope clone --username=`。token 只作为 `hope clone` 的 git token（`--token=`），不是平台登录。`hope list` 不接受这些参数。token 不要写进 yaml |
 | `RSI_FETCH_CONFIG` | 另选一份 yaml，键与 `fetch.yaml` 相同 |
 
 `fetch.yaml` 示例：
@@ -112,7 +112,9 @@ model_root: /data/models
 data_root: /data/datasets
 ```
 
-仓库里的 `fetch.yaml` 已写 `hope_username: liyuhao03`，`./run.sh` 会把它传给 `hope clone`。`hope list` 只有 `hope list --creator=all --name_like=<模型名>`，不带用户名或 token。换 misid 改这一行，或用 `RSI_HOPE_USERNAME` 覆盖。token 仍只走 `RSI_HOPE_TOKEN`。
+仓库里的 `fetch.yaml` 已写 `hope_username: liyuhao03`。这个 misid 会传给 `hope login`，也会作为 `hope clone` 的 `--username=`。`hope list` 只有 `hope list --creator=all --name_like=<模型名>`，不带用户名或 token。换 misid 改这一行，或用 `RSI_HOPE_USERNAME` 覆盖。token 仍只走 `RSI_HOPE_TOKEN`，只给 `hope clone` 当 git 凭据，不能代替平台登录。
+
+平台登录由 RSI 自己执行。启动时，以及每次 `hope clone` / `hope list` 之前，会跑 `hope login liyuhao03`（标准输入关闭，最多等约 90 秒）。hope 会往大象发确认；页面上显示「已向大象发送登录确认，请在大象里确认」。确认后 hope 打印「登录成功」，接着才会 clone 或 list。已经登录时这条命令大约 1 秒返回；同一次进程里随后的 clone / list 不再重复调用，除非 hope 又打出登录认证。同一时间只跑一次登录。失败或超时后几分钟内不会再次发给大象，点「重新拉取」可以马上再发一次。超时或未确认时，拉取状态是「hope 登录未确认：请点重新拉取再发一次，或在终端执行 hope login liyuhao03」。没有配置 misid 时会提示设置 `hope_username`。
 
 hope 本身要事先装好（`./run.sh` 不会安装它）。来源是 hope 但找不到 `hope` 命令时，`./run.sh` 打印下面这一行并立刻以非 0 退出，不会把服务拉起来：
 
@@ -120,7 +122,7 @@ hope 本身要事先装好（`./run.sh` 不会安装它）。来源是 hope 但�
 pip3 install hope==3.6.6 --no-cache-dir -i https://pypi.sankuai.com/simple
 ```
 
-进程日志是 `rsi/.rsi.log`。纯文本是 `http://<主机>:8418/api/server-log`（没有这个文件时是 404）。自动跟上新日志的页面是 `/server-log`。它先用 SSE `/api/server-log/events`；几秒内没有推送就改为定时拉取 `/api/server-log/stream`。每次 `hope clone` / `hope list` 都会把命令、目录、退出码和输出写进这份日志（用户名、token、`--params` 不会出现）。hope 的标准输入是关闭的，不会停在密码提示上；没配登录信息时，拉取状态是「hope 需要登录：请在启动前设置 RSI_HOPE_USERNAME 和 RSI_HOPE_TOKEN」。
+进程日志是 `rsi/.rsi.log`。纯文本是 `http://<主机>:8418/api/server-log`（没有这个文件时是 404）。自动跟上新日志的页面是 `/server-log`。它先用 SSE `/api/server-log/events`；几秒内没有推送就改为定时拉取 `/api/server-log/stream`。每次 `hope login` / `hope clone` / `hope list` 都会把命令、目录、退出码和输出写进这份日志（用户名、token、`--params` 不会出现在命令里）。hope 的标准输入是关闭的，不会停在密码提示上。
 
 `hope --version` 应为 3.6.6。同步是异步的：第一次只提交任务。实验页面打开时会定期执行 `hope list --creator=all --name_like=<模型名>`，把 hope 打印的状态原文显示在「重新拉取」旁边。没有百分比时不会编一个。目录里出现 `config.json` 后才是「就绪」，训练命令的 `--model` 改为本地路径，并带上 `--model_type` 和 `--template`。子进程会设置 `HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`、`HF_DATASETS_OFFLINE=1`。
 

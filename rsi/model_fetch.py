@@ -32,9 +32,19 @@ REPO_ID = re.compile(r'^[A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*$')
 _LOCK = threading.Lock()
 _INFLIGHT = set()
 _HOPE_WARNED = False
-LOGIN_MESSAGE = 'hope 需要登录：请在启动前设置 RSI_HOPE_USERNAME 和 RSI_HOPE_TOKEN'
-_FAILURE_NOTES = {'下载工具不可用', LOGIN_MESSAGE}
+_TOOL_FAILURE = '下载工具不可用'
+LOGIN_WAITING = '已向大象发送登录确认，请在大象里确认'
+LOGIN_TIMEOUT = 90
+LOGIN_COOLDOWN = 180
+_LOGIN_FAIL_PREFIX = 'hope 登录未确认：'
+_LOGIN_MISSING_USER = 'hope 未登录：请设置 hope_username'
 LIST_TIMEOUT = 60
+_login_mu = threading.Lock()
+_login_cv = threading.Condition(_login_mu)
+_login_inflight = False
+_login_ok = False
+_login_failed_at = 0.0
+_login_generation = 0
 _LOG_LIMIT = 2000
 logger = logging.getLogger('rsi.model_fetch')
 
@@ -211,6 +221,11 @@ def list_argv(repo_id: str) -> list:
     return ['hope', 'list', '--creator=all', f'--name_like={name}']
 
 
+def login_argv() -> list:
+    """Platform login. Clone's ``--username`` is a git credential, not this."""
+    return ['hope', 'login', hope_username()]
+
+
 def public_hope_command(argv: list) -> str:
     """Command safe to write in the launch log. Drops credential flags."""
     kept = []
@@ -219,6 +234,34 @@ def public_hope_command(argv: list) -> str:
             continue
         kept.append(token)
     return redact(' '.join(kept))
+
+
+def login_unconfirmed_message() -> str:
+    """Shown when ``hope login`` timed out, failed, or no misid is configured."""
+    misid = hope_username()
+    if not misid:
+        return _LOGIN_MISSING_USER
+    return f'{_LOGIN_FAIL_PREFIX}请点重新拉取再发一次，或在终端执行 hope login {misid}'
+
+
+def _is_failure_note(note: str) -> bool:
+    text = note or ''
+    return text == _TOOL_FAILURE or text.startswith('hope 未登录：') or text.startswith(_LOGIN_FAIL_PREFIX)
+
+
+def hope_login_succeeded(result) -> bool:
+    """Success is exit 0, or ``登录成功`` anywhere in the output.
+
+    A confirmed login still prints the dx_confirm banner before ``登录成功``,
+    so the banner alone is not a failure.
+    """
+    if result in (None, 'missing-tool'):
+        return False
+    text = _result_text(result)
+    if '登录成功' in text:
+        return True
+    code = getattr(result, 'returncode', 1)
+    return code == 0 and not hope_needs_login(text)
 
 
 def hope_needs_login(text: str) -> bool:
@@ -230,10 +273,47 @@ def hope_needs_login(text: str) -> bool:
         return True
     for marker in (
             'mis密码', '请输入密码', '用户名(misid)', '用户名（misid）', 'HOPE登录认证',
-            '认证消息已发送至大象', '确认登录', '认证失败', '登录失败'):
+            '认证消息已发送至大象', '确认登录', '快速登录超时', '认证失败', '登录失败'):
         if marker in raw:
             return True
     return False
+
+
+def reset_hope_login_state() -> None:
+    """Drop cached login success and wake anyone waiting on an old attempt."""
+    global _login_inflight, _login_ok, _login_failed_at, _login_generation
+    with _login_mu:
+        _login_inflight = False
+        _login_ok = False
+        _login_failed_at = 0.0
+        _login_generation += 1
+        _login_cv.notify_all()
+
+
+def _login_cooled_down(force: bool) -> bool:
+    if force or not _login_failed_at:
+        return False
+    return time.monotonic() - _login_failed_at < LOGIN_COOLDOWN
+
+
+def _claim_login() -> int:
+    global _login_inflight, _login_ok
+    _login_inflight = True
+    _login_ok = False
+    return _login_generation
+
+
+def _invalidate_login() -> None:
+    global _login_ok
+    with _login_mu:
+        _login_ok = False
+
+
+def _cooldown_login() -> None:
+    global _login_ok, _login_failed_at
+    with _login_mu:
+        _login_ok = False
+        _login_failed_at = time.monotonic()
 
 
 def describe_startup() -> str:
@@ -417,7 +497,9 @@ class ModelFetcher:
             inflight = key in _INFLIGHT
             note = self._notes.get(key, '')
             progress = self._progress.get(key, '')
-        if note in _FAILURE_NOTES and not inflight:
+        if progress == LOGIN_WAITING:
+            return FetchStatus(kind, repo_id_of(repo_id), str(path), '同步中', LOGIN_WAITING)
+        if _is_failure_note(note) and not inflight:
             return FetchStatus(kind, repo_id_of(repo_id), str(path), '失败', note)
         if inflight or note == '同步中' or path.exists() or progress:
             return FetchStatus(kind, repo_id_of(repo_id), str(path), '同步中', progress or '同步中')
@@ -451,7 +533,10 @@ class ModelFetcher:
             self._probed_at[key] = time.monotonic()
 
         def job():
-            listed = self._run(list_argv(repo), cwd=self.home, target=self._path_for(kind, repo))
+            key = f'{kind}:{repo}'
+            listed = self._run(
+                list_argv(repo), cwd=self.home, target=self._path_for(kind, repo),
+                repo_key=key, force_login=True)
             if self._remember_progress(kind, repo, listed):
                 return
             self._start_clone(kind, repo, background=False)
@@ -489,7 +574,8 @@ class ModelFetcher:
 
         def job():
             try:
-                listed = self._run(list_argv(repo), cwd=self.home, target=self._path_for(kind, repo))
+                listed = self._run(
+                    list_argv(repo), cwd=self.home, target=self._path_for(kind, repo), repo_key=key)
                 self._remember_progress(kind, repo, listed)
             finally:
                 with _LOCK:
@@ -502,16 +588,15 @@ class ModelFetcher:
         return self.status_of(kind, repo)
 
     def _remember_progress(self, kind: str, repo_id: str, result) -> bool:
-        """Store list text. Return True when hope asked for a login and clone must stop."""
+        """Store list text. Return True when login failed and clone must stop."""
+        if result in {'login-failed', 'no-user'}:
+            return True
         if result in (None, 'missing-tool'):
             return False
         text = _result_text(result)
         key = f'{kind}:{repo_id_of(repo_id)}'
         if hope_needs_login(text):
-            with _LOCK:
-                self._notes[key] = LOGIN_MESSAGE
-                self._progress.pop(key, None)
-            logger.info('hope 需要登录 %s %s', kind, repo_id_of(repo_id))
+            self._note_login_failure(key)
             return True
         message = parse_hope_list(text, repo_id)
         if not message:
@@ -537,15 +622,16 @@ class ModelFetcher:
             ready_now = False
             try:
                 argv, _public = clone_argv(self._url_for(kind, repo_id))
-                result = self._run(argv, cwd=path.parent, target=path)
-                with _LOCK:
-                    if result == 'missing-tool':
-                        self._notes[key] = '下载工具不可用'
-                    elif hope_needs_login(_result_text(result)):
-                        self._notes[key] = LOGIN_MESSAGE
-                        self._progress.pop(key, None)
-                        logger.info('hope 需要登录 %s %s', kind, repo_id)
-                    else:
+                result = self._run(argv, cwd=path.parent, target=path, repo_key=key)
+                if result == 'missing-tool':
+                    with _LOCK:
+                        self._notes[key] = _TOOL_FAILURE
+                elif result in {'login-failed', 'no-user'}:
+                    pass
+                elif hope_needs_login(_result_text(result)):
+                    self._note_login_failure(key)
+                else:
+                    with _LOCK:
                         self._notes.pop(key, None)
             finally:
                 with _LOCK:
@@ -554,7 +640,7 @@ class ModelFetcher:
                         self._notes.pop(key, None)
                         self._progress.pop(key, None)
                         ready_now = True
-                    elif self._notes.get(key) not in _FAILURE_NOTES:
+                    elif not _is_failure_note(self._notes.get(key, '')):
                         self._notes[key] = '同步中'
             if ready_now:
                 logger.info('hope 就绪 %s %s %s', kind, repo_id, path)
@@ -564,7 +650,132 @@ class ModelFetcher:
             return
         job()
 
-    def _run(self, argv: list, cwd: Path, target: Path | None = None):
+    def _mark_waiting(self, repo_key: str | None, *, announce: bool) -> None:
+        if repo_key:
+            with _LOCK:
+                self._progress[repo_key] = LOGIN_WAITING
+        if announce:
+            logger.info('%s', LOGIN_WAITING)
+
+    def _clear_login_failure(self, repo_key: str | None) -> None:
+        if not repo_key:
+            return
+        with _LOCK:
+            if _is_failure_note(self._notes.get(repo_key, '')):
+                self._notes.pop(repo_key, None)
+            if self._progress.get(repo_key) == LOGIN_WAITING:
+                self._progress.pop(repo_key, None)
+
+    def _note_login_failure(self, repo_key: str | None) -> None:
+        message = login_unconfirmed_message()
+        if not repo_key:
+            logger.info('%s', message)
+            return
+        with _LOCK:
+            changed = self._notes.get(repo_key) != message
+            self._notes[repo_key] = message
+            self._progress.pop(repo_key, None)
+        if changed:
+            logger.info('%s', message)
+
+    def _ensure_login(self, *, force: bool, repo_key: str | None, cwd: Path) -> str:
+        """Run ``hope login`` once. Other fetches wait on that attempt.
+
+        A cached success is reused until a later command prints the login banner.
+        A failure or timeout is not repeated until ``LOGIN_COOLDOWN`` passes.
+        ``force`` is the manual 重新拉取 path and skips that cooldown. stdin stays
+        closed and the process is killed at ``LOGIN_TIMEOUT`` so a missed
+        大象 confirm cannot fall through to getpass.
+        """
+        if not hope_username():
+            self._note_login_failure(repo_key)
+            return 'no-user'
+        while True:
+            with _login_mu:
+                if _login_inflight:
+                    role = 'wait'
+                elif _login_ok:
+                    role = 'ok'
+                elif _login_cooled_down(force):
+                    role = 'failed'
+                else:
+                    role = 'run'
+                    generation = _claim_login()
+            if role == 'wait':
+                self._mark_waiting(repo_key, announce=False)
+                with _login_mu:
+                    if _login_inflight:
+                        _login_cv.wait()
+                force = False
+                continue
+            if role == 'ok':
+                self._clear_login_failure(repo_key)
+                return 'ok'
+            if role == 'failed':
+                self._note_login_failure(repo_key)
+                return 'login-failed'
+            self._mark_waiting(repo_key, announce=True)
+            return self._finish_login_attempt(cwd, repo_key, generation)
+
+    def _finish_login_attempt(self, cwd: Path, repo_key: str | None, generation: int) -> str:
+        global _login_inflight, _login_ok, _login_failed_at
+        missing = False
+        ok = False
+        error = None
+        try:
+            result = self._execute(login_argv(), cwd=cwd, timeout=LOGIN_TIMEOUT)
+            missing = result == 'missing-tool'
+            ok = (not missing) and hope_login_succeeded(result)
+        except Exception as exc:
+            error = exc
+        finally:
+            with _login_mu:
+                if generation == _login_generation:
+                    _login_inflight = False
+                    if ok:
+                        _login_ok = True
+                        _login_failed_at = 0.0
+                    else:
+                        _login_ok = False
+                        if not missing:
+                            _login_failed_at = time.monotonic()
+                _login_cv.notify_all()
+        if error is not None:
+            self._clear_login_failure(repo_key)
+            raise error
+        if missing:
+            self._clear_login_failure(repo_key)
+            return 'missing-tool'
+        if ok:
+            self._clear_login_failure(repo_key)
+            return 'ok'
+        self._note_login_failure(repo_key)
+        return 'login-failed'
+
+    def _run(self, argv: list, cwd: Path, target: Path | None = None, *,
+             repo_key: str | None = None, force_login: bool = False, allow_login_retry: bool = True):
+        kind = argv[1] if len(argv) >= 2 else ''
+        if kind in {'clone', 'list'}:
+            outcome = self._ensure_login(force=force_login, repo_key=repo_key, cwd=cwd)
+            if outcome != 'ok':
+                return outcome
+        result = self._execute(argv, cwd=cwd, target=target)
+        if kind not in {'clone', 'list'}:
+            return result
+        if not hope_needs_login(_result_text(result)):
+            return result
+        if not allow_login_retry:
+            self._note_login_failure(repo_key)
+            _cooldown_login()
+            return 'login-failed'
+        _invalidate_login()
+        outcome = self._ensure_login(force=False, repo_key=repo_key, cwd=cwd)
+        if outcome != 'ok':
+            return outcome
+        return self._run(
+            argv, cwd, target, repo_key=repo_key, force_login=False, allow_login_retry=False)
+
+    def _execute(self, argv: list, cwd: Path, target: Path | None = None, timeout: int | None = None):
         command = public_hope_command(argv)
         kwargs = {
             'cwd': str(cwd),
@@ -573,7 +784,9 @@ class ModelFetcher:
             'check': False,
             'stdin': subprocess.DEVNULL,
         }
-        if len(argv) >= 2 and argv[1] == 'list':
+        if timeout is not None:
+            kwargs['timeout'] = timeout
+        elif len(argv) >= 2 and argv[1] == 'list':
             kwargs['timeout'] = LIST_TIMEOUT
         where = f'cwd={cwd}'
         if target is not None:
@@ -595,6 +808,21 @@ class ModelFetcher:
         code = getattr(completed, 'returncode', 1)
         logger.info('hope 结束 %s %s exit=%s\n%s', command, where, code, _trim_log(f'{stdout}\n{stderr}'))
         return completed
+
+
+def kick_hope_login(runner=None) -> None:
+    """Start one non-blocking ``hope login`` when this process serves hope."""
+    if model_source() != 'hope' or not hope_username():
+        return
+    fetcher = ModelFetcher(Path.cwd(), runner=runner)
+
+    def job():
+        try:
+            fetcher._ensure_login(force=False, repo_key=None, cwd=Path.cwd())
+        except Exception:
+            logger.exception('hope 登录')
+
+    threading.Thread(target=job, daemon=True, name='hope-login').start()
 
 
 def benchmark_dir(home: Path, name: str) -> Path:
