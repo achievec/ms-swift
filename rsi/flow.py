@@ -12,20 +12,16 @@ ACTION_LABELS = {
     'finish': '完成',
 }
 
-# One horizontal trunk. Decision exits hang straight under the active eval
-# so the lines do not cross. 晋级 is the form behind 「下一轮数据」, not its own node.
-NODE_W = 124
-NODE_H = 64
+# The guide is a fixed template. Every branch is drawn on every round.
+# Unreached nodes stay gray; reachable and taken edges are highlighted.
+NODE_W = 108
+NODE_H = 52
 TRUNK_Y = 16
-OUT_Y = 156
-TRUNK = (
-    ('data', '数据', 12),
-    ('sft', 'SFT', 164),
-    ('sft_eval', 'SFT 评测', 316),
-    ('rl', '在线 RL', 488),
-    ('rl_eval', 'RL 评测', 640),
-)
-CANVAS = {'width': 860, 'height': 248}
+EXIT_Y = 132
+PROMOTE_W = 92
+PROMOTE_H = 40
+PROMOTE_Y = 236
+CANVAS = {'width': 1004, 'height': 318}
 
 
 def _loads(value):
@@ -137,106 +133,194 @@ def decision_actions(run: dict, rnd: dict | None, active: dict) -> tuple:
     return _actions(['next']), 'SFT 评测不通过。'
 
 
-def _node(node_id, label, x, y, status, verdict='', metric='', terminal=False, clickable=True) -> dict:
+def _node(node_id, label, x, y, status, verdict='', metric='', terminal=False, clickable=True,
+          width=None, height=None, minor=False) -> dict:
     return {
         'id': node_id,
         'label': label,
         'x': x,
         'y': y,
-        'w': NODE_W,
-        'h': NODE_H,
+        'w': NODE_W if width is None else width,
+        'h': NODE_H if height is None else height,
         'status': status,
         'verdict': verdict,
         'metric': metric or '',
         'terminal': terminal,
         'clickable': clickable,
+        'minor': minor,
     }
 
 
-def _edge(source, target, label, live, kind) -> dict:
-    return {'from': source, 'to': target, 'label': label, 'live': bool(live), 'kind': kind}
+def _points(pairs) -> list:
+    return [[int(round(x)), int(round(y))] for x, y in pairs]
 
 
-def _outcome_slots(anchor_x, count) -> list:
-    total = count * NODE_W + (count - 1) * 20
-    start = anchor_x + NODE_W / 2 - total / 2
-    return [int(start + index * (NODE_W + 20)) for index in range(count)]
+def _label_at(points) -> tuple:
+    best_len = -1
+    best = (points[0][0], points[0][1], 'middle')
+    for (x1, y1), (x2, y2) in zip(points, points[1:]):
+        length = abs(x2 - x1) + abs(y2 - y1)
+        if length <= best_len:
+            continue
+        best_len = length
+        horizontal = abs(x2 - x1) >= abs(y2 - y1)
+        best = ((x1 + x2) / 2, (y1 + y2) / 2 - (8 if horizontal else 0), 'middle' if horizontal else 'start')
+        if not horizontal:
+            best = (x1 + 10, (y1 + y2) / 2, 'start')
+    return best
+
+
+def _edge(source, target, label, live, kind, points, taken=False, show_label=True) -> dict:
+    label_x, label_y, anchor = _label_at(points)
+    return {
+        'from': source,
+        'to': target,
+        'label': label,
+        'live': bool(live),
+        'taken': bool(taken),
+        'kind': kind,
+        'points': _points(points),
+        'show_label': bool(show_label and label),
+        'label_x': int(round(label_x)),
+        'label_y': int(round(label_y)),
+        'label_anchor': anchor,
+    }
+
+
+def _box(node_id, label, x, y, width=NODE_W, height=NODE_H):
+    return {'id': node_id, 'label': label, 'x': x, 'y': y, 'w': width, 'h': height}
+
+
+def _down_points(src, dst):
+    x1 = src['x'] + src['w'] / 2
+    y1 = src['y'] + src['h']
+    x2 = dst['x'] + dst['w'] / 2
+    y2 = dst['y']
+    if abs(x1 - x2) < 6:
+        return [(x1, y1), (x2, y2)]
+    mid = (y1 + y2) / 2
+    return [(x1, y1), (x1, mid), (x2, mid), (x2, y2)]
+
+
+def _side_points(src, dst):
+    y = src['y'] + src['h'] / 2
+    return [(src['x'] + src['w'], y), (dst['x'], y)]
 
 
 def assemble_flow(run, rnd, active, status_of, metric_of) -> dict:
-    sft_verdict = eval_verdict((active or {}).get('sft_eval'))
-    rl_verdict = eval_verdict((active or {}).get('rl_eval'))
-    rl_step = (active or {}).get('rl') or {}
+    """Fixed map: SFT eval always has four exits, RL eval always has three."""
+    active = active or {}
+    run = run or {}
+    sft_verdict = eval_verdict(active.get('sft_eval'))
+    rl_verdict = eval_verdict(active.get('rl_eval'))
+    rl_step = active.get('rl') or {}
+    rl_started = rl_step.get('status') in {'succeeded', 'running', 'syncing'}
     actions, prompt = decision_actions(run, rnd, active)
     action_ids = {item['id'] for item in actions}
-    trunk = {node_id: x for node_id, _label, x in TRUNK}
+    open_round = _round_open(run, rnd)
+    went_next = _done(active, 'next_round')
+    finished = run.get('status') == 'completed' and rnd and rnd.get('round_index') == run.get('round_index')
+    finished_after_rl = bool(finished and rl_verdict is not None)
+    finished_from_sft = bool(finished and rl_verdict is None)
+    next_from_rl = bool(went_next and rl_verdict is not None)
+    next_from_sft = bool(went_next and rl_verdict is None)
+
+    if open_round and rl_verdict is not None:
+        frontier = 'rl'
+    elif open_round and not rl_started and sft_verdict is not None:
+        frontier = 'sft'
+    else:
+        frontier = None
+
+    data = _box('data', '数据', 20, TRUNK_Y)
+    sft = _box('sft', 'SFT', 168, TRUNK_Y)
+    sft_eval = _box('sft_eval', 'SFT 评测', 316, TRUNK_Y)
+    sft_fail = _box('sft_fail', '不通过', 176, EXIT_Y)
+    sft_next = _box('sft_next', '下一轮数据', 316, EXIT_Y)
+    sft_finish = _box('sft_finish', '完成', 456, EXIT_Y)
+    rl = _box('rl', '在线 RL', 588, TRUNK_Y)
+    rl_eval = _box('rl_eval', 'RL 评测', 736, TRUNK_Y)
+    rl_fail = _box('rl_fail', '不通过', 596, EXIT_Y)
+    rl_next = _box('rl_next', '下一轮数据', 736, EXIT_Y)
+    rl_finish = _box('rl_finish', '完成', 876, EXIT_Y)
+    promote = _box('promote', '晋级', 534, PROMOTE_Y, PROMOTE_W, PROMOTE_H)
+    placed = {item['id']: item for item in (
+        data, sft, sft_eval, sft_fail, sft_next, sft_finish, rl, rl_eval, rl_fail, rl_next, rl_finish, promote)}
+
+    def branch_status(ready, taken, failed=False):
+        if taken:
+            return 'succeeded'
+        if failed:
+            return 'failed'
+        if ready:
+            return 'ready'
+        return 'locked'
+
+    sft_fail_on = sft_verdict is False
+    rl_fail_on = rl_verdict is False
+    statuses = {
+        'sft_fail': branch_status(False, False, sft_fail_on),
+        'sft_next': branch_status(frontier == 'sft' and 'next' in action_ids, next_from_sft),
+        'sft_finish': branch_status(frontier == 'sft' and 'finish' in action_ids, finished_from_sft),
+        'rl_fail': branch_status(False, False, rl_fail_on),
+        'rl_next': branch_status(frontier == 'rl' and 'next' in action_ids, next_from_rl),
+        'rl_finish': branch_status(frontier == 'rl' and 'finish' in action_ids, finished_after_rl),
+        'promote': branch_status('next' in action_ids or run.get('current_stage') in {'promote', 'next_round'}, went_next),
+    }
     nodes = []
-    for node_id, label, x in TRUNK:
+    for node_id, label, _x in (
+        ('data', '数据', 0), ('sft', 'SFT', 0), ('sft_eval', 'SFT 评测', 0), ('rl', '在线 RL', 0), ('rl_eval', 'RL 评测', 0),
+    ):
+        box = placed[node_id]
         verdict = ''
         if node_id == 'sft_eval':
             verdict = verdict_label(sft_verdict)
         elif node_id == 'rl_eval':
             verdict = verdict_label(rl_verdict)
-        nodes.append(_node(node_id, label, x, TRUNK_Y, status_of(node_id), verdict, metric_of(node_id)))
+        nodes.append(_node(node_id, label, box['x'], box['y'], status_of(node_id), verdict, metric_of(node_id)))
+    for node_id in ('sft_fail', 'sft_next', 'sft_finish', 'rl_fail', 'rl_next', 'rl_finish', 'promote'):
+        box = placed[node_id]
+        status = statuses[node_id]
+        nodes.append(_node(
+            node_id, box['label'], box['x'], box['y'], status,
+            terminal=node_id.endswith('finish'),
+            clickable=status in {'ready', 'succeeded'},
+            width=box['w'], height=box['h'], minor=node_id == 'promote',
+        ))
+
+    rl_edge_live = (frontier == 'sft' and sft_verdict is True) or rl_started or rl_verdict is not None
+    rl_edge_taken = rl_started or rl_verdict is not None
+
+    def down(src, dst, label, live, taken=False, show_label=True):
+        return _edge(src, dst, label, live, 'down', _down_points(placed[src], placed[dst]), taken, show_label)
 
     edges = [
-        _edge('data', 'sft', '', _done(active, 'data'), 'trunk'),
-        _edge('sft', 'sft_eval', '', _done(active, 'sft'), 'trunk'),
+        _edge('data', 'sft', '', _done(active, 'data'), 'trunk', _side_points(data, sft), _done(active, 'data'), False),
+        _edge('sft', 'sft_eval', '', _done(active, 'sft'), 'trunk', _side_points(sft, sft_eval), _done(active, 'sft'), False),
+        _edge('sft_eval', 'rl', 'RL', rl_edge_live, 'trunk', _side_points(sft_eval, rl), rl_edge_taken, True),
+        _edge('rl', 'rl_eval', '', _done(active, 'rl'), 'trunk', _side_points(rl, rl_eval), _done(active, 'rl'), False),
+        down('sft_eval', 'sft_fail', '不通过', sft_fail_on, sft_fail_on, True),
+        down('sft_eval', 'sft_finish', '完成', statuses['sft_finish'] in {'ready', 'succeeded'}, finished_from_sft, True),
+        down('sft_eval', 'sft_next', '下一轮数据', statuses['sft_next'] in {'ready', 'succeeded'}, next_from_sft, False),
+        _edge('sft_fail', 'sft_next', '', sft_fail_on and statuses['sft_next'] in {'ready', 'succeeded'}, 'join',
+              _side_points(sft_fail, sft_next), next_from_sft and sft_fail_on, False),
+        down('rl_eval', 'rl_fail', '不通过', rl_fail_on, rl_fail_on, True),
+        down('rl_eval', 'rl_finish', '完成', statuses['rl_finish'] in {'ready', 'succeeded'}, finished_after_rl, True),
+        down('rl_eval', 'rl_next', '下一轮数据', statuses['rl_next'] in {'ready', 'succeeded'}, next_from_rl, False),
+        _edge('rl_fail', 'rl_next', '', rl_fail_on and statuses['rl_next'] in {'ready', 'succeeded'}, 'join',
+              _side_points(rl_fail, rl_next), next_from_rl and rl_fail_on, False),
+        down('sft_next', 'promote', '', statuses['sft_next'] in {'ready', 'succeeded'}, next_from_sft, False),
+        down('rl_next', 'promote', '', statuses['rl_next'] in {'ready', 'succeeded'}, next_from_rl, False),
     ]
-    # The RL trunk stays visible until an eval has failed. A failed eval has no RL edge.
-    if sft_verdict is not False:
-        edges.append(_edge('sft_eval', 'rl', 'RL' if sft_verdict else '', sft_verdict is True, 'trunk'))
-        edges.append(_edge('rl', 'rl_eval', '', _done(active, 'rl'), 'trunk'))
-
-    # A closed round shows only the exit that was taken. An open round shows the
-    # choices that the latest eval still allows. Lines hang under that one gate.
-    exits = []
-    gate = None
-    if _done(active, 'next_round'):
-        gate = 'rl_eval' if rl_verdict is not None else 'sft_eval' if sft_verdict is not None else None
-        if gate:
-            failed = rl_verdict is False or (rl_verdict is None and sft_verdict is False)
-            exits = [('next_data', '下一轮数据', '不通过' if failed else '下一轮数据')]
-    elif ((run or {}).get('status') == 'completed' and rnd
-          and rnd.get('round_index') == (run or {}).get('round_index')):
-        gate = 'rl_eval' if rl_verdict is not None else 'sft_eval' if sft_verdict is not None else None
-        if gate:
-            exits = [('finish', '完成', '完成')]
-    elif _round_open(run, rnd):
-        rl_busy = rl_step.get('status') in {'succeeded', 'running', 'syncing'}
-        if rl_verdict is False:
-            gate, exits = 'rl_eval', [('next_data', '下一轮数据', '不通过')]
-        elif rl_verdict is True:
-            gate = 'rl_eval'
-            exits = [('next_data', '下一轮数据', '下一轮数据'), ('finish', '完成', '完成')]
-        elif sft_verdict is False and not rl_busy:
-            gate, exits = 'sft_eval', [('next_data', '下一轮数据', '不通过')]
-        elif sft_verdict is True and not rl_busy:
-            gate = 'sft_eval'
-            exits = [('next_data', '下一轮数据', '下一轮数据'), ('finish', '完成', '完成')]
-
-    if gate and exits:
-        slots = _outcome_slots(trunk[gate], len(exits))
-        right = max(node['x'] + node['w'] for node in nodes)
-        for (exit_id, label, edge_label), x in zip(exits, slots):
-            if exit_id == 'finish':
-                status = 'succeeded' if (run or {}).get('status') == 'completed' else 'ready'
-                terminal = True
-                clickable = status == 'succeeded'
-            else:
-                nxt = (active or {}).get('next_round') or {}
-                if nxt.get('status') == 'succeeded':
-                    status = 'succeeded'
-                elif 'next' in action_ids or nxt.get('status') in {'ready', 'running', 'failed', 'syncing'}:
-                    status = 'ready' if nxt.get('status') not in {'running', 'failed', 'syncing'} else nxt['status']
-                else:
-                    status = 'locked'
-                terminal = False
-                clickable = status != 'locked'
-            nodes.append(_node(exit_id, label, x, OUT_Y, status, terminal=terminal, clickable=clickable))
-            edges.append(_edge(gate, exit_id, edge_label, True, 'down'))
-            right = max(right, x + NODE_W)
-        canvas = {'width': max(CANVAS['width'], right + 16), 'height': CANVAS['height']}
-    else:
-        canvas = {'width': CANVAS['width'], 'height': TRUNK_Y + NODE_H + 28}
-    return {'canvas': canvas, 'nodes': nodes, 'edges': edges, 'actions': actions, 'prompt': prompt}
+    bottom = promote['y'] + promote['h'] + 26
+    mid_y = data['y'] + data['h'] / 2
+    edges.append(_edge(
+        'promote', 'data', '下一轮', went_next, 'return',
+        [(promote['x'] + promote['w'] / 2, promote['y'] + promote['h']),
+         (promote['x'] + promote['w'] / 2, bottom),
+         (8, bottom),
+         (8, mid_y),
+         (data['x'], mid_y)],
+        went_next, True,
+    ))
+    return {'canvas': dict(CANVAS), 'nodes': nodes, 'edges': edges, 'actions': actions, 'prompt': prompt}

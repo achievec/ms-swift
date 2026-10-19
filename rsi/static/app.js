@@ -371,6 +371,10 @@ function renderStage(stage) {
 }
 
 function flowEdgeGeometry(edge, from, to) {
+  if (edge.points && edge.points.length) {
+    const d = edge.points.map((pt, index) => `${index ? 'L' : 'M'} ${pt[0]} ${pt[1]}`).join(' ');
+    return { d, x: edge.label_x, y: edge.label_y, anchor: edge.label_anchor || 'middle' };
+  }
   if (edge.kind === 'down') {
     const x1 = from.x + from.w / 2;
     const y1 = from.y + from.h;
@@ -394,8 +398,12 @@ function flowEdgeGeometry(edge, from, to) {
 }
 
 function flowNodeSelected(node) {
-  if (node.id === 'next_data') return state.stage === 'promote' || state.stage === 'next_round';
-  if (node.id === 'finish') return state.stage === 'finish';
+  const choosingNext = state.stage === 'promote' || state.stage === 'next_round';
+  if (node.id === 'promote') return choosingNext;
+  if (node.id === 'sft_next' || node.id === 'rl_next' || node.id === 'next_data') {
+    return choosingNext && node.status !== 'locked';
+  }
+  if (node.id === 'sft_finish' || node.id === 'rl_finish' || node.id === 'finish') return state.stage === 'finish';
   return state.stage === node.id;
 }
 
@@ -409,16 +417,18 @@ function renderGraph() {
     if (!from || !to) return '';
     const geom = flowEdgeGeometry(edge, from, to);
     const marker = edge.live ? 'url(#flow-arrow-live)' : 'url(#flow-arrow)';
-    const label = edge.label
-      ? `<text class="flow-edge-label" x="${geom.x}" y="${geom.y}" text-anchor="${geom.anchor}">${escapeHtml(edge.label)}</text>`
+    const label = edge.label && edge.show_label !== false
+      ? `<text class="flow-edge-label ${edge.live ? 'live' : ''}" x="${geom.x}" y="${geom.y}" text-anchor="${geom.anchor}">${escapeHtml(edge.label)}</text>`
       : '';
-    return `<path class="flow-edge ${edge.live ? 'live' : ''}" d="${geom.d}" marker-end="${marker}"/>${label}`;
+    const taken = edge.taken ? ' taken' : '';
+    return `<path class="flow-edge ${edge.live ? 'live' : ''}${taken}" d="${geom.d}" marker-end="${marker}"/>${label}`;
   }).join('');
   const nodes = flow.nodes.map((node) => {
     const caption = node.verdict || statusText(node.status);
     const disabled = node.clickable ? '' : 'disabled';
     const selected = flowNodeSelected(node) ? 'selected' : '';
-    return `<button type="button" class="flow-node ${node.status} ${selected}" data-stage="${node.id}" ${disabled} style="left:${node.x}px;top:${node.y}px;width:${node.w}px;height:${node.h}px"><b>${escapeHtml(node.label)}</b><small>${escapeHtml(caption)}</small></button>`;
+    const minor = node.minor ? 'minor' : '';
+    return `<button type="button" class="flow-node ${node.status} ${selected} ${minor}" data-stage="${node.id}" ${disabled} style="left:${node.x}px;top:${node.y}px;width:${node.w}px;height:${node.h}px"><b>${escapeHtml(node.label)}</b><small>${escapeHtml(caption)}</small></button>`;
   }).join('');
   const actions = (flow.actions || []).map((action) => `<button type="button" class="${action.danger ? 'danger' : 'primary'}" data-decision="${action.id}">${escapeHtml(action.label)}</button>`).join('');
   const actionBar = actions
@@ -687,7 +697,21 @@ document.addEventListener('click', async (event) => {
     if (target.dataset.stage) {
       if (target.disabled) return;
       let stage = target.dataset.stage;
-      if (stage === 'next_data') {
+      if (stage === 'sft_finish' || stage === 'rl_finish' || stage === 'finish') {
+        if (state.view.run.status !== 'completed') {
+          const payload = await api(`/api/runs/${state.view.run.id}/decide`, {
+            method: 'POST',
+            body: JSON.stringify({ action: 'finish' }),
+          });
+          state.view = payload.view;
+          state.stage = payload.stage || 'finish';
+          state.tab = 'flow';
+          render();
+          return;
+        }
+        stage = 'finish';
+      }
+      if (stage === 'next_data' || stage === 'sft_next' || stage === 'rl_next' || stage === 'promote') {
         const promoted = state.view.round && state.view.round.promoted_checkpoint;
         stage = promoted ? 'next_round' : 'promote';
       }

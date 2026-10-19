@@ -11,15 +11,19 @@ Default mode calls **this checkout's ms-swift** (`python -m swift.cli.main`) on 
 ```mermaid
 flowchart TD
   data[Data] --> sft[SFT] --> se[SFT eval]
-  se -->|passed: RL| rl[Online RL]
-  se -->|passed: finish| done[Finish]
-  se -->|next data| nxt[Promote, then next data]
-  se -->|failed| nxt
+  se -->|不通过| miss[Not passed]
+  se -->|RL| rl[Online RL]
+  se -->|完成| done[Finish]
+  se -->|下一轮数据| nxt[Next data]
+  miss --> nxt
   rl --> re[RL eval]
-  re -->|passed: finish| done
-  re -->|next data| nxt
-  re -->|failed| nxt
-  nxt --> data
+  re -->|不通过| rmiss[Not passed]
+  re -->|完成| rdone[Finish]
+  re -->|下一轮数据| rnxt[Next data]
+  rmiss --> rnxt
+  nxt --> promo[Promote]
+  rnxt --> promo
+  promo -->|下一轮| data
 ```
 
 This is the manual version of the loop most post-training stacks use now: supervised fine-tuning sets the scenario behavior, a held-out eval is the gate, online RL (GRPO here, the default in ms-swift) pushes the policy with a reward, and only the winning checkpoint becomes the next base. InstructGPT used SFT → reward model → PPO. Open recipes more often skip the learned reward model and score completions directly (GRPO / RLOO / DAPO). The human stays on the gate: every stage is a form, and promotion is an explicit choice.

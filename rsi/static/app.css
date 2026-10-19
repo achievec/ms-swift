@@ -180,8 +180,11 @@ h3 { margin: 16px 0 8px; font-size: 14px; font-weight: 600; color: var(--accent-
 .flow-node.succeeded { background: var(--green-soft); border-color: var(--green-line); }
 .flow-node.ready { background: var(--amber-soft); border-color: var(--amber-line); }
 .flow-node.failed { background: var(--red-soft); border-color: var(--red-line); }
-.flow-node.locked { background: #f3f4f6; color: #9ca3af; border-color: var(--line); }
+.flow-node.locked { background: #f3f4f6; color: #6b7280; border-color: var(--line); }
+.flow-node.locked b { color: #4b5563; }
 .flow-node.locked small { color: #9ca3af; }
+.flow-node.minor { border-style: dashed; }
+.flow-node.minor b { font-size: 12px; font-weight: 600; }
 .flow-node.selected {
   outline: none;
   border-color: var(--accent);
@@ -190,14 +193,17 @@ h3 { margin: 16px 0 8px; font-size: 14px; font-weight: 600; color: var(--accent-
 .flow-node:disabled { cursor: default; }
 .flow-edge { fill: none; stroke: #d1d5db; stroke-width: 1.5; }
 .flow-edge.live { stroke: var(--accent); }
+.flow-edge.taken { stroke-width: 2.25; }
 .flow-edge-label {
-  fill: #4b5563;
-  font-size: 11px;
+  fill: #6b7280;
+  font-size: 12px;
+  font-weight: 600;
   font-family: Montserrat, "Noto Sans SC", sans-serif;
   paint-order: stroke;
   stroke: var(--bg);
   stroke-width: 4px;
 }
+.flow-edge-label.live { fill: var(--accent-ink); }
 .flow-actions { margin: 0 0 14px; }
 .flow-actions .row-actions { margin-top: 8px; }
 
