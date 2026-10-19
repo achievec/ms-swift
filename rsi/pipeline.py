@@ -632,8 +632,18 @@ class Pipeline:
             'backend': step['backend'] if step else None,
         }
 
+    def _touch_fetch_progress(self) -> None:
+        if model_source() != 'hope':
+            return
+        for row in self.store.list_fetches():
+            if row.get('state') != '同步中' or not row.get('repo_id'):
+                continue
+            status = self.fetcher.probe(row['kind'], row['repo_id'])
+            self._note_fetch(status)
+
     def view(self, run_id: str, round_index=None) -> dict:
         run = self._require_run(run_id)
+        self._touch_fetch_progress()
         if round_index is None:
             round_index = run['round_index']
         else:

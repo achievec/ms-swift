@@ -119,7 +119,7 @@ pip3 install hope==3.6.6 --no-cache-dir -i https://pypi.sankuai.com/simple
 
 进程日志是 `rsi/.rsi.log`。浏览器打开 `http://<主机>:8418/api/server-log` 看末尾一段，没有这个文件时是 404。
 
-`hope --version` 应为 3.6.6。同步是异步的：第一次只提交任务，界面状态是「同步中」，可用「重新拉取」再查一次。目录里出现 `config.json` 后，训练命令的 `--model` 改为本地路径，并带上 `--model_type` 和 `--template`。子进程会设置 `HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`、`HF_DATASETS_OFFLINE=1`。
+`hope --version` 应为 3.6.6。同步是异步的：第一次只提交任务。实验页面打开时会定期执行 `hope list --creator=all --name_like=<模型名>`，把 hope 打印的状态原文显示在「重新拉取」旁边。没有百分比时不会编一个。目录里出现 `config.json` 后才是「就绪」，训练命令的 `--model` 改为本地路径，并带上 `--model_type` 和 `--template`。子进程会设置 `HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`、`HF_DATASETS_OFFLINE=1`。
 
 公开数据集请用 Hugging Face 的 `org/name`，或直接上传本地文件。`modelscope/...` 会提示不能在当前网络下载。内置评测 jsonl 仍走本地 `general_qa`。其它评测集放到 `$RSI_DATA_ROOT/benchmarks/<名字>`，或在 `eval_dataset_args` 里写 `local_path`。
 

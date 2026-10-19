@@ -13,6 +13,7 @@ from rsi.model_fetch import (
     clone_argv,
     dataset_block_message,
     model_source,
+    parse_hope_list,
     public_clone_command,
 )
 
@@ -93,6 +94,58 @@ def test_syncing_submits_clone_without_leaking_credentials(tmp_path, hope_env):
     blob = json.dumps(status.as_row(), ensure_ascii=False)
     assert TOKEN not in blob
     assert USER not in blob
+
+
+def test_parse_hope_list_copies_status_and_does_not_invent_percent():
+    listed = 'Qwen2.5-7B-Instruct  同步中  1.2GB/15.2GB  8%\n'
+    parsed = parse_hope_list(listed, REPO)
+    assert parsed == 'Qwen2.5-7B-Instruct 同步中 1.2GB/15.2GB 8%'
+    waiting = parse_hope_list('已存在，等待同步\n', REPO)
+    assert waiting == '已存在，等待同步'
+    assert '%' not in waiting
+    assert parse_hope_list('submitted, pending\n', REPO) == 'submitted, pending'
+    size_only = parse_hope_list('1.2GB/15.2GB\n', REPO)
+    assert size_only == '1.2GB/15.2GB'
+    assert '%' not in size_only
+    assert parse_hope_list('', REPO) == ''
+    assert parse_hope_list('   \n', REPO) == ''
+
+
+def test_hope_list_progress_is_shown_until_local_files_exist(tmp_path, hope_env):
+    listed = f'Qwen2.5-7B-Instruct  同步中  1.2GB/15.2GB  8% token={TOKEN}\n'
+
+    def runner(argv, **kwargs):
+        if argv[1] == 'list':
+            return Completed(stdout=listed)
+        return Completed(stdout='submitted, pending')
+
+    client, _app = _client(tmp_path, runner)
+    with client as api:
+        run_id = api.post('/api/runs', json={
+            'name': '看进度',
+            'scenario': '同步时显示 hope list 原文',
+            'base_model': REPO,
+        }).json()['run']['id']
+        refreshed = api.post(f'/api/runs/{run_id}/fetch', json={'model': REPO})
+        assert refreshed.status_code == 200, refreshed.text
+        row = next(item for item in refreshed.json()['fetches'] if item['kind'] == 'model')
+        assert row['state'] == '同步中'
+        assert row['repo_id'] == REPO
+        assert '8%' in row['message']
+        assert '1.2GB/15.2GB' in row['message']
+        assert TOKEN not in row['message']
+        assert row['state'] != '就绪'
+        dest = tmp_path / 'models' / 'Qwen' / 'Qwen2.5-7B-Instruct'
+        dest.mkdir(parents=True)
+        (dest / 'config.json').write_text('{}', encoding='utf-8')
+        again = api.get(f'/api/runs/{run_id}')
+        assert again.status_code == 200, again.text
+        ready = next(item for item in again.json()['fetches'] if item['kind'] == 'model')
+        assert ready['state'] == '就绪'
+        assert ready['message'] == '已在本地'
+    page = Path(__file__).resolve().parents[1].joinpath('static', 'app.js').read_text(encoding='utf-8')
+    assert 'data-fetch-note' in page
+    assert '重新拉取' in page
 
 
 def test_refresh_lists_then_clone_completes(tmp_path, hope_env):

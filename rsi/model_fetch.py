@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -187,6 +188,48 @@ def list_argv(repo_id: str) -> list:
     return ['hope', 'list', '--creator=all', f'--name_like={name}']
 
 
+_PERCENT = re.compile(r'\d+(?:\.\d+)?\s*%')
+_SIZE = re.compile(r'\d+(?:\.\d+)?\s*(?:B|KB|MB|GB|TB|KiB|MiB|GiB|字节)', re.IGNORECASE)
+_STATUS_WORDS = ('下载', '同步', '等待', '完成', '失败', '排队', '已存在', 'running', 'pending', 'waiting', 'done', 'failed', 'submitted')
+
+
+def parse_hope_list(text: str, repo_id: str) -> str:
+    """Pick the most informative line hope already printed.
+
+    A percent or size is copied only when it appears in the output. Nothing is
+    estimated when hope does not print one.
+    """
+    cleaned = redact(text or '').replace('\r\n', '\n').replace('\r', '\n')
+    cleaned = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', cleaned)
+    lines = [' '.join(line.split()) for line in cleaned.splitlines()]
+    lines = [line for line in lines if line]
+    if not lines:
+        return ''
+    name = ''
+    repo = repo_id_of(repo_id)
+    if '/' in repo:
+        name = repo.split('/', 1)[1]
+    named = [line for line in lines if name and name in line]
+    pool = named or lines
+
+    def score(line: str) -> int:
+        value = 0
+        if _PERCENT.search(line):
+            value += 4
+        if _SIZE.search(line):
+            value += 3
+        lowered = line.lower()
+        for word in _STATUS_WORDS:
+            if word.lower() in lowered:
+                value += 1
+        return value
+
+    best = max(pool, key=score)
+    if len(best) > 160:
+        best = best[:160] + '…'
+    return best
+
+
 def apply_runtime_env(env: dict) -> dict:
     for key in ('RSI_HOPE_TOKEN', 'RSI_HOPE_USERNAME', 'RSI_HOPE_PARAMS'):
         env.pop(key, None)
@@ -237,6 +280,9 @@ class ModelFetcher:
         self.home = Path(home)
         self.runner = runner or subprocess.run
         self._notes = {}
+        self._progress = {}
+        self._probed_at = {}
+        self._probe_inflight = set()
 
     def model_root(self) -> Path:
         return _root('RSI_MODEL_ROOT', 'model_root', self.home, 'models')
@@ -261,10 +307,11 @@ class ModelFetcher:
         with _LOCK:
             inflight = key in _INFLIGHT
             note = self._notes.get(key, '')
+            progress = self._progress.get(key, '')
         if note == '下载工具不可用' and not inflight:
             return FetchStatus(kind, repo_id_of(repo_id), str(path), '失败', '下载工具不可用')
-        if inflight or note == '同步中' or path.exists():
-            return FetchStatus(kind, repo_id_of(repo_id), str(path), '同步中', '同步中')
+        if inflight or note == '同步中' or path.exists() or progress:
+            return FetchStatus(kind, repo_id_of(repo_id), str(path), '同步中', progress or '同步中')
         return FetchStatus(kind, repo_id_of(repo_id), str(path), '缺少', '本地还没有这份文件')
 
     def ensure(self, kind: str, repo_id: str, background: bool = True) -> FetchStatus:
@@ -281,15 +328,21 @@ class ModelFetcher:
         latest = self.status_of(kind, repo)
         if latest.state in {'就绪', '失败'}:
             return latest
-        return FetchStatus(kind, repo, latest.local_path, '同步中', '同步中')
+        message = latest.message if latest.state == '同步中' and latest.message else '同步中'
+        return FetchStatus(kind, repo, latest.local_path, '同步中', message)
 
     def refresh(self, kind: str, repo_id: str, background: bool = True) -> FetchStatus:
         repo = repo_id_of(repo_id)
         if model_source() != 'hope' or not is_repo_id(repo):
             return self.status_of(kind, repo) if is_repo_id(repo) else FetchStatus(kind, repo, '', '保持', '')
 
+        key = f'{kind}:{repo}'
+        with _LOCK:
+            self._probed_at[key] = time.monotonic()
+
         def job():
-            self._run(list_argv(repo), cwd=self.home)
+            listed = self._run(list_argv(repo), cwd=self.home)
+            self._remember_progress(kind, repo, listed)
             self._start_clone(kind, repo, background=False)
 
         inline = os.environ.get('RSI_FETCH_INLINE', '').strip() == '1'
@@ -298,12 +351,55 @@ class ModelFetcher:
             current = self.status_of(kind, repo)
             if current.state == '就绪':
                 return current
-            return FetchStatus(kind, repo, current.local_path, '同步中', '同步中')
+            message = current.message if current.state == '同步中' and current.message else '同步中'
+            return FetchStatus(kind, repo, current.local_path, '同步中', message)
         job()
         latest = self.status_of(kind, repo)
         if latest.state in {'就绪', '失败'}:
             return latest
-        return FetchStatus(kind, repo, latest.local_path, '同步中', '同步中')
+        return FetchStatus(kind, repo, latest.local_path, '同步中', latest.message or '同步中')
+
+    def probe(self, kind: str, repo_id: str, background: bool = True) -> FetchStatus:
+        """Ask hope list for the latest status text. Does not start another clone."""
+        repo = repo_id_of(repo_id)
+        current = self.status_of(kind, repo)
+        if current.state != '同步中' or model_source() != 'hope' or not is_repo_id(repo):
+            return current
+        key = f'{kind}:{repo}'
+        now = time.monotonic()
+        inline = os.environ.get('RSI_FETCH_INLINE', '').strip() == '1'
+        with _LOCK:
+            if key in self._probe_inflight:
+                return current
+            if now - self._probed_at.get(key, 0) < 5:
+                return current
+            self._probed_at[key] = now
+            self._probe_inflight.add(key)
+
+        def job():
+            try:
+                listed = self._run(list_argv(repo), cwd=self.home)
+                self._remember_progress(kind, repo, listed)
+            finally:
+                with _LOCK:
+                    self._probe_inflight.discard(key)
+
+        if background and not inline:
+            threading.Thread(target=job, daemon=True).start()
+            return current
+        job()
+        return self.status_of(kind, repo)
+
+    def _remember_progress(self, kind: str, repo_id: str, result) -> None:
+        if result in (None, 'missing-tool'):
+            return
+        text = f"{getattr(result, 'stdout', '') or ''}\n{getattr(result, 'stderr', '') or ''}"
+        message = parse_hope_list(text, repo_id)
+        if not message:
+            return
+        key = f'{kind}:{repo_id_of(repo_id)}'
+        with _LOCK:
+            self._progress[key] = message
 
     def _start_clone(self, kind: str, repo_id: str, background: bool) -> None:
         key = f'{kind}:{repo_id}'

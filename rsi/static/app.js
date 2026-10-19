@@ -863,20 +863,54 @@ document.getElementById('create-form').addEventListener('submit', async (event) 
   }
 });
 
+function fetchRows() {
+  return (state.view && state.view.fetches) || [];
+}
+
 function fetchNotice() {
-  const rows = (state.view && state.view.fetches) || [];
-  if (rows.some((row) => row.state === '同步中')) return '同步中';
+  const rows = fetchRows();
+  const syncing = rows.find((row) => row.state === '同步中');
+  if (syncing) {
+    if (syncing.message && syncing.message !== '同步中') return `${syncing.repo_id} ${syncing.message}`;
+    return '同步中';
+  }
   const failed = rows.find((row) => row.state === '失败');
   if (failed) return failed.message || '失败';
   if (rows.some((row) => row.state === '就绪')) return '已就绪';
   return '';
 }
 
+function fetchProgressText() {
+  const parts = [];
+  fetchRows().forEach((row) => {
+    if (row.state === '同步中') {
+      const detail = row.message && row.message !== '同步中' ? row.message : '同步中';
+      parts.push(`${row.repo_id} ${detail}`);
+    } else if (row.state === '失败') {
+      parts.push(`${row.repo_id} ${row.message || '失败'}`);
+    }
+  });
+  return parts.join(' · ');
+}
+
 function fetchBar() {
   if (!state.schema || state.schema.model_source !== 'hope') return '';
-  const notice = fetchNotice();
-  const badge = notice ? `<span class="badge">${escapeHtml(notice)}</span>` : '';
+  const text = fetchProgressText();
+  const badge = `<span class="badge fetch-progress" data-fetch-note${text ? '' : ' hidden'}>${escapeHtml(text)}</span>`;
   return `<div class="row-actions">${badge}<button type="button" class="ghost" data-action="refetch">重新拉取</button></div>`;
+}
+
+function paintFetchNotes() {
+  const text = fetchProgressText();
+  document.querySelectorAll('[data-fetch-note]').forEach((el) => {
+    el.textContent = text;
+    el.hidden = !text;
+  });
+}
+
+function needsFetchPoll() {
+  return Boolean(state.schema && state.schema.model_source === 'hope' && state.view
+    && fetchRows().some((row) => row.state === '同步中'));
 }
 
 function catalogNames(source, input) {
@@ -1012,7 +1046,7 @@ document.addEventListener('focusout', (event) => {
 });
 
 function syncLive() {
-  const needs = document.querySelector('[data-started], [data-live-log]');
+  const needs = document.querySelector('[data-started], [data-live-log]') || needsFetchPoll();
   if (!needs) {
     if (state.liveTimer) {
       clearInterval(state.liveTimer);
@@ -1042,11 +1076,41 @@ function paintLog(el, text) {
   if (pinned) el.scrollTop = el.scrollHeight;
 }
 
+async function pollFetchProgress() {
+  if (!needsFetchPoll()) return;
+  const now = Date.now();
+  if (state.fetchPollAt && now - state.fetchPollAt < 5000) return;
+  state.fetchPollAt = now;
+  let view;
+  try {
+    view = await api(`/api/runs/${state.view.run.id}?round=${state.view.round.round_index}`);
+  } catch (_err) {
+    return;
+  }
+  const wasSyncing = fetchRows().some((row) => row.state === '同步中');
+  state.view.fetches = view.fetches || [];
+  paintFetchNotes();
+  if (wasSyncing && !fetchRows().some((row) => row.state === '同步中')) {
+    state.view = view;
+    toast('模型已在本地');
+    render();
+  }
+}
+
 async function pollLive() {
   paintElapsed();
   if (state.liveBusy || !state.view) return;
   const panels = [...document.querySelectorAll('[data-live-log]')];
-  if (!panels.length) return;
+  if (!panels.length) {
+    if (!needsFetchPoll()) return;
+    state.liveBusy = true;
+    try {
+      await pollFetchProgress();
+    } finally {
+      state.liveBusy = false;
+    }
+    return;
+  }
   state.liveBusy = true;
   try {
     const groups = new Map();
@@ -1078,6 +1142,7 @@ async function pollLive() {
         return;
       }
     }
+    await pollFetchProgress();
   } finally {
     state.liveBusy = false;
   }
