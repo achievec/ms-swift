@@ -494,6 +494,9 @@ def test_server_log_page_follows_new_lines(client, tmp_path, monkeypatch):
     assert '<h1>进程日志</h1>' in page.text
     assert '/api/server-log/events' in page.text
     assert 'EventSource' in page.text
+    assert '/api/server-log/stream' in page.text
+    assert '定时拉取' in page.text
+    assert 'setTimeout(startPoll, 3000)' in page.text
     assert 'scrollTop' in page.text
     assert '加载失败' in page.text
     assert '不存在' in page.text
@@ -575,6 +578,11 @@ def test_server_log_events_use_sse(client, tmp_path, monkeypatch):
     assert _browser_sse_data(framed) == '第一行\n第二行\n'
     assert _browser_sse_data(app_module.format_server_log_event('append', '无换行')) == '无换行'
     assert _browser_sse_data(app_module.format_server_log_event('snapshot', '')) == ''
+    carriage = '下载 1%\r下载 8%\r下载 完成\n下一行\n'
+    cr_frame = app_module.format_server_log_event('snapshot', carriage + '\x00\x07', 4)
+    assert '\r' not in cr_frame
+    assert '\x00' not in cr_frame
+    assert _browser_sse_data(cr_frame) == '下载 1%\n下载 8%\n下载 完成\n下一行\n'
 
     async def missing_once():
         chunks = []
@@ -587,10 +595,24 @@ def test_server_log_events_use_sse(client, tmp_path, monkeypatch):
     assert 'rsi/.rsi.log 不存在' in missing_text
     assert missing_text.strip().endswith('data:')
 
+    log.write_bytes('进度 1%\r进度 9%\n'.encode())
+
+    async def carriage_snapshot():
+        gen = app_module.iter_server_log_events()
+        await gen.__anext__()
+        frame = await gen.__anext__()
+        await gen.aclose()
+        return frame
+
+    cr_live = asyncio.run(carriage_snapshot())
+    assert '\r' not in cr_live
+    assert _browser_sse_data(cr_live) == '进度 9%\n'
+
     log.write_text('启动 RSI\n', encoding='utf-8')
 
     async def follow():
         gen = app_module.iter_server_log_events()
+        padding = await gen.__anext__()
         first = await gen.__anext__()
         with log.open('a', encoding='utf-8') as handle:
             handle.write('第二行\n')
@@ -599,10 +621,14 @@ def test_server_log_events_use_sse(client, tmp_path, monkeypatch):
         log.unlink()
         gone = await gen.__anext__()
         await gen.aclose()
-        return first, second, third, gone
+        return padding, first, second, third, gone
 
-    first, second, third, gone = asyncio.run(follow())
+    padding, first, second, third, gone = asyncio.run(follow())
+    assert padding.startswith(': flush')
+    assert len(padding) >= 4096
+    assert '\r' not in padding
     assert 'event: snapshot' in first
+    assert '\r' not in first
     assert _browser_sse_data(first) == '启动 RSI\n'
     assert 'event: append' in second
     assert _browser_sse_data(second) == '第二行\n'
@@ -614,11 +640,13 @@ def test_server_log_events_use_sse(client, tmp_path, monkeypatch):
     with api.stream('GET', '/api/server-log/events') as response:
         assert response.status_code == 200
         assert response.headers['content-type'].startswith('text/event-stream')
-        assert response.headers['cache-control'] == 'no-cache'
+        assert 'no-cache' in response.headers['cache-control']
+        assert 'no-transform' in response.headers['cache-control']
         got = ''
         for chunk in response.iter_text():
             got += chunk
-            if 'event: snapshot' in got and got.endswith('\n\n'):
+            marker = got.find('event: snapshot')
+            if marker >= 0 and '\n\n' in got[marker:]:
                 break
     assert _browser_sse_data(got) == '启动 RSI\n'
     plain = api.get('/api/server-log', headers={'accept': 'text/html'})

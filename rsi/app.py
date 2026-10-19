@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -23,6 +24,10 @@ SERVER_LOG_PATH = Path(__file__).resolve().parent / '.rsi.log'
 SERVER_LOG_TAIL = 400 * 1024
 SERVER_LOG_POLL_SECONDS = 0.5
 SERVER_LOG_HEARTBEAT_SECONDS = 15
+# Proxies often buffer the first few KB of a chunked response, and some stall on one huge line.
+SSE_FLUSH_BYTES = 4096
+SSE_CHUNK_CHARS = 8192
+_SSE_CONTROLS = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
 logger = logging.getLogger(__name__)
 
 
@@ -65,13 +70,28 @@ def server_log_window(path: Path, offset: int | None) -> dict:
     return window
 
 
+def sse_safe_text(text: str) -> str:
+    """Drop bytes that terminate an SSE line. ``\\r`` becomes a normal newline."""
+    if not text:
+        return ''
+    cleaned = text.replace('\r\n', '\n').replace('\r', '\n')
+    return _SSE_CONTROLS.sub('', cleaned)
+
+
+def sse_comment_block(label: str, min_bytes: int = SSE_FLUSH_BYTES) -> str:
+    """Comment lines only. Enough bytes that a buffering proxy will forward them."""
+    line = f': {label}\n'
+    count = max(1, (min_bytes + len(line) - 1) // len(line))
+    return line * count
+
+
 def format_server_log_event(event: str, data: str, event_id: int | None = None) -> str:
     """One SSE event. A trailing newline in ``data`` survives the browser's framing."""
     lines = []
     if event_id is not None:
         lines.append(f'id: {int(event_id)}')
     lines.append(f'event: {event}')
-    body = data or ''
+    body = sse_safe_text(data)
     if body == '':
         lines.append('data:')
     else:
@@ -83,17 +103,36 @@ def format_server_log_event(event: str, data: str, event_id: int | None = None) 
             lines.append(f'data: {part}')
         if trailing:
             lines.append('data:')
-    return '\n'.join(lines) + '\n\n'
+    framed = '\n'.join(lines) + '\n\n'
+    return framed
+
+
+def _event_frames(kind: str, text: str, event_id: int) -> list:
+    """Split a payload so no single SSE write is a huge line."""
+    body = sse_safe_text(text)
+    if body == '':
+        return [format_server_log_event(kind, '', event_id)]
+    frames = []
+    start = 0
+    first = True
+    while start < len(body):
+        piece = body[start:start + SSE_CHUNK_CHARS]
+        start += SSE_CHUNK_CHARS
+        frames.append(format_server_log_event(kind if first else 'append', piece, event_id))
+        first = False
+    return frames
 
 
 async def iter_server_log_events():
-    """Tail rsi/.rsi.log as SSE: one snapshot, then appends, with comment heartbeats."""
+    """Tail rsi/.rsi.log as SSE: flush padding, one snapshot, then appends."""
     path = server_log_path()
+    yield sse_comment_block('flush')
     window = server_log_window(path, None)
     if window['missing']:
         yield format_server_log_event('missing', 'rsi/.rsi.log 不存在\n')
         return
-    yield format_server_log_event('snapshot', window['text'], window['next_offset'])
+    for frame in _event_frames('snapshot', window['text'], window['next_offset']):
+        yield frame
     offset = window['next_offset']
     last_beat = time.monotonic()
     while True:
@@ -103,13 +142,14 @@ async def iter_server_log_events():
             return
         if window['text'] or window['reset']:
             kind = 'snapshot' if window['reset'] else 'append'
-            yield format_server_log_event(kind, window['text'], window['next_offset'])
+            for frame in _event_frames(kind, window['text'], window['next_offset']):
+                yield frame
             offset = window['next_offset']
             last_beat = time.monotonic()
             if window['next_offset'] < window['size']:
                 continue
         elif time.monotonic() - last_beat >= SERVER_LOG_HEARTBEAT_SECONDS:
-            yield ': ping\n\n'
+            yield ': ping\n' + sse_comment_block('flush')
             last_beat = time.monotonic()
         await asyncio.sleep(SERVER_LOG_POLL_SECONDS)
 
@@ -135,19 +175,24 @@ _SERVER_LOG_PAGE = """<!DOCTYPE html>
 <body>
   <header>
     <h1>进程日志</h1>
-    <p>自动跟上新日志</p>
+    <p id="mode">正在连接…</p>
     <a href="/">返回</a>
   </header>
   <pre id="log">正在加载…
 </pre>
   <script>
     const view = document.getElementById('log');
+    const mode = document.getElementById('mode');
     const MISSING = 'rsi/.rsi.log 不存在\n';
     const EMPTY = '日志是空的\n';
     const FAILED = '加载失败\n';
     let haveText = false;
     let saw = false;
+    let polling = false;
+    let offset = null;
     let pinned = true;
+    let source = null;
+    let pollTimer = null;
     view.addEventListener('scroll', () => {
       const gap = view.scrollHeight - view.scrollTop - view.clientHeight;
       pinned = gap < 40;
@@ -155,28 +200,84 @@ _SERVER_LOG_PAGE = """<!DOCTYPE html>
     function follow() {
       if (pinned) view.scrollTop = view.scrollHeight;
     }
-    const source = new EventSource('/api/server-log/events');
-    source.addEventListener('snapshot', (ev) => {
-      saw = true;
-      view.textContent = ev.data || EMPTY;
-      haveText = Boolean(ev.data);
+    function remember(ev) {
+      const id = Number(ev.lastEventId);
+      if (!Number.isNaN(id)) offset = id;
+    }
+    function paint(text, replace) {
+      if (replace || !haveText) {
+        view.textContent = text || EMPTY;
+        haveText = Boolean(text);
+      } else if (text) {
+        view.textContent += text;
+      }
       follow();
+    }
+    async function poll() {
+      const url = offset == null ? '/api/server-log/stream' : '/api/server-log/stream?offset=' + offset;
+      let response;
+      try {
+        response = await fetch(url, {headers: {accept: 'application/json'}, cache: 'no-store'});
+      } catch (_err) {
+        if (!saw) view.textContent = FAILED;
+        return;
+      }
+      if (!response.ok) {
+        if (!saw) view.textContent = FAILED;
+        return;
+      }
+      const body = await response.json();
+      saw = true;
+      if (body.missing) {
+        view.textContent = MISSING;
+        offset = null;
+        haveText = false;
+        follow();
+        return;
+      }
+      paint(body.text || '', Boolean(body.reset) || !haveText);
+      offset = body.next_offset;
+    }
+    function startPoll() {
+      if (polling) return;
+      polling = true;
+      if (source) {
+        source.close();
+        source = null;
+      }
+      mode.textContent = '定时拉取';
+      poll();
+      pollTimer = setInterval(poll, 1500);
+    }
+    const arm = setTimeout(startPoll, 3000);
+    source = new EventSource('/api/server-log/events');
+    function note() {
+      if (polling) return;
+      saw = true;
+      clearTimeout(arm);
+      mode.textContent = '实时推送';
+    }
+    source.addEventListener('snapshot', (ev) => {
+      if (polling) return;
+      note();
+      remember(ev);
+      paint(ev.data, true);
     });
     source.addEventListener('append', (ev) => {
-      saw = true;
-      if (!haveText) view.textContent = ev.data || EMPTY;
-      else if (ev.data) view.textContent += ev.data;
-      haveText = haveText || Boolean(ev.data);
-      follow();
+      if (polling) return;
+      note();
+      remember(ev);
+      paint(ev.data, false);
     });
     source.addEventListener('missing', (ev) => {
-      saw = true;
+      if (polling) return;
+      note();
       view.textContent = ev.data || MISSING;
       haveText = false;
       source.close();
     });
     source.onerror = () => {
-      if (!saw) view.textContent = FAILED;
+      if (!polling) startPoll();
     };
   </script>
 </body>
@@ -264,7 +365,7 @@ def create_app(home: Path | None = None) -> FastAPI:
             iter_server_log_events(),
             media_type='text/event-stream',
             headers={
-                'Cache-Control': 'no-cache',
+                'Cache-Control': 'no-cache, no-transform',
                 'X-Accel-Buffering': 'no',
             },
         )
