@@ -43,18 +43,22 @@ code, pre, .mono { font-family: "IBM Plex Mono", "Sarasa Mono SC", ui-monospace,
   background: #e7b15a; color: #2a211b; font-weight: 700; letter-spacing: 0.04em;
 }
 .header-link {
-  margin-left: auto;
-  margin-right: auto;
-  border: 1px solid rgba(246, 239, 230, 0.25);
-  padding: 4px 8px;
-  border-radius: 999px;
-  font-size: 12px;
-  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(246, 239, 230, 0.7);
+  background: rgba(246, 239, 230, 0.1);
+  padding: 7px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: #f6efe6;
   text-decoration: none;
   white-space: nowrap;
+  cursor: pointer;
 }
-.header-link:hover { background: rgba(246, 239, 230, 0.08); }
-.top-meta { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.header-link:hover { background: rgba(246, 239, 230, 0.22); border-color: #f6efe6; }
+.top-meta { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
 .top-meta span, .pill {
   border: 1px solid rgba(246, 239, 230, 0.25);
   padding: 4px 8px;
