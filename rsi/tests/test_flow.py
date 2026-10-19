@@ -59,9 +59,11 @@ def test_verdict_uses_accuracy_unless_overridden():
         {'status': 'active', 'round_index': 1},
         {'sft_eval': forced},
     )
-    assert [item['id'] for item in actions] == ['next', 'stop']
-    assert '未通过' in prompt
+    assert [item['id'] for item in actions] == ['next']
+    assert '不通过' in prompt
     assert 'rl' not in [item['id'] for item in actions]
+    assert 'finish' not in [item['id'] for item in actions]
+    assert 'stop' not in [item['id'] for item in actions]
 
 
 def test_passed_sft_eval_offers_rl_next_or_finish_and_skip_keeps_checkpoint(client):
@@ -74,7 +76,12 @@ def test_passed_sft_eval_offers_rl_next_or_finish_and_skip_keeps_checkpoint(clie
     assert view['forms']['rl_eval']['status'] == 'locked'
     node = {item['id']: item for item in view['flow']['nodes']}
     assert node['sft_eval']['verdict'] == '通过'
-    assert any(edge['from'] == 'sft_eval' and edge['to'] == 'rl' and edge['live'] for edge in view['flow']['edges'])
+    assert 'stop' not in node
+    labels = {edge['label'] for edge in view['flow']['edges'] if edge['kind'] == 'down'}
+    assert labels == {'下一轮数据', '完成'}
+    assert all(edge['from'] == 'sft_eval' for edge in view['flow']['edges'] if edge['kind'] == 'down')
+    assert any(edge['from'] == 'sft_eval' and edge['to'] == 'rl' and edge['live'] and edge['label'] == 'RL'
+               for edge in view['flow']['edges'])
 
     decided = api.post(f'/api/runs/{run_id}/decide', json={'action': 'next'})
     assert decided.status_code == 200, decided.text
@@ -92,27 +99,31 @@ def test_passed_sft_eval_offers_rl_next_or_finish_and_skip_keeps_checkpoint(clie
     assert any(step['stage'] == 'sft' and step['result']['checkpoint'] == sft_path for step in body['steps'])
 
 
-def test_failed_sft_eval_can_stop_or_open_next_round_without_rl(client):
+def test_failed_sft_eval_only_opens_next_data(client):
     api = client
     run_id = _create(api, '评测未通过')
     view = _through_sft_eval(api, run_id, {'passed': False})
-    assert _ids(view) == ['next', 'stop']
+    assert _ids(view) == ['next']
     assert view['forms']['rl']['status'] == 'locked'
+    assert view['run']['status'] == 'active'
+    node = {item['id']: item for item in view['flow']['nodes']}
+    assert node['sft_eval']['verdict'] == '不通过'
+    assert 'stop' not in node
+    assert 'finish' not in node
+    assert not any(edge['to'] == 'rl' for edge in view['flow']['edges'])
+    assert any(edge['from'] == 'sft_eval' and edge['to'] == 'next_data' and edge['label'] == '不通过'
+               for edge in view['flow']['edges'])
     blocked = _run(api, run_id, 'rl', {})
     assert blocked.status_code == 400
     assert blocked.json()['detail'] == 'SFT 评测未通过，不能进入在线 RL'
     finish = api.post(f'/api/runs/{run_id}/decide', json={'action': 'finish'})
     assert finish.status_code == 400
-
     stopped = api.post(f'/api/runs/{run_id}/decide', json={'action': 'stop'})
-    assert stopped.status_code == 200, stopped.text
-    stopped_view = stopped.json()['view']
-    assert stopped_view['run']['status'] == 'stopped'
-    assert stopped_view['flow']['actions'] == []
-    assert any(node['id'] == 'stop' and node['status'] == 'failed' for node in stopped_view['flow']['nodes'])
-    checkpoints = stopped_view['checkpoints']
-    assert any(item['kind'] == 'sft' and item['active'] for item in checkpoints)
-    assert _run(api, run_id, 'sft', {}).status_code == 400
+    assert stopped.status_code == 400
+    still = api.get(f'/api/runs/{run_id}').json()
+    assert still['run']['status'] == 'active'
+    assert still['flow']['actions']
+    assert any(item['kind'] == 'sft' and item['active'] for item in still['checkpoints'])
 
     other = _create(api, '未通过后下一轮')
     _through_sft_eval(api, other, {'passed': False})
@@ -127,7 +138,7 @@ def test_failed_sft_eval_can_stop_or_open_next_round_without_rl(client):
     assert any(item['kind'] == 'sft' and item['path'] == sft_path for item in nxt.json()['view']['checkpoints'])
 
 
-def test_finish_ends_the_run_and_rl_eval_failure_can_stop(client):
+def test_finish_ends_the_run_and_rl_eval_splits_pass_and_fail(client):
     api = client
     run_id = _create(api, '直接完成')
     _through_sft_eval(api, run_id)
@@ -137,6 +148,11 @@ def test_finish_ends_the_run_and_rl_eval_failure_can_stop(client):
     assert view['run']['status'] == 'completed'
     assert finished.json()['stage'] == 'finish'
     assert view['mutable'] is False
+    assert view['flow']['actions'] == []
+    node = {item['id']: item for item in view['flow']['nodes']}
+    assert node['finish']['status'] == 'succeeded'
+    assert 'stop' not in node
+    assert 'next_data' not in node
     assert any(item['kind'] == 'sft' for item in view['checkpoints'])
     assert _run(api, run_id, 'rl', {}).status_code == 400
 
@@ -145,14 +161,48 @@ def test_finish_ends_the_run_and_rl_eval_failure_can_stop(client):
     assert _run(api, continued, 'rl', {}).status_code == 200
     evaluated = _run(api, continued, 'rl_eval', {'passed': False})
     assert evaluated.status_code == 200, evaluated.text
-    assert _ids(evaluated.json()['view']) == ['next', 'stop']
-    rl_path = next(item['path'] for item in evaluated.json()['view']['candidates'] if item['kind'] == 'rl')
+    failed_view = evaluated.json()['view']
+    assert _ids(failed_view) == ['next']
+    assert failed_view['flow']['nodes']
+    failed_nodes = {item['id']: item for item in failed_view['flow']['nodes']}
+    assert failed_nodes['rl_eval']['verdict'] == '不通过'
+    assert 'finish' not in failed_nodes
+    assert 'stop' not in failed_nodes
+    assert any(edge['from'] == 'rl_eval' and edge['to'] == 'next_data' and edge['label'] == '不通过'
+               for edge in failed_view['flow']['edges'])
+    assert not any(edge['kind'] == 'down' and edge['from'] == 'sft_eval' for edge in failed_view['flow']['edges'])
+    rl_path = next(item['path'] for item in failed_view['candidates'] if item['kind'] == 'rl')
     assert api.post(f'/api/runs/{continued}/decide', json={'action': 'finish'}).status_code == 400
+    assert api.post(f'/api/runs/{continued}/decide', json={'action': 'rl'}).status_code == 400
     assert api.post(f'/api/runs/{continued}/decide', json={'action': 'next'}).status_code == 200
     assert _run(api, continued, 'promote', {'choice': 'rl'}).status_code == 200
     nxt = _run(api, continued, 'next_round', {})
     assert nxt.status_code == 200, nxt.text
     assert nxt.json()['view']['round']['base_model'] == rl_path
+
+    passed_rl = _create(api, 'RL 评测通过')
+    _through_sft_eval(api, passed_rl)
+    assert _run(api, passed_rl, 'rl', {}).status_code == 200
+    rl_done = _run(api, passed_rl, 'rl_eval', {})
+    assert rl_done.status_code == 200, rl_done.text
+    assert _ids(rl_done.json()['view']) == ['next', 'finish']
+    passed_edges = [edge for edge in rl_done.json()['view']['flow']['edges'] if edge['kind'] == 'down']
+    assert {edge['label'] for edge in passed_edges} == {'下一轮数据', '完成'}
+    assert {edge['from'] for edge in passed_edges} == {'rl_eval'}
+
+
+def test_page_hides_hardware_and_stop_copy():
+    root = Path(__file__).resolve().parents[1]
+    html = root.joinpath('static', 'index.html').read_text(encoding='utf-8')
+    script = root.joinpath('static', 'app.js').read_text(encoding='utf-8')
+    assert 'A100' not in html
+    assert '60GB' not in html
+    assert 'hardware-pill' not in html
+    assert '18 核' not in html
+    assert 'A100' not in script
+    assert 'hardware-pill' not in script
+    assert '终止' not in html
+    assert '终止' not in script
 
 
 def test_displayed_times_use_shanghai():

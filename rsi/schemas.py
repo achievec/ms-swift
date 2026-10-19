@@ -45,7 +45,7 @@ STAGE_META = [
     },
     {
         'id': 'next_round',
-        'label': '下一轮',
+        'label': '下一轮数据',
         'summary': '用晋级模型作为新的基座，回到数据阶段。上一轮记录保留在审计里。',
     },
 ]
@@ -301,8 +301,8 @@ FIELDS = {
         _field('reason', '晋级说明', '', 'textarea', '决策'),
     ],
     'next_round': [
-        _field('reuse_dataset', '沿用上一轮数据', '', 'checkbox', '下一轮'),
-        _field('note', '备注', '', 'textarea', '下一轮'),
+        _field('reuse_dataset', '沿用上一轮数据', '', 'checkbox', '下一轮数据'),
+        _field('note', '备注', '', 'textarea', '下一轮数据'),
     ],
     'serve': [
         *_model_block('部署'),

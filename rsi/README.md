@@ -2,7 +2,7 @@
 
 Click-through recursive self-improvement on top of ms-swift:
 
-**data → SFT → SFT eval**, then a choice: online RL, the next round, or end. RL eval offers the same kind of choice. A failed eval cannot start RL.
+**data → SFT → SFT eval**. A passed SFT eval can enter online RL, open the next round of data, or finish the run. A failed SFT eval can only open the next round of data. After RL eval, a pass can finish or open the next round; a failure only opens the next round. There is no separate stop action.
 
 The UI speaks Chinese. Parameter names match the existing Gradio Web-UI and the `swift sft` / `swift rlhf` / `swift eval` / `swift deploy` CLIs. ms-swift itself is not modified; this app shells out to it only when you ask.
 
@@ -11,14 +11,14 @@ Default mode calls **this checkout's ms-swift** (`python -m swift.cli.main`) on 
 ```mermaid
 flowchart TD
   data[Data] --> sft[SFT] --> se[SFT eval]
-  se -->|passed| rl[Online RL]
-  se -->|passed or failed| nxt[Promote and next round]
-  se -->|passed| done[Finish]
-  se -->|failed| stop[Stop]
+  se -->|passed: RL| rl[Online RL]
+  se -->|passed: finish| done[Finish]
+  se -->|next data| nxt[Promote, then next data]
+  se -->|failed| nxt
   rl --> re[RL eval]
-  re -->|passed or failed| nxt
-  re -->|passed| done
-  re -->|failed| stop
+  re -->|passed: finish| done
+  re -->|next data| nxt
+  re -->|failed| nxt
   nxt --> data
 ```
 
@@ -41,10 +41,10 @@ Then:
 
 1. **新建实验**. The default base is `Qwen/Qwen2.5-7B-Instruct` and the scenario is an internal IT helpdesk.
 2. **数据**. Leave the bundled `itops_mix.jsonl` selected (ms-swift `messages` plus a `solution` field for GRPO). Click 校验格式, then 运行本阶段. You can also pick a public id such as `modelscope/gsm8k`, upload a jsonl, or type a local path.
-3. **SFT**. The form is the A100 preset (`swift sft`, LoRA, bf16). Run it. The log shows the command that real training would execute, and a mock `checkpoint-final/args.json` is written.
+3. **SFT**. The form is the single-GPU preset (`swift sft`, LoRA, bf16). Run it. The log shows the command that real training would execute, and a mock `checkpoint-final/args.json` is written.
 4. **SFT 评测**, **在线 RL** (`swift rlhf --rlhf_type grpo`, vLLM colocate), **RL 评测**. Same pattern.
 5. **晋级**. RL is recommended when its mock accuracy is higher. You can still pick SFT or stay on the base.
-6. **下一轮**. The promoted checkpoint becomes the next base and the board returns to 数据. Previous rounds stay in the audit.
+6. **下一轮数据**. Choosing it opens 晋级 first. The promoted checkpoint becomes the next base and the board returns to 数据. Previous rounds stay in the audit.
 7. **推理服务**. Starts a real local HTTP server with `GET /v1/models` and `POST /v1/chat/completions`. Weights are not loaded. The page has a one-line chat box that calls that API.
 
 Re-running an earlier stage keeps the old audit row and marks later stages in that round as 已作废.

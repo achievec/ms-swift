@@ -721,12 +721,9 @@ class Pipeline:
         allowed = {item['id'] for item in decision_actions(run, rnd, active)[0]}
         if action not in allowed:
             raise PipelineError('当前不能做这个选择')
-        focus = {'rl': 'rl', 'next': 'promote', 'stop': 'stop', 'finish': 'finish'}[action]
+        focus = {'rl': 'rl', 'next': 'promote', 'finish': 'finish'}[action]
         with self.store.transaction() as conn:
-            if action == 'stop':
-                self.store.close_round(conn, run_id, rnd['round_index'], '终止')
-                self.store.set_run_status(conn, run_id, 'stopped')
-            elif action == 'finish':
+            if action == 'finish':
                 self.store.close_round(conn, run_id, rnd['round_index'], '完成')
                 self.store.set_run_status(conn, run_id, 'completed')
             self.store.set_current_stage(conn, run_id, focus)

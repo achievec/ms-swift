@@ -57,13 +57,11 @@ function labelOf(stage) {
   if (stage === 'serve') return '推理服务';
   if (stage === 'serve_stop') return '停止推理';
   if (stage === 'decide') return '选择';
-  if (stage === 'stop') return '终止';
   if (stage === 'finish') return '完成';
   return stage;
 }
 
 function runStatusLabel(run) {
-  if (run.status === 'stopped') return '已终止';
   if (run.status === 'completed') return '已完成';
   return labelOf(run.current_stage);
 }
@@ -178,8 +176,7 @@ async function openRun(id, round, keepStage) {
   state.round = state.view.round.round_index;
   if (!keepStage) {
     const current = state.view.run.current_stage;
-    const endedHere = current === 'stop' || current === 'finish';
-    state.stage = state.view.mutable || endedHere ? current : 'data';
+    state.stage = state.view.mutable || current === 'finish' ? current : 'data';
     state.tab = 'flow';
   }
   render();
@@ -364,7 +361,7 @@ function renderStage(stage) {
         <button type="button" class="primary" data-action="run" ${mutable ? '' : 'disabled'}>${buttonLabel}</button>
         ${validate}
         <button type="button" class="ghost" data-action="preview" ${view.mutable ? '' : 'disabled'}>预览命令</button>
-        <button type="button" class="ghost" data-action="preset" ${view.mutable ? '' : 'disabled'}>恢复 A100 预设</button>
+        <button type="button" class="ghost" data-action="preset" ${view.mutable ? '' : 'disabled'}>恢复预设</button>
       </div>
       <div id="live-command"></div>
       ${result}
@@ -373,47 +370,55 @@ function renderStage(stage) {
     </section>`;
 }
 
-function flowAnchors(from, to) {
-  const fromX = from.x + from.w / 2;
-  const fromY = from.y + from.h / 2;
-  const toX = to.x + to.w / 2;
-  const toY = to.y + to.h / 2;
-  const dx = toX - fromX;
-  const dy = toY - fromY;
-  if (Math.abs(dx) >= Math.abs(dy)) {
-    if (dx >= 0) return [from.x + from.w, fromY, to.x, toY];
-    return [from.x, fromY, to.x + to.w, toY];
+function flowEdgeGeometry(edge, from, to) {
+  if (edge.kind === 'down') {
+    const x1 = from.x + from.w / 2;
+    const y1 = from.y + from.h;
+    const x2 = to.x + to.w / 2;
+    const y2 = to.y;
+    if (Math.abs(x1 - x2) < 6) {
+      return { d: `M ${x1} ${y1} L ${x2} ${y2}`, x: x1 + 10, y: (y1 + y2) / 2, anchor: 'start' };
+    }
+    const mid = Math.round((y1 + y2) / 2);
+    return {
+      d: `M ${x1} ${y1} L ${x1} ${mid} L ${x2} ${mid} L ${x2} ${y2}`,
+      x: (x1 + x2) / 2,
+      y: mid - 7,
+      anchor: 'middle',
+    };
   }
-  if (dy >= 0) return [fromX, from.y + from.h, toX, to.y];
-  return [fromX, from.y, toX, to.y + to.h];
+  const y = from.y + from.h / 2;
+  const x1 = from.x + from.w;
+  const x2 = to.x;
+  return { d: `M ${x1} ${y} L ${x2} ${y}`, x: (x1 + x2) / 2, y: y - 8, anchor: 'middle' };
+}
+
+function flowNodeSelected(node) {
+  if (node.id === 'next_data') return state.stage === 'promote' || state.stage === 'next_round';
+  if (node.id === 'finish') return state.stage === 'finish';
+  return state.stage === node.id;
 }
 
 function renderGraph() {
-  const flow = state.view.flow || { canvas: { width: 860, height: 236 }, nodes: [], edges: [], actions: [], prompt: '' };
+  const flow = state.view.flow || { canvas: { width: 860, height: 108 }, nodes: [], edges: [], actions: [], prompt: '' };
   const byId = {};
   flow.nodes.forEach((node) => { byId[node.id] = node; });
   const paths = flow.edges.map((edge) => {
     const from = byId[edge.from];
     const to = byId[edge.to];
     if (!from || !to) return '';
-    const [x1, y1, x2, y2] = flowAnchors(from, to);
-    const dx = x2 - x1;
-    const dy = y2 - y1;
-    const vertical = Math.abs(dy) > Math.abs(dx);
-    const c1x = vertical ? x1 : x1 + dx * 0.45;
-    const c1y = vertical ? y1 + dy * 0.45 : y1;
-    const c2x = vertical ? x2 : x2 - dx * 0.45;
-    const c2y = vertical ? y2 - dy * 0.45 : y2;
+    const geom = flowEdgeGeometry(edge, from, to);
     const marker = edge.live ? 'url(#flow-arrow-live)' : 'url(#flow-arrow)';
     const label = edge.label
-      ? `<text class="flow-edge-label" x="${(x1 + x2) / 2}" y="${(y1 + y2) / 2 - 6}" text-anchor="middle">${escapeHtml(edge.label)}</text>`
+      ? `<text class="flow-edge-label" x="${geom.x}" y="${geom.y}" text-anchor="${geom.anchor}">${escapeHtml(edge.label)}</text>`
       : '';
-    return `<path class="flow-edge ${edge.live ? 'live' : ''}" d="M ${x1} ${y1} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${x2} ${y2}" marker-end="${marker}"/>${label}`;
+    return `<path class="flow-edge ${edge.live ? 'live' : ''}" d="${geom.d}" marker-end="${marker}"/>${label}`;
   }).join('');
   const nodes = flow.nodes.map((node) => {
     const caption = node.verdict || statusText(node.status);
     const disabled = node.clickable ? '' : 'disabled';
-    return `<button type="button" class="flow-node ${node.status} ${state.stage === node.id ? 'selected' : ''}" data-stage="${node.id}" ${disabled} style="left:${node.x}px;top:${node.y}px;width:${node.w}px;height:${node.h}px"><b>${escapeHtml(node.label)}</b><small>${escapeHtml(caption)}</small></button>`;
+    const selected = flowNodeSelected(node) ? 'selected' : '';
+    return `<button type="button" class="flow-node ${node.status} ${selected}" data-stage="${node.id}" ${disabled} style="left:${node.x}px;top:${node.y}px;width:${node.w}px;height:${node.h}px"><b>${escapeHtml(node.label)}</b><small>${escapeHtml(caption)}</small></button>`;
   }).join('');
   const actions = (flow.actions || []).map((action) => `<button type="button" class="${action.danger ? 'danger' : 'primary'}" data-decision="${action.id}">${escapeHtml(action.label)}</button>`).join('');
   const actionBar = actions
@@ -433,13 +438,13 @@ function renderGraph() {
 }
 
 function renderTerminal() {
-  const ended = state.view.run.status === 'stopped';
-  return `<section class="panel"><h2>${ended ? '实验已终止' : '实验已完成'}</h2><p>本轮到此结束。已有检查点仍留在记录里。</p></section>`;
+  const completed = state.view.run.status === 'completed';
+  return `<section class="panel"><h2>${completed ? '实验已完成' : '实验已结束'}</h2><p>本轮到此结束。已有检查点仍留在记录里。</p></section>`;
 }
 
 function renderFlow() {
   const graph = renderGraph();
-  if (state.stage === 'stop' || state.stage === 'finish') return graph + renderTerminal();
+  if (state.stage === 'finish') return graph + renderTerminal();
   if (!state.view.forms[state.stage]) state.stage = 'data';
   return graph + renderStage(state.stage);
 }
@@ -580,7 +585,7 @@ function applyPreset() {
   const yaml = document.getElementById('extra-yaml');
   if (yaml) yaml.value = preset.extra_yaml || '';
   syncSource();
-  toast('已恢复本阶段的 A100 预设');
+  toast('已恢复本阶段预设');
 }
 
 async function uploadFile(file) {
@@ -681,7 +686,12 @@ document.addEventListener('click', async (event) => {
     }
     if (target.dataset.stage) {
       if (target.disabled) return;
-      state.stage = target.dataset.stage;
+      let stage = target.dataset.stage;
+      if (stage === 'next_data') {
+        const promoted = state.view.round && state.view.round.promoted_checkpoint;
+        stage = promoted ? 'next_round' : 'promote';
+      }
+      state.stage = stage;
       state.tab = 'flow';
       render();
       return;
@@ -935,10 +945,6 @@ document.addEventListener('focusout', (event) => {
 
 async function boot() {
   state.schema = await api('/api/schema');
-  const health = await api('/api/health');
-  if (health.hardware && health.hardware.label) {
-    document.getElementById('hardware-pill').textContent = health.hardware.label;
-  }
   fillCreateModel();
   await refreshRuns();
   render();

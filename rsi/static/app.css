@@ -190,7 +190,14 @@ h3 { margin: 16px 0 8px; font-size: 14px; font-weight: 600; color: var(--accent-
 .flow-node:disabled { cursor: default; }
 .flow-edge { fill: none; stroke: #d1d5db; stroke-width: 1.5; }
 .flow-edge.live { stroke: var(--accent); }
-.flow-edge-label { fill: #6b7280; font-size: 11px; font-family: Montserrat, "Noto Sans SC", sans-serif; }
+.flow-edge-label {
+  fill: #4b5563;
+  font-size: 11px;
+  font-family: Montserrat, "Noto Sans SC", sans-serif;
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 4px;
+}
 .flow-actions { margin: 0 0 14px; }
 .flow-actions .row-actions { margin-top: 8px; }
 
