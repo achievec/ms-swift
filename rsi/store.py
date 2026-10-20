@@ -1,11 +1,37 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 """SQLite audit log for RSI runs, rounds, steps, checkpoints, and servers."""
 import json
+import logging
 import sqlite3
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+# Wait for a lock instead of failing at once. The journal stays one reused file
+# (TRUNCATE) so a shared filesystem is not asked for a new -wal/-shm pair.
+_CONNECT_TIMEOUT_SECONDS = 30.0
+
+
+class StoreError(Exception):
+    """The audit database could not be opened or written."""
+
+
+def db_error_message(db_path: Path, exc: BaseException) -> str:
+    """Chinese operator message. Includes the absolute database path."""
+    path = Path(db_path).expanduser()
+    try:
+        path = path.resolve()
+    except OSError:
+        path = Path(db_path)
+    reason = str(exc).strip() or 'unable to open database file'
+    return (
+        f'审计库无法写入：{path}。'
+        '目录不可写，或磁盘满。不要把 RSI_HOME 放在 dolphinfs，'
+        '审计库和实验目录请放在本机磁盘；模型目录和数据目录可以在 dolphinfs。'
+        f'（{reason}）'
+    )
 
 
 def utcnow() -> str:
@@ -19,7 +45,11 @@ def _dumps(value) -> str:
 class Store:
 
     def __init__(self, db_path: Path):
-        self.db_path = Path(db_path)
+        self.db_path = Path(db_path).expanduser()
+        try:
+            self.db_path = self.db_path.resolve()
+        except OSError:
+            pass
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         with self.transaction() as conn:
@@ -107,16 +137,46 @@ class Store:
             if 'template' not in columns:
                 conn.execute('ALTER TABLE runs ADD COLUMN template TEXT')
 
+    def _connect(self) -> sqlite3.Connection:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.db_path, timeout=_CONNECT_TIMEOUT_SECONDS)
+        conn.row_factory = sqlite3.Row
+        self._apply_pragmas(conn)
+        return conn
+
+    @staticmethod
+    def _apply_pragmas(conn: sqlite3.Connection) -> None:
+        """Avoid WAL sidecars. TRUNCATE reuses one journal file instead of deleting it."""
+        conn.execute('PRAGMA temp_store=MEMORY')
+        conn.execute(f'PRAGMA busy_timeout={int(_CONNECT_TIMEOUT_SECONDS * 1000)}')
+        conn.execute('PRAGMA journal_mode=TRUNCATE')
+
+    def _fail(self, exc: sqlite3.OperationalError) -> StoreError:
+        message = db_error_message(self.db_path, exc)
+        logger.error('%s', message)
+        return StoreError(message)
+
     @contextmanager
     def transaction(self):
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
+            try:
+                conn = self._connect()
+            except sqlite3.OperationalError as exc:
+                raise self._fail(exc) from exc
             try:
                 yield conn
                 conn.commit()
+            except sqlite3.OperationalError as exc:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                raise self._fail(exc) from exc
             except Exception:
-                conn.rollback()
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
                 raise
             finally:
                 conn.close()

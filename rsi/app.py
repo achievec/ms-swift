@@ -17,6 +17,7 @@ from rsi.backends import build_backend, detect_gpu
 from rsi.logtail import read_log_window
 from rsi.pipeline import Pipeline, PipelineError
 from rsi.schemas import public_schema
+from rsi.store import StoreError
 
 STATIC_DIR = Path(__file__).resolve().parent / 'static'
 # run.sh appends here: rsi/.rsi.log next to this package, never a request path.
@@ -317,6 +318,11 @@ def create_app(home: Path | None = None) -> FastAPI:
     @app.exception_handler(PipelineError)
     async def _pipeline_error(_request: Request, exc: PipelineError):
         return JSONResponse({'detail': str(exc)}, status_code=exc.status)
+
+    @app.exception_handler(StoreError)
+    async def _store_error(_request: Request, exc: StoreError):
+        logger.error('审计库写入失败：%s', exc)
+        return JSONResponse({'detail': str(exc)}, status_code=500)
 
     @app.exception_handler(Exception)
     async def _unhandled(_request: Request, exc: Exception):
