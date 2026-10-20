@@ -251,7 +251,8 @@ def test_finished_sft_deploys_base_plus_lora(client):
     cleared = _preview(api, run_id, 'serve', {'model': BASE, 'adapters': ''})
     assert not cleared['params'].get('adapters')
     assert '--adapters' not in cleared['command']
-    assert f'--model {BASE}' in cleared['command']
+    assert f'--model {ARGS_BASE}' in cleared['command']
+    assert f'--model {BASE}' not in cleared['command']
     bad = api.post(f'/api/runs/{run_id}/stages/serve/preview', json={'params': {'more_params': '['}})
     assert bad.status_code == 400
 

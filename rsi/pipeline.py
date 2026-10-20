@@ -331,33 +331,7 @@ class Pipeline:
                 raise PipelineError(f'未知内置数据集：{name}')
             return str(path.resolve()), validate_file(path)
         if source == 'public':
-            raw = params.get('dataset') or ''
-            blocked = dataset_block_message(raw)
-            if blocked:
-                raise PipelineError(blocked)
-            if model_source() in {'hope', 'local'} and hf_cloneable(raw):
-                status = self.fetcher.ensure('dataset', raw, background=True)
-                self._note_fetch(status)
-                if status.state == '就绪':
-                    return status.local_path, validate_file(Path(status.local_path)) if Path(status.local_path).is_file() else {
-                        'ok': True,
-                        'num_rows': None,
-                        'formats': {'dataset': 1},
-                        'errors': [],
-                        'error_count': 0,
-                        'warnings': [],
-                        'preview': [],
-                        'dataset': status.local_path,
-                    }
-                report = validate_public_id(raw)
-                report['ok'] = False
-                report['errors'] = [{'row': 0, 'error': status.message or '同步中'}]
-                report['error_count'] = 1
-                report['fetch_state'] = status.state
-                report['fetch_repo'] = raw
-                return status.local_path, report
-            report = validate_public_id(raw)
-            return report.get('dataset') or '', report
+            return self._resolve_public(params.get('dataset') or '')
         if source == 'upload':
             path = self._upload_path(params.get('dataset') or '')
             return str(path), validate_file(path)
@@ -368,6 +342,87 @@ class Pipeline:
                 raise PipelineError(f'本地文件不存在：{raw}')
             return str(path.resolve()), validate_file(path)
         raise PipelineError('未知数据来源')
+
+    def _resolve_public_one(self, raw: str):
+        raw = str(raw or '').strip()
+        blocked = dataset_block_message(raw)
+        if blocked:
+            raise PipelineError(blocked)
+        if model_source() in {'hope', 'local'} and hf_cloneable(raw):
+            status = self.fetcher.ensure('dataset', raw, background=True)
+            self._note_fetch(status)
+            if status.state == '就绪':
+                local = Path(status.local_path)
+                if local.is_file():
+                    return status.local_path, validate_file(local)
+                return status.local_path, {
+                    'ok': True,
+                    'num_rows': None,
+                    'formats': {'dataset': 1},
+                    'errors': [],
+                    'error_count': 0,
+                    'warnings': [],
+                    'preview': [],
+                    'dataset': status.local_path,
+                }
+            report = validate_public_id(raw)
+            report['ok'] = False
+            report['errors'] = [{'row': 0, 'error': status.message or '同步中'}]
+            report['error_count'] = 1
+            report['fetch_state'] = status.state
+            report['fetch_repo'] = raw
+            return status.local_path, report
+        report = validate_public_id(raw)
+        return report.get('dataset') or '', report
+
+    def _resolve_public(self, raw: str):
+        text = str(raw or '').strip()
+        parts = [part for part in text.split() if part] if ' ' in text else [text]
+        if len(parts) <= 1:
+            return self._resolve_public_one(parts[0] if parts else '')
+        resolved = []
+        warnings = []
+        errors = []
+        for part in parts:
+            path, report = self._resolve_public_one(part)
+            if report.get('fetch_state') == '同步中':
+                return path, report
+            if not report.get('ok'):
+                errors.extend(report.get('errors') or [])
+            warnings.extend(report.get('warnings') or [])
+            resolved.append(path or part)
+        joined = ' '.join(resolved)
+        return joined, {
+            'ok': not errors,
+            'num_rows': None,
+            'formats': {'dataset': len(parts)},
+            'errors': errors,
+            'error_count': len(errors),
+            'warnings': warnings,
+            'preview': [],
+            'dataset': joined,
+        }
+
+    def _require_dataset(self, dataset: str) -> None:
+        path = Path(dataset)
+        parts = [dataset] if path.is_file() or path.is_dir() else str(dataset).split()
+        for part in parts:
+            if not part:
+                continue
+            item = Path(part)
+            if item.is_file():
+                report = validate_file(item)
+                if not report['ok']:
+                    raise PipelineError(_format_errors(report))
+                continue
+            if item.is_dir():
+                continue
+            blocked = dataset_block_message(part)
+            if blocked:
+                raise PipelineError(blocked)
+            report = validate_public_id(part)
+            if not report['ok']:
+                raise PipelineError(_format_errors(report))
 
     def _note_fetch(self, status) -> None:
         if status is None or status.state in {'保持', '缺少'}:
@@ -420,6 +475,12 @@ class Pipeline:
         else:
             merged['model'] = ''
         self._pin_identity(merged, run)
+
+    def _lock_model_fields(self, merged: dict, defaults: dict) -> None:
+        """Keep --model, --model_type, and --template on the values chosen at 新建实验."""
+        for key in ('model', 'model_type', 'template'):
+            if key in defaults:
+                merged[key] = defaults[key]
 
     def _pin_identity(self, merged: dict, run: dict) -> None:
         model = str(merged.get('model') or '')
@@ -526,6 +587,7 @@ class Pipeline:
                     carried = _loads(prev_data['params_json'])
                     carried.pop('extra_yaml', None)
                     preset.update(carried)
+            self._show_round_model(preset, run, rnd)
             return preset
 
         data_params, data_result = self._data_context(run['id'], rnd['round_index'])
@@ -554,13 +616,14 @@ class Pipeline:
         if stage in {'sft_eval', 'rl_eval'}:
             kind = 'sft' if stage == 'sft_eval' else 'rl'
             checkpoint = self.store.active_checkpoint(run['id'], rnd['round_index'], kind)
-            preset['model'] = checkpoint['path'] if checkpoint else ''
+            preset['model'] = checkpoint['path'] if checkpoint else (rnd.get('base_model') or run.get('base_model') or '')
             self._apply_model_meta(preset, run)
             preset['eval_output_dir'] = str(self.stage_dir(run['id'], rnd['round_index'], stage) / 'eval_output')
             preset['custom_eval_config'] = _resolve_existing(preset.get('custom_eval_config'))
             return preset
 
         if stage == 'promote':
+            self._show_round_model(preset, run, rnd)
             _candidates, recommendation = self.candidates(run, rnd)
             preset['choice'] = recommendation
             preset['reason'] = preset.get('reason') or ''
@@ -572,7 +635,19 @@ class Pipeline:
             if not str(preset.get('system') or '').strip():
                 preset['system'] = template_default_system(str(preset.get('template') or ''))
             return preset
+        self._show_round_model(preset, run, rnd)
         return preset
+
+    def _show_round_model(self, preset: dict, run: dict, rnd: dict) -> None:
+        preset['model'] = (rnd or {}).get('base_model') or (run or {}).get('base_model') or ''
+        if (run or {}).get('model_type'):
+            preset['model_type'] = run['model_type']
+        elif not preset.get('model_type'):
+            preset['model_type'] = ''
+        if (run or {}).get('template'):
+            preset['template'] = run['template']
+        elif not preset.get('template'):
+            preset['template'] = ''
 
     def _serve_checkpoint_path(self, run: dict, rnd: dict) -> tuple:
         """Promoted checkpoint, else this round's RL checkpoint, else SFT."""
@@ -665,7 +740,9 @@ class Pipeline:
         return rows, best
 
     def _prepare(self, run, rnd, stage, user, strict: bool):
-        merged = _merge(self._defaults_for(run, rnd, stage), user)
+        defaults = self._defaults_for(run, rnd, stage)
+        merged = _merge(defaults, user)
+        self._lock_model_fields(merged, defaults)
         side = {}
         if stage == 'data':
             dataset, report = self.resolve_dataset(merged)
@@ -683,20 +760,7 @@ class Pipeline:
             if strict:
                 if not dataset:
                     raise PipelineError('缺少数据集，请先完成数据阶段')
-                path = Path(dataset)
-                if path.is_file():
-                    report = validate_file(path)
-                    if not report['ok']:
-                        raise PipelineError(_format_errors(report))
-                elif path.is_dir():
-                    pass
-                else:
-                    blocked = dataset_block_message(dataset)
-                    if blocked:
-                        raise PipelineError(blocked)
-                    report = validate_public_id(dataset)
-                    if not report['ok']:
-                        raise PipelineError(_format_errors(report))
+                self._require_dataset(str(dataset))
                 if not merged.get('model'):
                     raise PipelineError('缺少模型路径')
             merged['output_dir'] = self._concrete_output(run['id'], rnd['round_index'], stage, merged.get('output_dir'),
@@ -791,6 +855,9 @@ class Pipeline:
         step = active.get(stage)
         if step and step['status'] == 'succeeded':
             values = _loads(step['params_json'])
+            for key in ('model', 'model_type', 'template'):
+                if values.get(key) in (None, '') and defaults.get(key) not in (None, ''):
+                    values[key] = defaults[key]
         else:
             values = defaults
         result = _loads(step['result_json']) if step and step.get('result_json') else None
@@ -1278,13 +1345,16 @@ class Pipeline:
         # Keep the typed 「更多参数」 text. apply_more_params merges the flags
         # into the swift command and drops the box, which is not a swift flag.
         typed_more = user.get('more_params') if 'more_params' in user else None
-        merged = _merge(self._defaults_for(run, rnd, 'serve'), user)
+        defaults = self._defaults_for(run, rnd, 'serve')
+        merged = _merge(defaults, user)
+        self._lock_model_fields(merged, defaults)
         if 'adapters' in user:
             merged['adapters'] = user.get('adapters') or ''
         try:
             merged = apply_more_params(merged)
         except ValueError as exc:
             raise PipelineError(str(exc)) from exc
+        self._lock_model_fields(merged, defaults)
         if strict and not merged.get('model') and not merged.get('adapters'):
             raise PipelineError('还没有可部署的模型')
         if not merged.get('served_model_name'):

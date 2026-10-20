@@ -280,9 +280,17 @@ function choiceEntries(field) {
 
 function renderField(field, values) {
   const value = fieldValue(field, values);
+  const lockTitle = field.locked ? ' title="由实验创建时决定，不能在这里修改"' : '';
+  if (field.locked && (field.type === 'combo' || field.type === 'multicombo' || field.type === 'text' || field.type === 'number' || field.type === 'textarea')) {
+    const control = field.type === 'textarea'
+      ? `<textarea data-field="${field.key}" rows="3" readonly${lockTitle}>${escapeHtml(value)}</textarea>`
+      : `<input type="text" data-field="${field.key}" value="${escapeHtml(value)}" readonly${lockTitle}/>`;
+    return `<label class="field locked" data-key="${field.key}">${inferCaption(field)}${control}</label>`;
+  }
   if (field.type === 'checkbox') {
     const checked = value === true || value === 'true' ? 'checked' : '';
-    return `<div class="field" data-key="${field.key}"><label class="check"><input type="checkbox" data-field="${field.key}" ${checked}/> ${escapeHtml(field.label)}</label></div>`;
+    const disabled = field.locked ? 'disabled' : '';
+    return `<div class="field${field.locked ? ' locked' : ''}" data-key="${field.key}"${lockTitle}><label class="check"><input type="checkbox" data-field="${field.key}" ${checked} ${disabled}/> ${escapeHtml(field.label)}</label></div>`;
   }
   if (field.type === 'select' || field.type === 'multiselect') {
     const multiple = field.type === 'multiselect';
@@ -298,7 +306,8 @@ function renderField(field, values) {
       return `<option value="${escapeHtml(choice.value)}" ${mark}>${escapeHtml(choice.label)}</option>`;
     }).join('');
     const multi = multiple ? 'multiple data-multi size="5"' : '';
-    return `<label class="field" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><select data-field="${field.key}" ${multi}>${options}</select></label>`;
+    const disabled = field.locked ? 'disabled' : '';
+    return `<label class="field${field.locked ? ' locked' : ''}" data-key="${field.key}"${lockTitle}><span>${escapeHtml(field.label)}</span><select data-field="${field.key}" ${multi} ${disabled}>${options}</select></label>`;
   }
   if (field.type === 'combo' || field.type === 'multicombo') {
     const source = field.choices_from ? `data-choices-from="${escapeHtml(field.choices_from)}"` : '';
@@ -347,6 +356,7 @@ function renderGroups(fields, values) {
 function collectParams() {
   const params = {};
   document.querySelectorAll('#main [data-field]').forEach((el) => {
+    if (el.closest('[hidden]')) return;
     if (el.type === 'radio') {
       if (el.checked) params[el.dataset.field] = el.value;
       return;
@@ -359,7 +369,7 @@ function collectParams() {
       params[el.dataset.field] = el.checked;
       return;
     }
-    if (el.type === 'number') {
+    if (el.type === 'number' || el.type === 'range') {
       params[el.dataset.field] = el.value === '' ? null : Number(el.value);
       return;
     }
@@ -374,10 +384,88 @@ function syncSource() {
   const source = document.querySelector('[data-field="source"]');
   if (!source) return;
   const value = source.value;
-  document.querySelectorAll('[data-key="bundled"]').forEach((el) => { el.hidden = value !== 'bundled'; });
-  document.querySelectorAll('[data-key="dataset"]').forEach((el) => { el.hidden = value === 'bundled'; });
-  const upload = document.getElementById('upload-row');
-  if (upload) upload.hidden = value !== 'upload';
+  document.querySelectorAll('[data-dataset-mode]').forEach((el) => {
+    el.hidden = el.dataset.datasetMode !== value;
+  });
+}
+
+function datasetTokens(value) {
+  return String(value ?? '').trim().split(/\s+/).filter(Boolean);
+}
+
+function paintDatasetChips(box) {
+  if (!box) return;
+  const hidden = box.querySelector('[data-field="dataset"]');
+  const tokens = datasetTokens(hidden && hidden.value);
+  box.querySelectorAll('.chip').forEach((el) => el.remove());
+  const query = box.querySelector('.chip-query');
+  if (!query) return;
+  const html = tokens.map((token) => `<span class="chip"><span>${escapeHtml(token)}</span><button type="button" data-chip-remove="${escapeHtml(token)}" aria-label="移除">×</button></span>`).join('');
+  query.insertAdjacentHTML('beforebegin', html);
+  const clear = box.querySelector('[data-action="dataset-clear"]');
+  if (clear) clear.hidden = tokens.length === 0;
+}
+
+function shownDataSource(value, dataset) {
+  if (value === 'public' || value === 'upload' || value === 'path') return value;
+  const text = String(dataset || '');
+  if (text.startsWith('/') || text.includes('\\') || text.startsWith('.')) return 'path';
+  return 'public';
+}
+
+function renderLockedModelRow(fields, values) {
+  const labels = {
+    model: '模型id或路径(--model)',
+    model_type: '模型类型(--model_type)',
+    template: '模型Prompt模板类型(--template)',
+  };
+  const byKey = {};
+  (fields || []).forEach((field) => { byKey[field.key] = field; });
+  const cells = ['model', 'model_type', 'template'].map((key) => {
+    const field = byKey[key] || { key, label: labels[key], info: '' };
+    const value = values && values[key] != null ? values[key] : '';
+    return `<div class="field locked" data-key="${key}">${inferCaption(field)}<div class="control"><input type="text" data-field="${key}" value="${escapeHtml(value)}" readonly title="由实验创建时决定，不能在这里修改"/></div><div class="extra"></div></div>`;
+  }).join('');
+  return `<div class="infer-row infer-grid model-lock"><div class="infer-group" style="--cols:3">${cells}</div></div>`;
+}
+
+function renderDatasetSlider(field, values) {
+  const min = field.minimum == null ? 0 : field.minimum;
+  const max = field.maximum == null ? 1 : field.maximum;
+  const step = field.step == null ? 'any' : field.step;
+  let value = fieldValue(field, values);
+  if (value === '' && field.default != null) value = field.default;
+  return `<div class="field infer-slider" data-key="${field.key}">${inferCaption(field)}<div class="control slider-head"><input type="number" class="slider-num" data-slider-num="${field.key}" min="${min}" max="${max}" step="${step}" value="${escapeHtml(value)}" /><button type="button" class="ghost icon" data-action="slider-reset" data-reset="${field.key}" title="恢复初始值">↺</button></div><div class="extra"><input type="range" data-field="${field.key}" min="${min}" max="${max}" step="${step}" value="${escapeHtml(value)}" /><div class="slider-ends"><span>${escapeHtml(min)}</span><span>${escapeHtml(max)}</span></div></div></div>`;
+}
+
+function renderDatasetSettings(fields, values) {
+  const byKey = {};
+  fields.forEach((field) => { byKey[field.key] = field; });
+  const source = byKey.source;
+  const dataset = byKey.dataset || { key: 'dataset', label: '数据集名称(--dataset)', info: '选择训练的数据集，支持复选/本地路径' };
+  const datasetValue = fieldValue(dataset, values);
+  const sourceValue = shownDataSource(fieldValue(source, values), datasetValue);
+  const options = choiceEntries(source).map((choice) => {
+    const mark = String(choice.value) === sourceValue ? 'selected' : '';
+    return `<option value="${escapeHtml(choice.value)}" ${mark}>${escapeHtml(choice.label)}</option>`;
+  }).join('');
+  const tokens = datasetTokens(datasetValue);
+  const chips = tokens.map((token) => `<span class="chip"><span>${escapeHtml(token)}</span><button type="button" data-chip-remove="${escapeHtml(token)}" aria-label="移除">×</button></span>`).join('');
+  const clearHidden = tokens.length ? '' : 'hidden';
+  const hide = (mode) => (mode === sourceValue ? '' : 'hidden');
+  const sourceField = `<div class="field" data-key="source">${inferCaption(source)}<div class="control"><select data-field="source">${options}</select></div><div class="extra"></div></div>`;
+  const datasetField = `<div class="field" data-key="dataset">${inferCaption(dataset)}<div class="control">
+      <div data-dataset-mode="public" ${hide('public')}><div class="combo chip-combo"><div class="combo-anchor chip-box">${chips}<input class="chip-query" data-combo="1" data-chip="1" data-choices-from="datasets" value="" autocomplete="off" placeholder="选择或输入数据集" /><button type="button" class="chip-clear" data-action="dataset-clear" aria-label="清空" ${clearHidden}>×</button><button type="button" class="chip-caret" data-action="dataset-menu" aria-label="展开数据集">▾</button><input type="hidden" data-field="dataset" value="${escapeHtml(tokens.join(' '))}" /><div class="combo-list" hidden></div></div></div></div>
+      <div data-dataset-mode="upload" ${hide('upload')}><input id="file-input" type="file" accept=".jsonl,.json,.txt" /><input class="dataset-path" type="text" data-field="dataset" value="${escapeHtml(datasetValue)}" readonly placeholder="上传后显示文件路径" /></div>
+      <div data-dataset-mode="path" ${hide('path')}><input type="text" data-field="dataset" value="${escapeHtml(datasetValue)}" placeholder="服务器上的文件或目录路径" /></div>
+    </div><div class="extra"></div></div>`;
+  const split = byKey.split_dataset_ratio ? renderDatasetSlider(byKey.split_dataset_ratio, values) : '';
+  const length = byKey.max_length ? renderDatasetSlider(byKey.max_length, values) : '';
+  const padding = byKey.padding_free ? (() => {
+    const checked = fieldValue(byKey.padding_free, values) === true || fieldValue(byKey.padding_free, values) === 'true' ? 'checked' : '';
+    return `<div class="field check" data-key="padding_free">${inferCaption(byKey.padding_free)}<div class="control"><label class="check"><input type="checkbox" data-field="padding_free" ${checked}/></label></div><div class="extra"></div></div>`;
+  })() : '';
+  return `<details class="infer-runtime dataset-settings" open><summary>数据集设置</summary><div class="body"><div class="infer-row infer-grid"><div class="infer-group dataset-grid">${sourceField}${datasetField}${split}${length}${padding}</div></div></div></details>`;
 }
 
 function renderPromote(values) {
@@ -417,6 +505,9 @@ function renderStage(stage) {
   const fields = state.schema.fields[stage] || [];
   const meta = state.schema.stages.find((item) => item.id === stage);
   const mutable = view.mutable && form.status !== 'locked' && form.status !== 'running';
+  const blockReason = !view.mutable
+    ? '历史轮次只能查看'
+    : (form.status === 'running' ? '运行中' : (form.status === 'locked' ? '请先完成上一阶段' : ''));
   const buttonLabel = {
     ready: '运行本阶段',
     failed: '重试本阶段',
@@ -424,12 +515,8 @@ function renderStage(stage) {
     running: '运行中',
     locked: '请先完成上一阶段',
   }[form.status] || '运行本阶段';
-  const promote = stage === 'promote' ? renderPromote(form.values || {}) : '';
-  const upload = stage === 'data' ? `
-    <div id="upload-row" class="field">
-      <span>上传 jsonl / json</span>
-      <input id="file-input" type="file" accept=".jsonl,.json,.txt" />
-    </div>` : '';
+  const values = form.values || {};
+  const promote = stage === 'promote' ? renderPromote(values) : '';
   const validate = stage === 'data' ? '<button type="button" class="ghost" data-action="validate">校验格式</button>' : '';
   const reportLink = form.result ? evalReportLink(stage, form.result) : '';
   const result = form.result ? `${scoreHeadline(form.result.metrics)}${scoreTable(form.result.metrics)}${reportLink ? `<p class="row-actions">${reportLink}</p>` : ''}${outputPanel('结果', JSON.stringify(visibleResult(form.result), null, 2))}` : '';
@@ -446,12 +533,13 @@ function renderStage(stage) {
       <h2>${escapeHtml(meta.summary)}</h2>
       ${view.mutable ? '' : '<p class="muted">这是历史轮次，只能查看。</p>'}
       ${promote}
-      ${renderGroups(fields, form.values || {})}
-      ${upload}
-      <details class="yaml">
+      ${stage === 'data'
+        ? `<div class="infer-form data-settings">${renderLockedModelRow(fields, values)}${renderDatasetSettings(fields, values)}</div>`
+        : renderGroups(fields, values)}
+      ${stage === 'data' ? '' : `<details class="yaml">
         <summary>高级参数 YAML</summary>
-        <textarea id="extra-yaml">${escapeHtml((form.values && form.values.extra_yaml) || '')}</textarea>
-      </details>
+        <textarea id="extra-yaml">${escapeHtml((values && values.extra_yaml) || '')}</textarea>
+      </details>`}
       ${fetchNote()}
       <div class="row-actions">
         <button type="button" class="primary" data-action="run" ${mutable ? '' : 'disabled'}>${buttonLabel}</button>
@@ -460,6 +548,7 @@ function renderStage(stage) {
         <button type="button" class="ghost" data-action="preview" ${view.mutable ? '' : 'disabled'}>预览命令</button>
         <button type="button" class="ghost" data-action="preset" ${view.mutable ? '' : 'disabled'}>恢复预设</button>
       </div>
+      ${blockReason ? `<p class="muted run-reason">${escapeHtml(blockReason)}</p>` : ''}
       <div id="live-command"></div>
       ${result}
       ${command}
@@ -551,7 +640,15 @@ function renderGraph() {
 
 function renderTerminal() {
   const completed = state.view.run.status === 'completed';
+  const run = state.view.run || {};
+  const round = state.view.round || {};
+  const values = {
+    model: round.base_model || run.base_model || '',
+    model_type: run.model_type || '',
+    template: run.template || '',
+  };
   return `<section class="panel"><h2>${completed ? '实验已完成' : '实验已结束'}</h2><p>本轮到此结束。已有检查点仍留在记录里。</p>
+    <div class="infer-form">${renderLockedModelRow([], values)}</div>
     <div class="row-actions"><button type="button" class="primary" data-action="open-serve">去部署推理服务</button></div>
   </section>`;
 }
@@ -904,6 +1001,11 @@ function applyPreset() {
   });
   const yaml = document.getElementById('extra-yaml');
   if (yaml) yaml.value = preset.extra_yaml || '';
+  document.querySelectorAll('[data-slider-num]').forEach((num) => {
+    const range = document.querySelector(`[data-field="${num.dataset.sliderNum}"]`);
+    if (range) num.value = range.value;
+  });
+  document.querySelectorAll('.chip-box').forEach((box) => paintDatasetChips(box));
   syncSource();
   toast('已恢复本阶段预设');
 }
@@ -914,7 +1016,7 @@ async function uploadFile(file) {
   const response = await fetch('/api/datasets/upload', { method: 'POST', body });
   const data = await response.json();
   if (!response.ok) throw new Error(data.detail || '上传失败');
-  const dataset = document.querySelector('[data-field="dataset"]');
+  const dataset = document.querySelector('[data-dataset-mode="upload"] [data-field="dataset"]');
   if (dataset) dataset.value = data.path;
   const source = document.querySelector('[data-field="source"]');
   if (source) source.value = 'upload';
@@ -1065,7 +1167,55 @@ async function sendChat() {
   }
 }
 
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter') return;
+  const input = event.target;
+  if (!input.dataset || input.dataset.chip !== '1') return;
+  event.preventDefault();
+  const text = input.value.trim();
+  if (!text) return;
+  const box = input.closest('.chip-box');
+  const hidden = box.querySelector('[data-field="dataset"]');
+  const tokens = datasetTokens(hidden.value);
+  if (!tokens.includes(text)) tokens.push(text);
+  hidden.value = tokens.join(' ');
+  input.value = '';
+  paintDatasetChips(box);
+  showCombo(input, true);
+});
+
 document.addEventListener('click', async (event) => {
+  const chip = event.target.closest('[data-chip-remove]');
+  if (chip) {
+    event.preventDefault();
+    const box = chip.closest('.chip-box');
+    const hidden = box.querySelector('[data-field="dataset"]');
+    const drop = chip.dataset.chipRemove;
+    hidden.value = datasetTokens(hidden.value).filter((item) => item !== drop).join(' ');
+    paintDatasetChips(box);
+    return;
+  }
+  const clearAll = event.target.closest('[data-action="dataset-clear"]');
+  if (clearAll) {
+    event.preventDefault();
+    const box = clearAll.closest('.chip-box');
+    const hidden = box.querySelector('[data-field="dataset"]');
+    hidden.value = '';
+    const query = box.querySelector('.chip-query');
+    if (query) query.value = '';
+    paintDatasetChips(box);
+    return;
+  }
+  const caret = event.target.closest('[data-action="dataset-menu"]');
+  if (caret) {
+    event.preventDefault();
+    const input = caret.closest('.chip-box').querySelector('.chip-query');
+    if (input) {
+      input.focus();
+      showCombo(input, true);
+    }
+    return;
+  }
   const target = event.target.closest('button');
   if (!target || target.disabled || state.busy) return;
   try {
@@ -1204,11 +1354,16 @@ document.addEventListener('click', async (event) => {
     if (target.dataset.action === 'slider-reset') {
       const key = target.dataset.reset;
       const item = state.schema.llm_infer && state.schema.llm_infer.by_id[key];
+      let fallback = item && item.default;
+      if (fallback == null && state.schema && state.schema.fields) {
+        const field = (state.schema.fields[state.stage] || []).find((row) => row.key === key);
+        if (field && field.default != null) fallback = field.default;
+      }
       const input = document.querySelector(`[data-field="${key}"]`);
       const num = document.querySelector(`[data-slider-num="${key}"]`);
-      if (input && item) {
-        input.value = item.default;
-        if (num) num.value = item.default;
+      if (input && fallback != null) {
+        input.value = fallback;
+        if (num) num.value = fallback;
         rememberServeDraft({ target: input });
       }
       return;
@@ -1433,7 +1588,8 @@ function showCombo(input, browse) {
   const list = input.parentElement.querySelector('.combo-list');
   if (!list) return;
   const multi = input.dataset.multi === '1';
-  const query = (browse && multi ? '' : (multi ? comboFilterText(input) : input.value.trim())).toLowerCase();
+  const chip = input.dataset.chip === '1';
+  const query = (browse && (multi || chip) ? '' : (chip ? input.value.trim() : (multi ? comboFilterText(input) : input.value.trim()))).toLowerCase();
   const all = catalogNames(input.dataset.choicesFrom, input).map((item) => String(item));
   const cap = input.dataset.choicesFrom === 'eval_datasets_by_backend' ? all.length : 40;
   const exact = !multi && query ? all.findIndex((item) => item.toLowerCase() === query) : -1;
@@ -1451,7 +1607,13 @@ function showCombo(input, browse) {
     list.innerHTML = '';
     return;
   }
-  const selected = new Set(multi ? input.value.trim().split(/\s+/).filter(Boolean) : []);
+  let selected = new Set();
+  if (chip) {
+    const hidden = input.parentElement.querySelector('[data-field="dataset"]');
+    selected = new Set(datasetTokens(hidden && hidden.value));
+  } else if (multi) {
+    selected = new Set(input.value.trim().split(/\s+/).filter(Boolean));
+  }
   list.innerHTML = shown.map((item) => {
     const pressed = selected.has(item) ? ' aria-pressed="true"' : '';
     return `<button type="button" data-combo-value="${escapeHtml(item)}"${pressed}>${escapeHtml(item)}</button>`;
@@ -1503,6 +1665,17 @@ document.addEventListener('mousedown', (event) => {
   if (!option) return;
   event.preventDefault();
   const input = option.closest('.combo').querySelector('input');
+  if (input.dataset.chip === '1') {
+    const box = input.closest('.chip-box');
+    const hidden = box.querySelector('[data-field="dataset"]');
+    const tokens = datasetTokens(hidden.value);
+    const value = option.dataset.comboValue;
+    hidden.value = (tokens.includes(value) ? tokens.filter((item) => item !== value) : tokens.concat(value)).join(' ');
+    input.value = '';
+    paintDatasetChips(box);
+    showCombo(input, true);
+    return;
+  }
   if (input.dataset.multi === '1') {
     input.value = toggleMultiValue(input, option.dataset.comboValue);
     showCombo(input, true);

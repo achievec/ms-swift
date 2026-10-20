@@ -77,9 +77,46 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         assert 'zero3_offload' in sft['deepspeed']['choices']
 
         data = by_key('data')
-        assert data['dataset']['type'] == 'combo'
+        assert [field['key'] for field in schema['fields']['data']] == [
+            'model', 'model_type', 'template', 'source', 'dataset', 'split_dataset_ratio', 'max_length', 'padding_free',
+        ]
+        assert data['model']['locked'] is True
+        assert data['model_type']['locked'] is True
+        assert data['template']['locked'] is True
+        assert data['dataset']['type'] == 'multicombo'
         assert data['dataset']['choices_from'] == 'datasets'
         assert data['dataset']['label'] == '数据集名称(--dataset)'
+        assert data['dataset']['info'] == '选择训练的数据集，支持复选/本地路径'
+        assert [item['label'] for item in data['source']['choices']] == ['公开数据集', '上传文件', '服务器本地路径']
+        assert [item['value'] for item in data['source']['choices']] == ['public', 'upload', 'path']
+        assert 'bundled' not in data
+        assert 'dataset_num_proc' not in data
+        assert 'dataloader_num_workers' not in data
+        assert 'val_dataset' not in data
+        assert data['split_dataset_ratio']['label'] == '验证集拆分比例(--split_dataset_ratio)'
+        assert data['split_dataset_ratio']['info'] == '表示将总数据的多少拆分到验证集中'
+        assert data['split_dataset_ratio']['minimum'] == 0
+        assert data['split_dataset_ratio']['maximum'] == 1
+        assert data['max_length']['label'] == '句子最大长度(--max_length)'
+        assert data['max_length']['info'] == '设置输入模型的最大长度'
+        assert data['max_length']['minimum'] == 32
+        assert data['max_length']['maximum'] == 32768
+        assert data['max_length']['default'] == 1024
+        assert data['padding_free']['label'] == '无填充批处理(--padding_free)'
+        assert data['padding_free']['info'] == '将一个batch中的数据进行展平而避免数据padding'
+        for stage in ('sft', 'sft_eval', 'rl', 'rl_eval', 'promote', 'next_round', 'serve'):
+            stage_fields = schema['fields'][stage]
+            assert [row['key'] for row in stage_fields[:3]] == ['model', 'model_type', 'template']
+            assert all(row['locked'] is True for row in stage_fields[:3])
+        assert by_key('rl')['ref_model'].get('locked') is not True
+        assert by_key('rl')['dataset'].get('locked') is not True
+        assert by_key('sft')['learning_rate'].get('locked') is not True
+        page = Path(__file__).resolve().parents[1].joinpath('static', 'app.js').read_text(encoding='utf-8')
+        assert 'renderDatasetSettings' in page
+        assert '数据集设置' in page
+        assert 'data-dataset-mode' in page
+        assert '内置示例' not in page
+        assert '由实验创建时决定，不能在这里修改' in page
 
         sft_eval = by_key('sft_eval')
         assert sft_eval['eval_backend']['choices'] == ['Native', 'OpenCompass', 'VLMEvalKit']
@@ -107,3 +144,9 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         assert values['model'] == 'Qwen/Qwen2.5-7B-Instruct'
         assert values['model_type'] == 'qwen2'
         assert values['template'] == 'qwen2_5'
+        data_values = created['forms']['data']['values']
+        assert data_values['model'] == 'Qwen/Qwen2.5-7B-Instruct'
+        assert data_values['model_type'] == 'qwen2'
+        assert data_values['template'] == 'qwen2_5'
+        assert data_values['source'] == 'public'
+        assert data_values['max_length'] == 1024

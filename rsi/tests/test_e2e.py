@@ -184,6 +184,47 @@ def test_rerun_supersedes_later_stages(client):
     assert blocked.status_code == 400
 
 
+def test_model_fields_cannot_change_after_create(client):
+    api, _home = client
+    created = api.post('/api/runs', json={
+        'name': '模型锁定',
+        'scenario': '创建之后不能改模型',
+        'base_model': 'Qwen/Qwen2.5-7B-Instruct',
+    })
+    run_id = created.json()['run']['id']
+    data = _run(api, run_id, 'data', {
+        'source': 'bundled',
+        'bundled': 'itops_mix',
+        'model': 'other/model',
+        'model_type': 'llama',
+        'template': 'llama3',
+    })
+    assert data.status_code == 200, data.text
+    stored = data.json()['view']['forms']['data']['values']
+    assert stored['model'] == 'Qwen/Qwen2.5-7B-Instruct'
+    assert stored['model_type'] == 'qwen2'
+    assert stored['template'] == 'qwen2_5'
+    preview = api.post(f'/api/runs/{run_id}/stages/sft/preview', json={'params': {
+        'model': 'other/model',
+        'model_type': 'llama',
+        'template': 'llama3',
+        'learning_rate': '2e-4',
+    }})
+    assert preview.status_code == 200, preview.text
+    command = preview.json()['command']
+    assert '--model Qwen/Qwen2.5-7B-Instruct' in command
+    assert 'other/model' not in command
+    assert '--model_type qwen2' in command
+    assert '--template qwen2_5' in command
+    assert '2e-4' in command
+    script = Path(__file__).resolve().parents[1].joinpath('static', 'app.js').read_text(encoding='utf-8')
+    assert "历史轮次只能查看" in script
+    assert "请先完成上一阶段" in script
+    assert "form.status === 'running' ? '运行中'" in script
+    assert 'run-reason' in script
+    assert 'dataset-clear' in script
+
+
 def test_upload_and_public_dataset(client, tmp_path):
     api, home = client
     good = tmp_path / 'alpaca.jsonl'
@@ -191,6 +232,12 @@ def test_upload_and_public_dataset(client, tmp_path):
     public = api.post('/api/datasets/validate', json={'params': {'source': 'public', 'dataset': 'modelscope/gsm8k'}})
     assert public.status_code == 200
     assert public.json()['ok'] is True
+    many = api.post('/api/datasets/validate', json={
+        'params': {'source': 'public', 'dataset': 'modelscope/gsm8k AI-ModelScope/alpaca-gpt4-data-zh'},
+    })
+    assert many.status_code == 200, many.text
+    assert many.json()['ok'] is True
+    assert many.json()['dataset'] == 'modelscope/gsm8k AI-ModelScope/alpaca-gpt4-data-zh'
     local = api.post('/api/datasets/validate', json={'params': {'source': 'path', 'dataset': str(good)}})
     assert local.json()['ok'] is True
     assert local.json()['formats']['alpaca'] == 1

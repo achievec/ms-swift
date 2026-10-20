@@ -44,7 +44,7 @@ The server listens on `0.0.0.0:8418`. On this machine open http://127.0.0.1:8418
 Then:
 
 1. **新建实验**. The default base is `Qwen/Qwen2.5-7B-Instruct` and the scenario is an internal IT helpdesk.
-2. **数据**. Leave the bundled `itops_mix.jsonl` selected (ms-swift `messages` plus a `solution` field for GRPO). Click 校验格式, then 运行本阶段. You can also pick a public id such as `modelscope/gsm8k`, upload a jsonl, or type a local path.
+2. **数据**. The panel matches the Web-UI **数据集设置**: 数据集名称(`--dataset`), 验证集拆分比例, 句子最大长度, and 无填充批处理. **数据来源** adds 公开数据集, 上传文件, or 服务器本地路径. `--model`, `--model_type`, and `--template` are shown at the top and stay as chosen in 新建实验. Click 校验格式, then 运行本阶段. `rsi/examples/itops_mix.jsonl` can be passed as a server path.
 3. **SFT**. The form is the single-GPU preset (`swift sft`, LoRA, bf16). Run it. The log shows the command that real training would execute, and a mock `checkpoint-final/args.json` is written.
 4. **SFT 评测**, **在线 RL** (`swift rlhf --rlhf_type grpo`, vLLM colocate), **RL 评测**. Same pattern.
 5. **晋级**. RL is recommended when its mock accuracy is higher. You can still pick SFT or stay on the base.

@@ -25,14 +25,11 @@ hardware:
   label: "1× A100-80G · 18 核 CPU · 约 60GB 可用内存"
 
 data:
-  source: bundled
-  bundled: itops_mix
-  max_length: 2048
+  source: public
+  dataset: AI-ModelScope/alpaca-gpt4-data-zh
+  max_length: 1024
   split_dataset_ratio: 0
-  dataset_num_proc: 8
-  dataloader_num_workers: 4
   padding_free: false
-  val_dataset: ""
 
 sft:
   template: qwen2_5

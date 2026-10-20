@@ -103,7 +103,7 @@ REWARD_FUNC_CHOICES = ['accuracy', 'format', 'cosine', 'repetition', 'soft_overl
 
 
 def _field(key, label, arg, type='text', group='基础', choices=None, advanced=False, step=None,
-           choices_from=None):
+           choices_from=None, info=None, minimum=None, maximum=None, default=None, locked=False):
     item = {
         'key': key,
         'label': label,
@@ -119,29 +119,40 @@ def _field(key, label, arg, type='text', group='基础', choices=None, advanced=
         item['allow_custom'] = True
     if step is not None:
         item['step'] = step
+    if info:
+        item['info'] = info
+    if minimum is not None:
+        item['minimum'] = minimum
+    if maximum is not None:
+        item['maximum'] = maximum
+    if default is not None:
+        item['default'] = default
+    if locked:
+        item['locked'] = True
     return item
 
 
 def _model_block(group='模型'):
+    """``--model``, ``--model_type``, and ``--template`` are chosen only when the experiment is created."""
     return [
-        _field('model', '模型id或路径(--model)', '--model', 'combo', group, choices_from='models'),
-        _field('model_type', '模型类型(--model_type)', '--model_type', 'combo', group, choices_from='model_types'),
-        _field('template', '模型Prompt模板类型(--template)', '--template', 'combo', group, choices_from='templates'),
+        _field('model', '模型id或路径(--model)', '--model', 'combo', group, choices_from='models', locked=True),
+        _field('model_type', '模型类型(--model_type)', '--model_type', 'combo', group, choices_from='model_types',
+               locked=True),
+        _field('template', '模型Prompt模板类型(--template)', '--template', 'combo', group, choices_from='templates',
+               locked=True),
     ]
 
 
 FIELDS = {
     'data': [
+        *_model_block(),
         _field(
             'source',
             '数据来源',
             '',
             'select',
-            '数据',
+            '数据集设置',
             [{
-                'value': 'bundled',
-                'label': '内置示例'
-            }, {
                 'value': 'public',
                 'label': '公开数据集'
             }, {
@@ -151,19 +162,15 @@ FIELDS = {
                 'value': 'path',
                 'label': '服务器本地路径'
             }]),
-        _field('bundled', '内置数据集', '', 'select', '数据',
-               [{
-                   'value': item['id'],
-                   'label': item['label']
-               } for item in BUNDLED]),
-        _field('dataset', '数据集名称(--dataset)', '--dataset', 'combo', '数据', choices_from='datasets'),
-        _field('split_dataset_ratio', '验证集拆分比例', '--split_dataset_ratio', 'number', '数据', step='0.01'),
-        _field('max_length', '句子最大长度', '--max_length', 'number', '数据', step='1'),
-        _field('dataset_num_proc', '数据集进程数', '--dataset_num_proc', 'number', '资源', step='1'),
-        _field('dataloader_num_workers', 'DataLoader workers', '--dataloader_num_workers', 'number', '资源', step='1'),
-        _field('padding_free', '无填充批处理', '--padding_free', 'checkbox', '资源'),
-        _field('val_dataset', '验证集(--val_dataset)', '--val_dataset', 'combo', '数据', choices_from='datasets',
-               advanced=True),
+        _field('dataset', '数据集名称(--dataset)', '--dataset', 'multicombo', '数据集设置', choices_from='datasets',
+               info='选择训练的数据集，支持复选/本地路径'),
+        _field('split_dataset_ratio', '验证集拆分比例(--split_dataset_ratio)', '--split_dataset_ratio', 'slider',
+               '数据集设置', step='0.05', minimum=0, maximum=1, default=0,
+               info='表示将总数据的多少拆分到验证集中'),
+        _field('max_length', '句子最大长度(--max_length)', '--max_length', 'slider', '数据集设置', step='1',
+               minimum=32, maximum=32768, default=1024, info='设置输入模型的最大长度'),
+        _field('padding_free', '无填充批处理(--padding_free)', '--padding_free', 'checkbox', '数据集设置',
+               info='将一个batch中的数据进行展平而避免数据padding'),
     ],
     'sft': [
         *_model_block(),
@@ -226,9 +233,9 @@ FIELDS = {
         _field('verbose', '详细日志', '--verbose', 'checkbox', '评测', advanced=True),
     ],
     'rl': [
+        *_model_block(),
         _field('rlhf_type', 'RLHF 类型', '--rlhf_type', 'select', '算法',
                ['dpo', 'orpo', 'simpo', 'kto', 'cpo', 'rm', 'ppo', 'grpo', 'gkd']),
-        *_model_block(),
         _field('dataset', '数据集名称(--dataset)', '--dataset', 'combo', '数据', choices_from='datasets'),
         _field('reward_funcs', '奖励函数(--reward_funcs)', '--reward_funcs', 'multiselect', '奖励', REWARD_FUNC_CHOICES),
         _field('reward_weights', '奖励权重', '--reward_weights', 'text', '奖励'),
@@ -300,9 +307,11 @@ FIELDS = {
         _field('verbose', '详细日志', '--verbose', 'checkbox', '评测', advanced=True),
     ],
     'promote': [
+        *_model_block(),
         _field('reason', '晋级说明', '', 'textarea', '决策'),
     ],
     'next_round': [
+        *_model_block(),
         _field('reuse_dataset', '沿用上一轮数据', '', 'checkbox', '下一轮数据'),
         _field('note', '备注', '', 'textarea', '下一轮数据'),
     ],
