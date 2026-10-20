@@ -11,5 +11,9 @@ textarea { min-height: 120px; }
 .row-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 button { border: 1px solid var(--line); background: var(--card); border-radius: 8px; padding: 6px 12px; }
 button.primary { background: var(--accent); color: white; border-color: var(--accent); }
-pre { white-space: pre-wrap; word-break: break-word; background: var(--bg); padding: 10px; border-radius: 8px; }
+.result { margin-top: 10px; }
+.result pre { white-space: pre-wrap; word-break: break-word; background: var(--bg); padding: 10px; border-radius: 8px; margin: 0; }
+.path-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.path-row code { flex: 1; overflow-wrap: anywhere; }
 label { display: grid; gap: 4px; margin-top: 8px; }
+.log-panel.log-fullscreen .result { flex: 1; overflow: auto; }

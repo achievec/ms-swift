@@ -15,7 +15,7 @@
   <main>
     <section class="panel">
       <h2>数据检查</h2>
-      <p class="muted">预览样本、检查 solution 关键词是否写进答案，或拆成训练集和留出集。不改正在跑的实验。</p>
+      <p class="muted">检查关键词、拆成训练和留出、筛出下一轮还能用的题。结果是磁盘上的 jsonl。数据阶段选「服务器本地路径」粘贴路径，不会自动改当前实验。</p>
       <textarea id="data-text" placeholder="把 jsonl 贴在这里，或选择文件"></textarea>
       <label>留出比例<input id="eval-ratio" type="number" min="0.05" max="0.9" step="0.05" value="0.2" /></label>
       <div class="row-actions">
@@ -23,11 +23,12 @@
         <button type="button" id="inspect" class="primary">检查</button>
         <button type="button" id="split">拆分</button>
         <button type="button" id="pack">筛下一轮候选</button>
+        <button type="button" id="complete">用当前推理补全</button>
         <input id="file" type="file" accept=".jsonl,.json,.txt" hidden />
       </div>
       <div class="log-panel">
         <div class="log-head"><h3>检查结果</h3><span class="log-tools"><button type="button" class="ghost" data-log-copy>复制</button><button type="button" class="ghost" data-log-fullscreen>全屏</button></span></div>
-        <pre id="data-out" class="log">还没有结果。</pre>
+        <div id="data-out" class="result">还没有结果。</div>
       </div>
     </section>
     <section class="panel">
@@ -42,7 +43,7 @@
       </div>
       <div class="log-panel">
         <div class="log-head"><h3>输出</h3><span class="log-tools"><button type="button" class="ghost" data-log-copy>复制</button><button type="button" class="ghost" data-log-fullscreen>全屏</button></span></div>
-        <pre id="run-out" class="log">选择一个实验。</pre>
+        <div id="run-out" class="result">选择一个实验。</div>
       </div>
     </section>
   </main>

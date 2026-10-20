@@ -229,7 +229,21 @@ def create_app(home: Path | None = None) -> FastAPI:
     @app.post('/api/runs/{run_id}/export')
     def start_export(run_id: str):
         view = pipeline.view(run_id)
-        return workbench.start_export(home, run_id, workbench.promoted_checkpoint(view))
+        return workbench.start_export(
+            home, run_id, workbench.promoted_checkpoint(view), (view.get('run') or {}).get('base_model') or '')
+
+    @app.post('/api/runs/{run_id}/workbench/complete')
+    async def workbench_complete(run_id: str, request: Request):
+        pipeline._require_run(run_id)
+        body = await read_json(request)
+        text, filename = _workbench_text(body)
+        rows, _report = workbench.load_rows(text, filename)
+
+        def answer(messages):
+            payload = pipeline.chat(run_id, messages, temperature=0)
+            return workbench.completion_text(payload)
+
+        return workbench.write_completed(home, rows, answer)
 
     @app.get('/api/runs/{run_id}/export')
     def export_status(run_id: str):

@@ -3,9 +3,9 @@ function logTools() {
 }
 
 function logPanelText(panel) {
-  const node = panel.querySelector('textarea, pre');
+  const node = panel.querySelector('.result') || panel.querySelector('textarea, pre');
   if (!node) return '';
-  return node.tagName === 'TEXTAREA' ? node.value : node.textContent;
+  return node.tagName === 'TEXTAREA' ? node.value : node.innerText || node.textContent;
 }
 
 function syncLogScrollLock() {

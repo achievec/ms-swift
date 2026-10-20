@@ -16,7 +16,52 @@ async function api(url, options = {}) {
 }
 
 function show(id, value) {
-  document.getElementById(id).textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  const box = document.getElementById(id);
+  box.replaceChildren();
+  const pre = document.createElement('pre');
+  pre.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  box.appendChild(pre);
+}
+
+function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text);
+  }
+  const input = document.createElement('textarea');
+  input.value = text;
+  document.body.appendChild(input);
+  input.select();
+  document.execCommand('copy');
+  input.remove();
+  return Promise.resolve();
+}
+
+function showPaths(id, note, pairs) {
+  const box = document.getElementById(id);
+  box.replaceChildren();
+  const hint = document.createElement('p');
+  hint.className = 'muted';
+  hint.textContent = note;
+  box.appendChild(hint);
+  pairs.forEach((pair) => {
+    if (!pair[1]) return;
+    const row = document.createElement('div');
+    row.className = 'path-row';
+    const code = document.createElement('code');
+    code.textContent = pair[0] + '  ' + pair[1];
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = '复制路径';
+    button.addEventListener('click', () => {
+      copyText(pair[1]).then(() => {
+        button.textContent = '已复制';
+      }).catch(() => {
+        button.textContent = '复制失败';
+      });
+    });
+    row.append(code, button);
+    box.appendChild(row);
+  });
 }
 
 function dataBody() {
@@ -51,11 +96,15 @@ document.getElementById('inspect').addEventListener('click', async () => {
 
 document.getElementById('split').addEventListener('click', async () => {
   try {
-    show('data-out', await api('/api/workbench/split', {
+    const saved = await api('/api/workbench/split', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(dataBody()),
-    }));
+    });
+    showPaths('data-out', `训练 ${saved.train_rows} 条，留出 ${saved.eval_rows} 条。${saved.how_to}`, [
+      ['训练集', saved.train_path],
+      ['留出集', saved.eval_path],
+    ]);
   } catch (err) {
     show('data-out', err.message);
   }
@@ -63,11 +112,33 @@ document.getElementById('split').addEventListener('click', async () => {
 
 document.getElementById('pack').addEventListener('click', async () => {
   try {
-    show('data-out', await api('/api/workbench/next-pack', {
+    const saved = await api('/api/workbench/next-pack', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(dataBody()),
-    }));
+    });
+    showPaths('data-out', `可继续用 ${saved.kept_rows} 条，待补全 ${saved.retry_rows} 条。${saved.how_to}`, [
+      ['可继续用', saved.kept_path],
+      ['待补全', saved.retry_path],
+    ]);
+  } catch (err) {
+    show('data-out', err.message);
+  }
+});
+
+document.getElementById('complete').addEventListener('click', async () => {
+  try {
+    const id = selectedRun();
+    const saved = await api(`/api/runs/${id}/workbench/complete`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(dataBody()),
+    });
+    const note = `本次补了 ${saved.answered} 条，还剩 ${saved.pending_rows} 条。${saved.how_to}`;
+    showPaths('data-out', note, [
+      ['下一轮数据', saved.next_path],
+      ['仍未回答', saved.waiting_path],
+    ]);
   } catch (err) {
     show('data-out', err.message);
   }

@@ -15,7 +15,7 @@ from pathlib import Path
 from rsi.backends import swift_launch
 from rsi.commands import format_shell
 from rsi.dataset_validate import MAX_BYTES, parse_rows, validate_rows
-from rsi.pipeline import PipelineError
+from rsi.pipeline import PipelineError, _adapter_base_model, _is_adapter_checkpoint
 from rsi.serving import loopback
 
 _EXPORTS = {}
@@ -129,6 +129,7 @@ def write_split(home: Path, text: str, filename: str = 'data.jsonl', eval_ratio:
         'train_path': str((folder / 'train.jsonl').resolve()),
         'eval_path': str((folder / 'eval.jsonl').resolve()),
         'seed': int(seed),
+        'how_to': '数据阶段把来源选成「服务器本地路径」，粘贴训练路径。留出路径填到评测的自定义配置。',
     }
 
 
@@ -165,6 +166,7 @@ def pack_next_round(home: Path, text: str, filename: str = 'data.jsonl', min_sco
         'kept_path': str((folder / 'kept.jsonl').resolve()),
         'retry_path': str((folder / 'retry_prompts.jsonl').resolve()),
         'min_score': threshold,
+        'how_to': 'kept.jsonl 可直接当下一轮数据。retry_prompts.jsonl 只有题目，先在推理页启动服务，再点「用当前推理补全」。',
     }
 
 
@@ -223,13 +225,93 @@ def probe_service(service: dict) -> dict:
         return {'ready': False, 'url': url, 'detail': str(exc.reason)}
 
 
-def export_argv(checkpoint: str, output_dir: str) -> list:
+FILL_LIMIT = 20
+
+
+def completion_text(payload: dict) -> str:
+    choices = (payload or {}).get('choices') or []
+    if not choices or not isinstance(choices[0], dict):
+        raise PipelineError('推理没有返回回答')
+    message = choices[0].get('message') or {}
+    content = message.get('content') or ''
+    if not str(content).strip():
+        raise PipelineError('推理返回了空回答')
+    return str(content)
+
+
+def _prompt_messages(row: dict) -> list:
+    prompt = _without_last_assistant(row)
+    messages = [item for item in (prompt.get('messages') or []) if isinstance(item, dict)]
+    if messages:
+        return messages
+    query = row.get('query') or row.get('instruction') or ''
+    if not str(query).strip():
+        raise PipelineError('有一条数据没有可提问的内容')
+    return [{'role': 'user', 'content': str(query)}]
+
+
+def fill_rows(rows: list, answer_fn, limit: int = FILL_LIMIT) -> tuple:
+    """Fill rows that have no assistant answer. Already answered rows stay as they are."""
+    filled = []
+    answered = 0
+    pending = 0
+    for row in rows:
+        if _assistant_text(row):
+            filled.append(row)
+            continue
+        if answered >= limit:
+            filled.append(row)
+            pending += 1
+            continue
+        messages = _prompt_messages(row)
+        content = answer_fn(messages)
+        copied = _without_last_assistant(row)
+        copied['messages'] = list(messages) + [{'role': 'assistant', 'content': content}]
+        filled.append(copied)
+        answered += 1
+    if answered == 0 and pending == 0:
+        raise PipelineError('这些题已经有回答，没有需要补全的')
+    return filled, answered, pending
+
+
+def write_completed(home: Path, rows: list, answer_fn, limit: int = FILL_LIMIT) -> dict:
+    filled, answered, pending = fill_rows(rows, answer_fn, limit)
+    ready = [row for row in filled if _assistant_text(row)]
+    waiting = [row for row in filled if not _assistant_text(row)]
+    folder = Path(home) / 'workbench' / uuid.uuid4().hex[:8]
+    folder.mkdir(parents=True, exist_ok=False)
+    next_path = folder / 'next.jsonl'
+    next_path.write_text(_dump(ready), encoding='utf-8')
+    waiting_path = ''
+    if waiting:
+        dest = folder / 'still_open.jsonl'
+        dest.write_text(_dump(waiting), encoding='utf-8')
+        waiting_path = str(dest.resolve())
+    return {
+        'answered': answered,
+        'ready_rows': len(ready),
+        'pending_rows': pending,
+        'next_path': str(next_path.resolve()),
+        'waiting_path': waiting_path,
+        'how_to': '数据阶段把来源选成「服务器本地路径」，粘贴 next.jsonl。不会替换当前实验正在用的数据集。',
+    }
+
+
+def export_argv(checkpoint: str, output_dir: str, model: str = '') -> list:
     if not checkpoint:
         raise PipelineError('没有可导出的检查点')
     path = Path(checkpoint)
     if not path.exists():
         raise PipelineError(f'检查点不存在：{checkpoint}')
-    return ['swift', 'export', '--adapters', str(path), '--merge_lora', 'true', '--output_dir', output_dir]
+    if path.is_dir() and _is_adapter_checkpoint(path):
+        base = _adapter_base_model(path, model)
+        if not base:
+            raise PipelineError('这是 LoRA 检查点，还需要基座模型才能合并')
+        return [
+            'swift', 'export', '--model', base, '--adapters', str(path), '--merge_lora', 'true', '--output_dir',
+            output_dir
+        ]
+    return ['swift', 'export', '--model', str(path), '--output_dir', output_dir]
 
 
 def promoted_checkpoint(view: dict) -> str:
@@ -245,10 +327,10 @@ def export_status(run_id: str) -> dict:
     return current or {'status': 'idle', 'run_id': run_id}
 
 
-def start_export(home: Path, run_id: str, checkpoint: str) -> dict:
+def start_export(home: Path, run_id: str, checkpoint: str, model: str = '') -> dict:
     output_dir = Path(home) / 'exports' / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
-    logical = export_argv(checkpoint, str(output_dir.resolve()))
+    logical = export_argv(checkpoint, str(output_dir.resolve()), model)
     command = format_shell(logical)
     argv, env = swift_launch(logical)
     record = {
