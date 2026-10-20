@@ -58,28 +58,15 @@ release_lock() {
   fi
 }
 
-python_imports() {
-  local bin="$1"
-  local statement="$2"
-  [[ -x "${bin}" ]] || return 1
-  "${bin}" -c "${statement}" >/dev/null 2>&1
-}
-
 resolve_python() {
-  local root_py="${ROOT}/.venv/bin/python"
-  local rsi_py="${RSI_DIR}/.venv/bin/python"
   if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
     PY="${VIRTUAL_ENV}/bin/python"
     echo "[依赖] 使用已激活的虚拟环境：${VIRTUAL_ENV}"
-  elif python_imports "${root_py}" "import numpy" || python_imports "${root_py}" "import fastapi, yaml, uvicorn"; then
-    # A full checkout .venv should serve the UI too, so rsi/.venv does not stick.
-    PY="${root_py}"
-    echo "[依赖] 使用已有虚拟环境：.venv"
-  elif [[ -x "${rsi_py}" ]]; then
-    PY="${rsi_py}"
+  elif [[ -x "${RSI_DIR}/.venv/bin/python" ]]; then
+    PY="${RSI_DIR}/.venv/bin/python"
     echo "[依赖] 使用已有虚拟环境：rsi/.venv"
-  elif [[ -x "${root_py}" ]]; then
-    PY="${root_py}"
+  elif [[ -x "${ROOT}/.venv/bin/python" ]]; then
+    PY="${ROOT}/.venv/bin/python"
     echo "[依赖] 使用已有虚拟环境：.venv"
   elif command -v python3 >/dev/null 2>&1; then
     PY="$(command -v python3)"
@@ -385,6 +372,4 @@ main() {
   esac
 }
 
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  main "$@"
-fi
+main "$@"

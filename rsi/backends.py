@@ -47,63 +47,11 @@ def detect_gpu() -> dict:
     return {'available': bool(devices), 'devices': devices}
 
 
-def _can_import_numpy(python: str) -> bool:
-    """True when this interpreter can import numpy. Does not import it into the UI process."""
-    try:
-        completed = subprocess.run(
-            [python, '-c', 'import numpy'],
-            check=False,
-            capture_output=True,
-            timeout=20,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return completed.returncode == 0
-
-
-def _training_python_error(detail: str) -> BackendError:
-    return BackendError(
-        '找不到可训练的 Python（需要能 import numpy 的 ms-swift 环境）。'
-        '请在仓库根目录创建 .venv 并执行 pip install -e .，'
-        '或设置 RSI_TRAIN_PYTHON 指向那个解释器。'
-        '不要用只有界面依赖的 rsi/.venv。'
-        + detail
-    )
-
-
-def resolve_training_python() -> str:
-    """Python for ``python -m swift.cli.main``.
-
-    Prefer ``RSI_TRAIN_PYTHON``, then the repo-root ``.venv`` when it can import
-    numpy, then the current interpreter if that one can. A lean ``rsi/.venv``
-    used only to serve the UI is not selected while a fuller interpreter exists.
-    """
-    explicit = os.environ.get('RSI_TRAIN_PYTHON', '').strip()
-    if explicit:
-        path = Path(explicit)
-        if not path.is_file() or not os.access(path, os.X_OK):
-            raise _training_python_error(f' RSI_TRAIN_PYTHON 不可执行：{explicit}')
-        if not _can_import_numpy(str(path)):
-            raise _training_python_error(f' RSI_TRAIN_PYTHON 无法 import numpy：{explicit}')
-        return str(path)
-    candidates = [REPO_ROOT / '.venv' / 'bin' / 'python', Path(sys.executable)]
-    seen = set()
-    for path in candidates:
-        key = str(path)
-        if key in seen:
-            continue
-        seen.add(key)
-        if path.is_file() and os.access(path, os.X_OK) and _can_import_numpy(key):
-            return key
-    raise _training_python_error('')
-
-
 def swift_launch(argv: list) -> tuple:
     """Turn a logical `swift <cmd> ...` argv into a process that runs this checkout on GPU 0.
 
     `RSI_SWIFT_BIN` replaces the launcher (used by tests). Otherwise the command is
-    ``<training python> -m swift.cli.main``. ``RSI_TRAIN_PYTHON`` chooses that
-    interpreter; the default is the repo-root ``.venv`` when it can import numpy.
+    `python -m swift.cli.main`, which is the same entry point as the `swift` script.
     """
     if not argv:
         return [], os.environ.copy()
@@ -111,7 +59,7 @@ def swift_launch(argv: list) -> tuple:
     if override:
         command = [override, *argv[1:]]
     else:
-        command = [resolve_training_python(), '-m', 'swift.cli.main', *argv[1:]]
+        command = [sys.executable, '-m', 'swift.cli.main', *argv[1:]]
     env = os.environ.copy()
     env.setdefault('CUDA_VISIBLE_DEVICES', '0')
     root = str(REPO_ROOT)
