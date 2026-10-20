@@ -79,21 +79,32 @@ class EvalArguments(DeployArguments):
 
     @staticmethod
     def list_eval_dataset(eval_backend=None):
-        from evalscope.api.registry import BENCHMARK_REGISTRY
-        from evalscope.backend.opencompass import OpenCompassBackendManager
         from evalscope.constants import EvalBackend
-        res = {
-            EvalBackend.NATIVE: list(sorted(BENCHMARK_REGISTRY.keys())),
-            EvalBackend.OPEN_COMPASS: sorted(OpenCompassBackendManager.list_datasets()),
-        }
-        try:
-            from evalscope.backend.vlm_eval_kit import VLMEvalKitBackendManager
-            vlm_datasets = VLMEvalKitBackendManager.list_supported_datasets()
-            res[EvalBackend.VLM_EVAL_KIT] = sorted(vlm_datasets)
-        except ImportError:
-            # fix cv2 import error
-            if eval_backend == 'VLMEvalKit':
-                raise
+
+        def _load(backend):
+            if backend == EvalBackend.NATIVE:
+                from evalscope.api.registry import BENCHMARK_REGISTRY
+                return list(sorted(BENCHMARK_REGISTRY.keys()))
+            if backend == EvalBackend.OPEN_COMPASS:
+                # list_datasets() imports opencompass. Keep that off the Native path.
+                from evalscope.backend.opencompass import OpenCompassBackendManager
+                return sorted(OpenCompassBackendManager.list_datasets())
+            if backend == EvalBackend.VLM_EVAL_KIT:
+                from evalscope.backend.vlm_eval_kit import VLMEvalKitBackendManager
+                return sorted(VLMEvalKitBackendManager.list_supported_datasets())
+            raise ValueError(f'eval_backend: {backend} is not supported.')
+
+        # A selected backend is the only one loaded. Listing every backend (Web-UI)
+        # skips optional stacks that are not installed.
+        if eval_backend is not None:
+            return {eval_backend: _load(eval_backend)}
+
+        res = {}
+        for backend in (EvalBackend.NATIVE, EvalBackend.OPEN_COMPASS, EvalBackend.VLM_EVAL_KIT):
+            try:
+                res[backend] = _load(backend)
+            except ImportError:
+                continue
         return res
 
     def _init_eval_dataset(self):
