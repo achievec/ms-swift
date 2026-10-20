@@ -82,6 +82,111 @@ def test_reuse_when_config_json_exists(tmp_path, hope_env):
     assert TOKEN not in json.dumps(status.as_row(), ensure_ascii=False)
 
 
+def test_huggingface_co_layout_is_ready_and_used_as_model(tmp_path, hope_env):
+    model_dir = tmp_path / 'models' / 'huggingface.co' / 'Qwen' / 'Qwen2.5-7B-Instruct'
+    model_dir.mkdir(parents=True)
+    (model_dir / 'config.json').write_text('{}', encoding='utf-8')
+    data_dir = tmp_path / 'datasets' / 'huggingface.co' / 'datasets' / 'openai' / 'gsm8k'
+    data_dir.mkdir(parents=True)
+    (data_dir / 'train.jsonl').write_text('{"instruction": "q", "output": "a"}\n', encoding='utf-8')
+    legacy = tmp_path / 'models' / 'Qwen' / 'Qwen2.5-7B-Instruct'
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError('a repo that is already on disk must not call hope')
+
+    fetcher = _fetcher(tmp_path, refuse)
+    status = fetcher.ensure('model', REPO)
+    assert status.state == '就绪'
+    assert status.message == '已在本地'
+    assert status.local_path == str(model_dir)
+    assert not legacy.exists()
+    dataset = fetcher.status_of('dataset', 'openai/gsm8k')
+    assert dataset.state == '就绪'
+    assert dataset.local_path == str(data_dir)
+
+    legacy.mkdir(parents=True)
+    (legacy / 'config.json').write_text('{}', encoding='utf-8')
+    both = fetcher.status_of('model', REPO)
+    assert both.state == '就绪'
+    assert both.local_path == str(model_dir)
+
+    client, _app = _client(tmp_path, refuse)
+    with client as api:
+        run_id = api.post('/api/runs', json={
+            'name': 'hope 目录',
+            'scenario': 'clone 落在 huggingface.co 下',
+            'base_model': REPO,
+        }).json()['run']['id']
+        preview = api.post(f'/api/runs/{run_id}/stages/sft/preview', json={'params': {}})
+        assert preview.status_code == 200, preview.text
+        assert preview.json()['params']['model'] == str(model_dir)
+        assert f'--model {model_dir}' in preview.json()['command']
+        loaded = api.post(f'/api/runs/{run_id}/stages/data/run', json={
+            'params': {'source': 'public', 'dataset': 'openai/gsm8k'},
+        })
+        assert loaded.status_code == 200, loaded.text
+        assert loaded.json()['result']['dataset'] == str(data_dir)
+
+
+def test_clone_into_huggingface_co_flips_the_fetch_row(tmp_path, hope_env):
+    def runner(argv, **kwargs):
+        if argv[1] == 'login':
+            return Completed(stdout='登录成功')
+        cwd = Path(kwargs['cwd'])
+        if '/datasets/' in argv[2]:
+            dest = cwd / 'huggingface.co' / 'datasets' / 'openai' / 'gsm8k'
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / 'train.jsonl').write_text('{}\n', encoding='utf-8')
+            return Completed(stdout=f'模型下载成功\n数据存储在: {dest}')
+        dest = cwd / 'huggingface.co' / 'Qwen' / 'Qwen2.5-7B-Instruct'
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / 'config.json').write_text('{}', encoding='utf-8')
+        return Completed(stdout=f'模型下载成功\n数据存储在: {dest}')
+
+    model_dir = tmp_path / 'models' / 'huggingface.co' / 'Qwen' / 'Qwen2.5-7B-Instruct'
+    data_dir = tmp_path / 'datasets' / 'huggingface.co' / 'datasets' / 'openai' / 'gsm8k'
+    fetcher = _fetcher(tmp_path, runner)
+    done = fetcher.ensure('model', REPO, background=False)
+    assert done.state == '就绪'
+    assert done.local_path == str(model_dir)
+    assert (model_dir / 'config.json').is_file()
+    dataset = fetcher.ensure('dataset', 'openai/gsm8k', background=False)
+    assert dataset.state == '就绪'
+    assert dataset.local_path == str(data_dir)
+
+    calls = []
+
+    def pending(argv, **kwargs):
+        calls.append(list(argv))
+        return Completed(stdout='submitted, pending')
+
+    client, _app = _client(tmp_path, pending)
+    legacy = tmp_path / 'models' / 'Qwen' / 'Qwen2.5-7B-Instruct'
+    if model_dir.exists():
+        for child in model_dir.iterdir():
+            child.unlink()
+        model_dir.rmdir()
+        model_dir.parent.rmdir()
+    with client as api:
+        run_id = api.post('/api/runs', json={
+            'name': '等 config',
+            'scenario': '文件出现在 huggingface.co 后才就绪',
+            'base_model': REPO,
+        }).json()['run']['id']
+        waiting = api.post(f'/api/runs/{run_id}/fetch', json={'model': REPO})
+        assert waiting.status_code == 200, waiting.text
+        row = next(item for item in waiting.json()['fetches'] if item['kind'] == 'model')
+        assert row['state'] == '同步中'
+        assert not legacy.exists()
+        model_dir.mkdir(parents=True)
+        (model_dir / 'config.json').write_text('{}', encoding='utf-8')
+        again = api.get(f'/api/runs/{run_id}')
+        ready = next(item for item in again.json()['fetches'] if item['kind'] == 'model')
+        assert ready['state'] == '就绪'
+        assert ready['local_path'] == str(model_dir)
+        assert ready['message'] == '已在本地'
+
+
 def test_syncing_submits_clone_without_leaking_credentials(tmp_path, hope_env):
     calls = []
 

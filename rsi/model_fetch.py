@@ -186,8 +186,29 @@ def _split_repo(repo_id: str) -> tuple:
 
 
 def destination(root: Path, repo_id: str) -> Path:
+    """Older layout: ``<root>/<org>/<name>``."""
     org, name = _split_repo(repo_id)
     return Path(root) / org / name
+
+
+def hope_clone_dir(root: Path, kind: str, repo_id: str) -> Path:
+    """Where hope 3.6.6 writes a clone: the URL host and path under cwd.
+
+    ``hope clone https://huggingface.co/Qwen/Qwen2.5-7B-Instruct`` from ``model_root``
+    lands in ``<model_root>/huggingface.co/Qwen/Qwen2.5-7B-Instruct``.
+    A dataset URL keeps the ``datasets`` segment:
+    ``<data_root>/huggingface.co/datasets/<org>/<name>``.
+    """
+    org, name = _split_repo(repo_id)
+    root = Path(root)
+    if kind == 'dataset':
+        return root / 'huggingface.co' / 'datasets' / org / name
+    return root / 'huggingface.co' / org / name
+
+
+def placed_paths(root: Path, kind: str, repo_id: str) -> list:
+    """Candidate directories, hope 3.6.6 layout first, then the older org/name layout."""
+    return [hope_clone_dir(root, kind, repo_id), destination(root, repo_id)]
 
 
 def model_url(repo_id: str) -> str:
@@ -437,9 +458,17 @@ class ModelFetcher:
     def data_root(self) -> Path:
         return _root('RSI_DATA_ROOT', 'data_root', self.home, 'datasets')
 
-    def _path_for(self, kind: str, repo_id: str) -> Path:
+    def _candidates(self, kind: str, repo_id: str) -> list:
         root = self.model_root() if kind == 'model' else self.data_root()
-        return destination(root, repo_id)
+        return placed_paths(root, kind, repo_id)
+
+    def _path_for(self, kind: str, repo_id: str) -> Path:
+        """Directory that already holds the repo, or the older path while it is still syncing."""
+        candidates = self._candidates(kind, repo_id)
+        for path in candidates:
+            if _ready(kind, path):
+                return path
+        return candidates[-1]
 
     def _url_for(self, kind: str, repo_id: str) -> str:
         if kind == 'dataset':
@@ -450,6 +479,7 @@ class ModelFetcher:
         path = self._path_for(kind, repo_id)
         if _ready(kind, path):
             return FetchStatus(kind, repo_id_of(repo_id), str(path), '就绪', '已在本地')
+        present = any(item.exists() for item in self._candidates(kind, repo_id))
         key = f'{kind}:{repo_id_of(repo_id)}'
         with _LOCK:
             inflight = key in _INFLIGHT
@@ -459,7 +489,7 @@ class ModelFetcher:
             return FetchStatus(kind, repo_id_of(repo_id), str(path), '同步中', LOGIN_WAITING)
         if _is_failure_note(note) and not inflight:
             return FetchStatus(kind, repo_id_of(repo_id), str(path), '失败', note)
-        if inflight or note == '同步中' or path.exists() or progress:
+        if inflight or note == '同步中' or present or progress:
             return FetchStatus(kind, repo_id_of(repo_id), str(path), '同步中', progress or '同步中')
         return FetchStatus(kind, repo_id_of(repo_id), str(path), '缺少', '本地还没有这份文件')
 
@@ -513,9 +543,11 @@ class ModelFetcher:
 
         def job():
             ready_now = False
+            ready_path = path
             try:
                 argv, _public = clone_argv(self._url_for(kind, repo_id))
-                # hope clone writes <org>/<name> under its cwd. Do not cd into org/ first.
+                # hope clone writes under cwd. Do not cd into org/ first, and do not
+                # assume the older <org>/<name> layout is where the files land.
                 result = self._run(argv, cwd=root, target=path, repo_key=key, force_login=force_login)
                 if result == 'missing-tool':
                     with _LOCK:
@@ -530,14 +562,16 @@ class ModelFetcher:
             finally:
                 with _LOCK:
                     _INFLIGHT.discard(key)
-                    if _ready(kind, path):
+                    found = self._path_for(kind, repo_id)
+                    if _ready(kind, found):
                         self._notes.pop(key, None)
                         self._progress.pop(key, None)
                         ready_now = True
+                        ready_path = found
                     elif not _is_failure_note(self._notes.get(key, '')):
                         self._notes[key] = '同步中'
             if ready_now:
-                logger.info('hope 就绪 %s %s %s', kind, repo_id, path)
+                logger.info('hope 就绪 %s %s %s', kind, repo_id, ready_path)
 
         if background:
             threading.Thread(target=job, daemon=True).start()
