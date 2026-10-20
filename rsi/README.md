@@ -37,7 +37,7 @@ pip install -r rsi/requirements.txt
 ./run.sh
 ```
 
-`./run.sh` with no arguments restarts the UI. `./run.sh start`, `./run.sh stop`, and `./run.sh restart` do what they say. The process id is `rsi/.rsi.pid` and the process log is `rsi/.rsi.log` (deleted and recreated on each successful `start`; it holds startup and hope clone). Each experiment writes its own training and eval log at `RSI_HOME/runs/<run_id>/round_<n>/<stage>/swift.log` (eval uses `eval_output/swift.log` under that stage; deploy uses `serve/deploy.log`). The process log only gets one line pointing at that file. `python -m rsi` still works if you want the server in the foreground.
+`./run.sh` with no arguments restarts the UI. On Linux it first runs `conda activate` for `conda_env` in `rsi/configs/fetch.yaml` (`model-train`). `RSI_CONDA_ENV` overrides that name; an empty value skips activation. macOS does not activate. `./run.sh start`, `./run.sh stop`, and `./run.sh restart` do what they say. The process id is `rsi/.rsi.pid` and the process log is `rsi/.rsi.log` (deleted and recreated on each successful `start`; it holds startup and hope clone). Each experiment writes its own training and eval log at `RSI_HOME/runs/<run_id>/round_<n>/<stage>/swift.log` (eval uses `eval_output/swift.log` under that stage; deploy uses `serve/deploy.log`). The process log only gets one line pointing at that file. `python -m rsi` still works if you want the server in the foreground.
 
 The server listens on `0.0.0.0:8418`. On this machine open http://127.0.0.1:8418
 
@@ -103,6 +103,7 @@ hope 模式下可以不装 modelscope 这个 pip 包：`swift/utils/logger.py` �
 | `RSI_DATA_ROOT` | 数据集目录，对应 `data_root`，同样展开 `~` / `$HOME`。`hope clone` 的工作目录是这一层 |
 | `RSI_HOPE_USERNAME` / `RSI_HOPE_TOKEN` | 用户名同时用于 `hope login <misid>` 和 `hope clone --username=`。token 只作为 `hope clone` 的 git token（`--token=`），不是平台登录。token 不要写进 yaml |
 | `RSI_FETCH_CONFIG` | 另选一份 yaml，键与 `fetch.yaml` 相同 |
+| `RSI_CONDA_ENV` | Linux 上覆盖 `fetch.yaml` 的 `conda_env`。设为空字符串则不执行 `conda activate`。macOS 忽略 |
 | `RSI_TRAIN_PYTHON` | 覆盖 `fetch.yaml` 的 `train_python`。`RSI_SWIFT_BIN` 则换掉整个启动命令 |
 | `RSI_HOME` | 覆盖 `fetch.yaml` 的 `rsi_home`。实验库、运行日志、上传都在这里 |
 
@@ -113,6 +114,7 @@ model_source: hope
 hope_username: liyuhao03
 model_root: /opt/meituan/dolphinfs_liubo108/ms-swift/models
 data_root: /opt/meituan/dolphinfs_liubo108/ms-swift/datasets
+conda_env: model-train
 train_python: /usr/local/conda/envs/model-train/bin/python
 rsi_home: /opt/meituan/dolphinfs_liubo108/ms-swift/workspace
 ```
@@ -122,6 +124,8 @@ rsi_home: /opt/meituan/dolphinfs_liubo108/ms-swift/workspace
 实验目录（`rsi.sqlite`、每次运行的日志和检查点、上传文件）默认用 `fetch.yaml` 的 `rsi_home`：`/opt/meituan/dolphinfs_liubo108/ms-swift/workspace`。环境变量 `RSI_HOME` 优先。这个目录不存在、并且上一级也不存在或不可写时（Mac 上没有 dolphinfs），改用仓库里的 `rsi/workspace`，不会去创建 `/opt/meituan/...`。审计库写失败时，接口返回的中文错误里带数据库绝对路径，这时把 `RSI_HOME` 指到别的可写目录即可。
 
 内置训练集是仓库里的 `rsi/examples/itops_mix.jsonl`（6 条 IT 工单）。训练命令里的绝对路径是当前机器上这份检出的路径，不是另一台电脑的家目录。例如 GPU 上会写成 `/home/hadoop-sailorqa-ai/ms-swift/rsi/examples/itops_mix.jsonl`，文件就在该仓库的 `rsi/examples/` 下。
+
+在 Linux 上，`./run.sh` 启动前会 `conda activate model-train`（`fetch.yaml` 的 `conda_env`）。找不到 conda 或这个环境时打印警告，仍按原来的方式继续。`RSI_CONDA_ENV` 换环境名；设为空字符串则不激活。macOS 不执行这一步。
 
 SFT、评测和 RL 不用界面那个精简 `rsi/.venv`。`fetch.yaml` 的 `train_python` 指向 GPU 上的 conda 环境 `/usr/local/conda/envs/model-train/bin/python`。这个文件存在且可执行时，swift 用它启动。当前机器没有这个路径时会跳过，仍用启动界面的那个 Python。`RSI_TRAIN_PYTHON` 覆盖配置。`RSI_SWIFT_BIN` 换掉整个启动命令。
 

@@ -30,6 +30,7 @@ usage() {
   restart  先停止再启动
 不带参数时等同于 restart。
 日志：rsi/.rsi.log    进程号：rsi/.rsi.pid
+Linux 会先激活 fetch.yaml 的 conda_env（model-train）。RSI_CONDA_ENV 覆盖该名字；设为空字符串则不激活。macOS 不激活。
 EOF
 }
 
@@ -252,6 +253,69 @@ wait_until_ready() {
   return 1
 }
 
+configured_conda_env() {
+  # RSI_CONDA_ENV wins, including an empty value that disables activation.
+  local raw cfg
+  if [[ "${RSI_CONDA_ENV+x}" == "x" ]]; then
+    printf '%s\n' "${RSI_CONDA_ENV}"
+    return 0
+  fi
+  cfg="${RSI_FETCH_CONFIG:-${RSI_DIR}/configs/fetch.yaml}"
+  if [[ -f "${cfg}" ]]; then
+    raw="$(sed -n 's/^[[:space:]]*conda_env:[[:space:]]*//p' "${cfg}" | head -n 1)"
+    raw="${raw%%#*}"
+    raw="${raw// /}"
+    raw="${raw//\"/}"
+    raw="${raw//\'/}"
+    printf '%s\n' "${raw}"
+  fi
+}
+
+activate_linux_conda() {
+  local env_name conda_bin base prefix
+  [[ "$(uname -s)" == "Linux" ]] || return 0
+  env_name="$(configured_conda_env)"
+  [[ -n "${env_name}" ]] || return 0
+  conda_bin=""
+  if command -v conda >/dev/null 2>&1; then
+    conda_bin="$(command -v conda)"
+  elif [[ -n "${CONDA_EXE:-}" && -x "${CONDA_EXE}" ]]; then
+    conda_bin="${CONDA_EXE}"
+  else
+    for prefix in /usr/local/conda "${HOME:-}/miniconda3" "${HOME:-}/anaconda3"; do
+      if [[ -n "${prefix}" && -x "${prefix}/bin/conda" ]]; then
+        conda_bin="${prefix}/bin/conda"
+        break
+      fi
+    done
+  fi
+  if [[ -z "${conda_bin}" ]]; then
+    echo "[环境] 未找到 conda，未激活 ${env_name}，继续使用当前 Python。"
+    return 0
+  fi
+  base="$("${conda_bin}" info --base 2>/dev/null)" || base=""
+  if [[ -z "${base}" || ! -f "${base}/etc/profile.d/conda.sh" ]]; then
+    echo "[环境] 未找到 conda 的初始化脚本，未激活 ${env_name}，继续使用当前 Python。"
+    return 0
+  fi
+  set +u
+  # conda.sh and activate scripts read variables this script does not set.
+  # shellcheck disable=SC1090
+  if ! source "${base}/etc/profile.d/conda.sh"; then
+    set -u
+    echo "[环境] 无法加载 conda，未激活 ${env_name}，继续使用当前 Python。"
+    return 0
+  fi
+  if conda activate "${env_name}"; then
+    set -u
+    echo "[环境] 已激活 conda 环境：${env_name}"
+    return 0
+  fi
+  set -u
+  echo "[环境] 无法激活 conda 环境 ${env_name}，继续使用当前 Python。"
+  return 0
+}
+
 configured_model_source() {
   local raw cfg
   raw="${RSI_MODEL_SOURCE:-}"
@@ -285,6 +349,7 @@ require_hope_if_needed() {
 
 cmd_start() {
   local pid existing url
+  activate_linux_conda
   require_hope_if_needed
   url="$(browser_url)"
   if [[ "${PORT_BLOCKED}" == "1" ]]; then

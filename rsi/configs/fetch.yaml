@@ -8,6 +8,8 @@ data_root: /opt/meituan/dolphinfs_liubo108/ms-swift/datasets
 # misid for `hope login` and `hope clone --username`. RSI_HOPE_USERNAME overrides this.
 # Do not put a token in this file; use RSI_HOPE_TOKEN.
 hope_username: liyuhao03
+# Linux 上 ./run.sh 先 conda activate 这个环境。RSI_CONDA_ENV 优先；设为空则不激活。macOS 不激活。
+conda_env: model-train
 # GPU conda env for swift sft / eval / rlhf. Ignored when this file is absent.
 # RSI_TRAIN_PYTHON overrides it. RSI_SWIFT_BIN replaces the whole launcher.
 train_python: /usr/local/conda/envs/model-train/bin/python

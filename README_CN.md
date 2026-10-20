@@ -258,7 +258,7 @@ pip install -r rsi/requirements.txt
 
 默认监听 `0.0.0.0:8418`。本机打开 http://127.0.0.1:8418/。`./run.sh` 不带参数等于重启；也可以 `start` / `stop` / `restart`。前台运行用 `python -m rsi`。
 
-`rsi/configs/fetch.yaml` 默认用 hope 同步模型。Mac 上要走 ModelScope 时设置 `RSI_MODEL_SOURCE=modelscope`。没有 `hope` 命令时 `./run.sh` 会提示安装并退出。说明见 [`rsi/README.md`](rsi/README.md) 的「内网部署」。
+`rsi/configs/fetch.yaml` 默认用 hope 同步模型。Mac 上要走 ModelScope 时设置 `RSI_MODEL_SOURCE=modelscope`。Linux 上 `./run.sh` 会先 `conda activate` `fetch.yaml` 里的 `conda_env`（`model-train`）；`RSI_CONDA_ENV` 可覆盖，设为空则不激活。macOS 不激活。没有 `hope` 命令时 `./run.sh` 会提示安装并退出。说明见 [`rsi/README.md`](rsi/README.md) 的「内网部署」。
 
 ### 使用Python
 ms-swift也支持使用python的方式进行训练和推理。下面给出训练和推理的**伪代码**，具体可以查看[这里](https://github.com/modelscope/ms-swift/blob/main/examples/notebook/qwen2_5-self-cognition/self-cognition-sft.ipynb)。
