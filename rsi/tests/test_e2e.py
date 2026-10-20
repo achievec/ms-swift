@@ -471,7 +471,10 @@ def test_process_log_page_is_removed(client):
     assert '/server-log' not in script
     assert 'data-log-fullscreen' in (root / 'static' / 'log-tools.js').read_text(encoding='utf-8')
     assert 'infer-group' in script
-    assert '展示部署状态' not in script or 'serve-log' in script
+    assert '展示部署状态' not in script
+    assert '停止展示' not in script
+    assert 'serve-log' not in script
+    assert "row[0].id === 'log' && !running" in script
     assert 'data-key="log"' in script
 
 

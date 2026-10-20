@@ -363,6 +363,23 @@ def _parsed() -> dict:
     return {'rows': rows, 'locales': locales, 'arguments': arguments}
 
 
+# RSI keeps 找回部署 and the running-deploy list, and stops the process with 停止推理.
+# The Web-UI show/stop pair is not drawn: the deploy log streams while a service is running.
+_RUNTIME_DROP = frozenset({'show_log', 'stop_show_log'})
+_LOG_INFO = '日志会自动刷新。'
+
+
+def _tune_runtime(item: dict) -> bool:
+    if item['id'] in _RUNTIME_DROP:
+        return False
+    if item['id'] == 'kill_task':
+        item['label'] = '停止推理'
+    elif item['id'] == 'log':
+        item['info'] = _LOG_INFO
+        item['visible'] = True
+    return True
+
+
 def llm_infer_layout(device_count: int = 0) -> dict:
     """Sections in Web-UI order. ``device_count`` is how many CUDA devices the box has."""
     parsed = _parsed()
@@ -388,6 +405,19 @@ def llm_infer_layout(device_count: int = 0) -> dict:
     alerts = {}
     for key in ('generate_alert', 'load_alert', 'loaded_alert', 'port_alert'):
         alerts[key] = (parsed['locales'].get(key) or {}).get('value') or ''
+    if '展示部署状态' in alerts.get('load_alert', ''):
+        alerts['load_alert'] = '部署已开始，日志会自动显示。'
+    for item in list(by_id.values()):
+        if not _tune_runtime(item):
+            by_id.pop(item['id'], None)
+    for section in sections:
+        if section.get('rows') is not None:
+            section['rows'] = [
+                [item for item in row if item['id'] not in _RUNTIME_DROP] for row in section['rows']
+            ]
+            section['rows'] = [row for row in section['rows'] if row]
+        if section.get('items') is not None:
+            section['items'] = [item for item in section['items'] if item['id'] not in _RUNTIME_DROP]
     return {
         'sections': sections,
         'locked': list(LOCKED_FIELDS),

@@ -12,7 +12,6 @@ const state = {
   liveBusy: false,
   serveDraft: null,
   serveDraftRun: null,
-  inferLogVisible: false,
   inferLog: '',
   inferLogTimer: null,
   inferRuntimeOpen: false,
@@ -632,15 +631,35 @@ function inferAction(id) {
     reset: 'reset-infer',
     load_checkpoint: 'serve',
     refresh_tasks: 'serve-refresh',
-    show_log: 'serve-log',
-    stop_show_log: 'serve-log-stop',
     kill_task: 'serve-stop',
     clear_history: 'clear-chat',
     submit: 'chat',
   }[id] || id;
 }
 
-function renderInferControl(item, values, running) {
+function inferLabelParts(item) {
+  const raw = String(item.label || '');
+  const match = raw.match(/^(.*?)\(--([A-Za-z0-9_]+)\)\s*$/);
+  if (!match) return { name: raw, flag: '' };
+  return { name: match[1].trim(), flag: `--${match[2]}` };
+}
+
+function inferCaption(item) {
+  const parts = inferLabelParts(item);
+  const hint = item.info || '';
+  const flag = parts.flag
+    ? `<span class="flag" title="${escapeHtml(parts.flag)}">${escapeHtml(parts.flag)}</span>`
+    : '<span class="flag"></span>';
+  return `<span class="lab" title="${escapeHtml(parts.name)}">${escapeHtml(parts.name)}</span>${flag}<small title="${escapeHtml(hint)}">${escapeHtml(hint)}</small>`;
+}
+
+function inferPathControl(item, value) {
+  const text = value == null ? '' : String(value);
+  const read = item.locked ? 'readonly' : '';
+  return `<textarea class="path" data-field="${item.id}" rows="2" title="${escapeHtml(text)}" ${read}>${escapeHtml(text)}</textarea>`;
+}
+
+function renderInferControl(item, values, running, fill) {
   const value = inferItemValue(item, values);
   const locked = item.locked ? 'disabled' : '';
   const lockTitle = item.locked ? ' title="由本轮实验决定，不能在这里修改"' : '';
@@ -653,23 +672,21 @@ function renderInferControl(item, values, running) {
     if (item.id === 'submit' && !chatCanSend()) disabled = 'disabled';
     let klass = item.primary ? 'primary' : (item.id === 'kill_task' ? 'danger' : 'ghost');
     if (item.id === 'submit') klass = chatCanSend() ? 'primary' : 'ghost';
-    if (item.id === 'show_log' || item.id === 'stop_show_log') {
-      const showing = Boolean(state.inferLogVisible);
-      const active = item.id === 'show_log' ? !showing : showing;
-      disabled = active ? '' : 'disabled';
-      klass = active ? 'primary' : 'ghost';
-    }
     return `<div class="infer-action"><button type="button" class="${klass}" data-action="${action}" ${disabled}>${escapeHtml(item.label)}</button></div>`;
   }
+  if (item.id === 'log') {
+    return `<div class="log-panel infer-log" data-key="log"><div class="log-head"><div class="log-title"><span>${escapeHtml(item.label)}</span>${info}</div>${logTools()}</div><textarea class="log" readonly rows="18">${escapeHtml(state.inferLog || '')}</textarea></div>`;
+  }
+  const caption = inferCaption(item);
   if (item.widget === 'Checkbox') {
     const checked = value === true || value === 'true' ? 'checked' : '';
-    return `<div class="field check" data-key="${item.id}"${lockTitle}><label class="check"><input type="checkbox" data-field="${item.id}" ${checked} ${locked}/> ${escapeHtml(item.label)}</label>${info}</div>`;
+    return `<div class="field check" data-key="${item.id}"${lockTitle}>${caption}<div class="control"><label class="check"><input type="checkbox" data-field="${item.id}" ${checked} ${locked}/></label></div><div class="extra"></div></div>`;
   }
   if (item.widget === 'Slider') {
     const min = item.minimum == null ? 0 : item.minimum;
     const max = item.maximum == null ? 1 : item.maximum;
     const step = item.step == null ? 'any' : item.step;
-    return `<div class="field infer-slider" data-key="${item.id}"><div class="slider-head"><span>${escapeHtml(item.label)}</span><input type="number" class="slider-num" data-slider-num="${item.id}" min="${min}" max="${max}" step="${step}" value="${escapeHtml(value)}" /><button type="button" class="ghost icon" data-action="slider-reset" data-reset="${item.id}" title="恢复初始值">↺</button></div>${info}<input type="range" data-field="${item.id}" min="${min}" max="${max}" step="${step}" value="${escapeHtml(value)}" /><div class="slider-ends"><span>${escapeHtml(min)}</span><span>${escapeHtml(max)}</span></div></div>`;
+    return `<div class="field infer-slider" data-key="${item.id}">${caption}<div class="control slider-head"><input type="number" class="slider-num" data-slider-num="${item.id}" min="${min}" max="${max}" step="${step}" value="${escapeHtml(value)}" /><button type="button" class="ghost icon" data-action="slider-reset" data-reset="${item.id}" title="恢复初始值">↺</button></div><div class="extra"><input type="range" data-field="${item.id}" min="${min}" max="${max}" step="${step}" value="${escapeHtml(value)}" /><div class="slider-ends"><span>${escapeHtml(min)}</span><span>${escapeHtml(max)}</span></div></div></div>`;
   }
   if (item.id === 'running_tasks') {
     const services = ((state.view && state.view.services) || []).filter((service) => service.status === 'running');
@@ -679,7 +696,13 @@ function renderInferControl(item, values, running) {
       return `<option value="${escapeHtml(String(service.id))}" ${mark}>${escapeHtml(runningTaskText(service))}</option>`;
     }).join('');
     const empty = '<option value="">没有部署</option>';
-    return `<label class="field" data-key="running_tasks"><span>${escapeHtml(item.label)}</span>${info}<select>${options || empty}</select></label>`;
+    return `<div class="field" data-key="running_tasks">${caption}<div class="control"><select>${options || empty}</select></div><div class="extra"></div></div>`;
+  }
+  if (item.id === 'model' || item.id === 'adapters') {
+    const extra = item.id === 'adapters' && fill && fill.checkpoint
+      ? '<button type="button" class="ghost fill-serve" data-action="fill-serve">填入本轮晋级 checkpoint</button>'
+      : '';
+    return `<div class="field" data-key="${item.id}"${lockTitle}>${caption}<div class="control">${inferPathControl(item, value)}</div><div class="extra">${extra}</div></div>`;
   }
   if (item.widget === 'Dropdown') {
     const choice = inferChoices(item, value);
@@ -693,34 +716,29 @@ function renderInferControl(item, values, running) {
       return `<option value="${escapeHtml(entry)}" ${mark}>${escapeHtml(entry || '（空）')}</option>`;
     }).join('');
     const multi = item.multiselect ? 'multiple data-multi size="4"' : '';
-    return `<label class="field" data-key="${item.id}"${lockTitle}><span>${escapeHtml(item.label)}</span>${info}<select data-field="${item.id}" ${multi} ${locked}>${options}</select></label>`;
-  }
-  if (item.id === 'log') {
-    return `<div class="log-panel infer-log" data-key="log"><div class="log-head"><div class="log-title"><span>${escapeHtml(item.label)}</span>${info}</div>${logTools()}</div><textarea class="log" readonly rows="18">${escapeHtml(state.inferLog || '')}</textarea></div>`;
+    return `<div class="field" data-key="${item.id}"${lockTitle}>${caption}<div class="control"><select data-field="${item.id}" ${multi} ${locked}>${options}</select></div><div class="extra"></div></div>`;
   }
   const long = Number(item.lines) >= 4;
   const control = long
-    ? `<textarea data-field="${item.id}" rows="${item.lines}" ${item.locked ? 'readonly' : ''}>${escapeHtml(value)}</textarea>`
-    : `<input type="text" data-field="${item.id}" value="${escapeHtml(value)}" ${item.locked ? 'readonly' : ''}/>`;
-  return `<label class="field" data-key="${item.id}"${lockTitle}><span>${escapeHtml(item.label)}</span>${info}${control}</label>`;
+    ? `<textarea class="tall" data-field="${item.id}" rows="${item.lines}" ${item.locked ? 'readonly' : ''}>${escapeHtml(value)}</textarea>`
+    : `<input type="text" data-field="${item.id}" value="${escapeHtml(value)}" title="${escapeHtml(value == null ? '' : String(value))}" ${item.locked ? 'readonly' : ''}/>`;
+  return `<div class="field" data-key="${item.id}"${lockTitle}>${caption}<div class="control">${control}</div><div class="extra"></div></div>`;
 }
 
 function renderInferRow(row, values, running, fill) {
-  if (row.length === 1 && row[0].id === 'log' && !state.inferLogVisible) return '';
+  if (row.length === 1 && row[0].id === 'log' && !running) return '';
   const fields = [];
   const sides = [];
   row.forEach((item) => {
-    let control = renderInferControl(item, values, running);
-    if (item.id === 'adapters' && fill.checkpoint) {
-      control += '<button type="button" class="ghost fill-serve" data-action="fill-serve">填入本轮晋级 checkpoint</button>';
-    }
+    const control = renderInferControl(item, values, running, fill);
     if (item.widget === 'Button') sides.push(control);
     else fields.push(control);
   });
-  const group = fields.length ? `<div class="infer-group">${fields.join('')}</div>` : '';
+  const grid = fields.length && !row.some((item) => item.id === 'log') ? ' infer-grid' : '';
+  const group = fields.length ? `<div class="infer-group" style="--cols:${fields.length}">${fields.join('')}</div>` : '';
   const side = sides.length ? `<div class="infer-sides">${sides.join('')}</div>` : '';
   const onlyButtons = fields.length === 0 ? ' actions' : '';
-  return `<div class="infer-row${onlyButtons}${sides.length ? ' has-side' : ''}">${group}${side}</div>`;
+  return `<div class="infer-row${grid}${onlyButtons}${sides.length ? ' has-side' : ''}">${group}${side}</div>`;
 }
 
 function renderMediaTabs() {
@@ -757,7 +775,8 @@ function renderServe() {
     }
     if (section.kind === 'accordion') {
       const body = (section.rows || []).map((row) => renderInferRow(row, values, running, fill)).join('');
-      const open = state.inferRuntimeOpen || state.inferLogVisible ? ' open' : '';
+      if (running) state.inferRuntimeOpen = true;
+      const open = state.inferRuntimeOpen ? ' open' : '';
       return `<details class="infer-runtime"${open}><summary>${escapeHtml(section.label || '运行时')}</summary><div class="body">${body}</div></details>`;
     }
     if (section.kind === 'chatbot') {
@@ -806,8 +825,8 @@ function render() {
   syncLive();
   syncLogScrollLock();
   syncSendButton();
-  if (state.tab === 'serve' && state.inferLogVisible) ensureInferLogPoll();
-  else if (state.tab !== 'serve') stopInferLogPoll();
+  if (inferDeployRunning()) ensureInferLogPoll();
+  else stopInferLogPoll();
 }
 
 async function runCurrent() {
@@ -890,8 +909,15 @@ function stopInferLogPoll() {
   state.inferLogTimer = null;
 }
 
+function inferDeployRunning() {
+  const view = state.view;
+  if (!view || state.tab !== 'serve') return false;
+  if (view.service && view.service.status === 'running') return true;
+  return (view.services || []).some((service) => service.status === 'running');
+}
+
 async function refreshInferLog() {
-  if (!state.inferLogVisible || !state.view) return;
+  if (!inferDeployRunning()) return;
   const payload = await api(`/api/runs/${state.view.run.id}/serve/log`);
   state.inferLog = payload.log || '';
   const box = document.querySelector('[data-key="log"] textarea');
@@ -903,7 +929,8 @@ async function refreshInferLog() {
 }
 
 function ensureInferLogPoll() {
-  if (state.inferLogTimer || !state.inferLogVisible) return;
+  if (state.inferLogTimer || !inferDeployRunning()) return;
+  refreshInferLog().catch(() => {});
   state.inferLogTimer = setInterval(() => {
     refreshInferLog().catch(() => {});
   }, 1000);
@@ -1181,21 +1208,6 @@ document.addEventListener('click', async (event) => {
       state.view = await api(`/api/runs/${state.view.run.id}?round=${round}`);
       render();
       toast('已找回部署');
-      return;
-    }
-    if (target.dataset.action === 'serve-log') {
-      const payload = await api(`/api/runs/${state.view.run.id}/serve/log`);
-      state.inferLog = payload.log || '';
-      state.inferLogVisible = true;
-      state.inferRuntimeOpen = true;
-      render();
-      ensureInferLogPoll();
-      return;
-    }
-    if (target.dataset.action === 'serve-log-stop') {
-      state.inferLogVisible = false;
-      stopInferLogPoll();
-      render();
       return;
     }
     if (target.dataset.action === 'serve') {

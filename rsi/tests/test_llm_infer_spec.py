@@ -18,7 +18,7 @@ from rsi.serving import build_openai_app
 ORDER = [
     'model', 'model_type', 'template', 'merge_lora', 'reset', 'infer_backend', 'max_new_tokens', 'temperature',
     'top_k', 'top_p', 'repetition_penalty', 'system', 'adapters', 'more_params', 'load_checkpoint', 'running_tasks',
-    'refresh_tasks', 'show_log', 'stop_show_log', 'kill_task', 'log', 'gpu_id', 'infer_model_type', 'port', 'chatbot',
+    'refresh_tasks', 'kill_task', 'log', 'gpu_id', 'infer_model_type', 'port', 'chatbot',
     'prompt', 'image', 'video', 'audio', 'clear_history', 'submit',
 ]
 
@@ -73,10 +73,13 @@ def test_layout_matches_the_webui_llm_infer_tab():
     assert by_id['submit']['label'] == '🚀 发送'
     assert by_id['running_tasks']['label'] == '运行中部署'
     assert by_id['refresh_tasks']['label'] == '找回部署'
-    assert by_id['show_log']['label'] == '展示部署状态'
-    assert by_id['stop_show_log']['label'] == '停止展示'
-    assert by_id['kill_task']['label'] == '杀死部署'
+    assert 'show_log' not in by_id
+    assert 'stop_show_log' not in by_id
+    assert by_id['kill_task']['label'] == '停止推理'
     assert by_id['log']['label'] == '日志输出'
+    assert by_id['log']['info'] == '日志会自动刷新。'
+    assert '展示部署状态' not in by_id['log']['info']
+    assert layout['alerts']['load_alert'] == '部署已开始，日志会自动显示。'
     assert by_id['chatbot']['label'] == 'Chatbot'
     assert layout['sections'][1]['label'] == '运行时'
     assert layout['sections'][1]['open'] is False
@@ -162,5 +165,15 @@ def test_send_button_tracks_prompt_and_media():
     assert "target.id === 'chat-input'" in page
     assert 'button.disabled = !ready' in page
     assert '.infer-row.actions button.primary { background: #2563eb;' in css
-    assert "item.id === 'show_log' ? !showing : showing" in page
-    assert "item.id === 'show_log' || item.id === 'stop_show_log'" in page
+    assert 'inferLogVisible' not in page
+    assert 'show_log' not in page
+    assert 'stop_show_log' not in page
+    assert "row[0].id === 'log' && !running" in page
+    assert 'function inferDeployRunning()' in page
+    assert 'function inferLabelParts(' in page
+    assert 'class="lab"' in page
+    assert 'class="flag"' in page
+    assert 'textarea class="path"' in page
+    assert '--caption:' in css
+    assert 'min-height: 84px' not in css
+    assert '.infer-row.infer-grid > .infer-sides' in css

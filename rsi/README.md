@@ -49,7 +49,7 @@ Then:
 4. **SFT 评测**, **在线 RL** (`swift rlhf --rlhf_type grpo`, vLLM colocate), **RL 评测**. Same pattern.
 5. **晋级**. RL is recommended when its mock accuracy is higher. You can still pick SFT or stay on the base.
 6. **下一轮数据**. Choosing it opens 晋级 first. The promoted checkpoint becomes the next base and the board returns to 数据. Previous rounds stay in the audit.
-7. **推理服务**. The tab uses the same fields, order, and Chinese labels as the SWIFT Web-UI **LLM推理** page (`swift/ui/llm_infer`). `--model`, `--model_type`, `--template`, and `--adapters` are filled from this round and locked. Deploy still starts the RSI service (`swift deploy --model --adapters`). After it is up, the chat box streams to that OpenAI-compatible API. Weights are not loaded in mock mode. The **更多参数** text is stored on that experiment's deploy record. Deploy does not clear it, and opening the experiment again shows the saved text. Another experiment stays empty until it is set there. **运行中部署** lists that experiment's running service as soon as deploy returns; **找回部署** reloads the same list.
+7. **推理服务**. The tab uses the same fields, order, and Chinese labels as the SWIFT Web-UI **LLM推理** page (`swift/ui/llm_infer`). `--model`, `--model_type`, `--template`, and `--adapters` are filled from this round and locked. Deploy still starts the RSI service (`swift deploy --model --adapters`). After it is up, the chat box streams to that OpenAI-compatible API. Weights are not loaded in mock mode. The **更多参数** text is stored on that experiment's deploy record. Deploy does not clear it, and opening the experiment again shows the saved text. Another experiment stays empty until it is set there. **运行中部署** lists that experiment's running service as soon as deploy returns; **找回部署** reloads the same list. While that service is running, **日志输出** is on screen and refreshes by itself. The red button is **停止推理** (it stops the deploy). The Web-UI **展示部署状态** / **停止展示** buttons are not on this page.
 
 Re-running an earlier stage keeps the old audit row and marks later stages in that round as 已作废.
 
@@ -129,7 +129,7 @@ rsi_home: /opt/meituan/dolphinfs_liubo108/ms-swift/workspace
 
 SFT、评测和 RL 也不用界面那个精简 `rsi/.venv`。同一个 `train_python` 存在且可执行时，swift 用它启动。当前机器没有这个路径时会跳过，仍用启动界面的那个 Python。`RSI_SWIFT_BIN` 换掉整个启动命令。
 
-推理服务页和 SWIFT Web-UI 的「LLM推理」是同一套字段、顺序和中文标签（含 `(--参数)` 和说明）。`--model`、`--model_type`、`--template`、`--adapters` 按本轮实验填好并且不能改。部署仍走 RSI 自己的服务管理。起来之后可以在页面里流式对话。「更多参数」写在该实验的部署记录里。点「部署模型」不会清空；再次打开这个实验仍显示上次保存的内容。别的实验没填过就是空的。「运行中部署」在部署返回后列出该实验正在运行的服务；「找回部署」重新加载同一份列表。
+推理服务页和 SWIFT Web-UI 的「LLM推理」是同一套字段、顺序和中文标签（含 `(--参数)` 和说明）。`--model`、`--model_type`、`--template`、`--adapters` 按本轮实验填好并且不能改。部署仍走 RSI 自己的服务管理。起来之后可以在页面里流式对话。「更多参数」写在该实验的部署记录里。点「部署模型」不会清空；再次打开这个实验仍显示上次保存的内容。别的实验没填过就是空的。「运行中部署」在部署返回后列出该实验正在运行的服务；「找回部署」重新加载同一份列表。服务在跑时「日志输出」直接显示并自动刷新。红色按钮是「停止推理」，用来停掉这次部署。页面上没有「展示部署状态」和「停止展示」。
 
 仓库里的 `fetch.yaml` 已写 `hope_username: liyuhao03`。这个 misid 会传给 `hope login`，也会作为 `hope clone` 的 `--username=`。换 misid 改这一行，或用 `RSI_HOPE_USERNAME` 覆盖。token 仍只走 `RSI_HOPE_TOKEN`，只给 `hope clone` 当 git 凭据，不能代替平台登录。
 
@@ -143,7 +143,7 @@ pip3 install hope==3.6.6 --no-cache-dir -i https://pypi.sankuai.com/simple
 
 `./run.sh` 把本进程的标准输出写进 `rsi/.rsi.log`（每次 `start` 成功启动前会删掉重建）。页面上没有「进程日志」。`hope login` 会把命令、目录、退出码和输出追加进这个文件。`hope clone` 一开始就写命令和目录，随后把 stdout/stderr 原样追加（不等进程结束，用户名和 token 会抹掉），结束时再写退出码。hope 的标准输入是关闭的，不会停在密码提示上。
 
-训练、评测的完整输出按实验分开，不进 `rsi/.rsi.log`。路径是 `runs/<实验 id>/round_<轮次>/<阶段>/swift.log`（评测在该阶段下的 `eval_output/swift.log`）。这个文件里最多一行，例如 `[sft <实验 id>] 实验日志：<上面的路径>`。页面上该阶段的「日志」读的就是这个文件，可以全屏。推理部署的输出是 `serve/deploy.log`，在「推理服务」的「运行时」里点「展示部署状态」看「日志输出」。
+训练、评测的完整输出按实验分开，不进 `rsi/.rsi.log`。路径是 `runs/<实验 id>/round_<轮次>/<阶段>/swift.log`（评测在该阶段下的 `eval_output/swift.log`）。这个文件里最多一行，例如 `[sft <实验 id>] 实验日志：<上面的路径>`。页面上该阶段的「日志」读的就是这个文件，可以全屏。推理部署的输出是 `serve/deploy.log`。服务在跑时，「推理服务」的「运行时」会直接显示「日志输出」并自动刷新。停止按钮是「停止推理」。
 
 `hope --version` 应为 3.6.6。同步是异步的。页面上的拉取状态只看本地文件：目录里出现 `config.json` 后才是「就绪」，在这之前是「同步中，进度见 rsi/.rsi.log」。不会调用 `hope list`。训练命令的 `--model` 改为本地路径，并带上 `--model_type` 和 `--template`。子进程会设置 `HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`、`HF_DATASETS_OFFLINE=1`。
 
