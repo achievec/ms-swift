@@ -512,25 +512,26 @@ class ModelFetcher:
         return FetchStatus(kind, repo, latest.local_path, '同步中', message)
 
     def refresh(self, kind: str, repo_id: str, background: bool = True) -> FetchStatus:
-        """重新拉取: log in again if needed, then clone. Does not call hope list."""
+        """重新拉取: clone again even when the files are already on disk.
+
+        Ordinary ``ensure`` and ``status_of`` do not. This does not call hope list.
+        """
         repo = repo_id_of(repo_id)
         if model_source() != 'hope' or not is_repo_id(repo):
             return self.status_of(kind, repo) if is_repo_id(repo) else FetchStatus(kind, repo, '', '保持', '')
-        current = self.status_of(kind, repo)
-        if current.state == '就绪':
-            return current
         inline = os.environ.get('RSI_FETCH_INLINE', '').strip() == '1'
-        self._start_clone(kind, repo, background=background and not inline, force_login=True)
+        self._start_clone(kind, repo, background=background and not inline, force=True, force_login=True)
         latest = self.status_of(kind, repo)
         if latest.state in {'就绪', '失败'}:
             return latest
         message = latest.message if latest.state == '同步中' and latest.message else '同步中'
         return FetchStatus(kind, repo, latest.local_path, '同步中', message)
 
-    def _start_clone(self, kind: str, repo_id: str, background: bool, force_login: bool = False) -> None:
+    def _start_clone(self, kind: str, repo_id: str, background: bool, force: bool = False,
+                     force_login: bool = False) -> None:
         key = f'{kind}:{repo_id}'
         path = self._path_for(kind, repo_id)
-        if _ready(kind, path):
+        if _ready(kind, path) and not force:
             logger.info('hope 跳过 %s %s 已就绪 %s', kind, repo_id, path)
             return
         with _LOCK:

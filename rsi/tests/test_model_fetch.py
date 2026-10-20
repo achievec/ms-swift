@@ -100,7 +100,7 @@ def test_huggingface_co_layout_is_ready_and_used_as_model(tmp_path, hope_env):
     assert status.message == '已在本地'
     assert status.local_path == str(model_dir)
     assert not legacy.exists()
-    dataset = fetcher.status_of('dataset', 'openai/gsm8k')
+    dataset = fetcher.ensure('dataset', 'openai/gsm8k')
     assert dataset.state == '就绪'
     assert dataset.local_path == str(data_dir)
 
@@ -126,6 +126,61 @@ def test_huggingface_co_layout_is_ready_and_used_as_model(tmp_path, hope_env):
         })
         assert loaded.status_code == 200, loaded.text
         assert loaded.json()['result']['dataset'] == str(data_dir)
+
+
+def test_ready_huggingface_co_repo_skips_clone_until_refetch(tmp_path, hope_env):
+    model_dir = tmp_path / 'models' / 'huggingface.co' / 'Qwen' / 'Qwen2.5-7B-Instruct'
+    model_dir.mkdir(parents=True)
+    (model_dir / 'config.json').write_text('{}', encoding='utf-8')
+    data_dir = tmp_path / 'datasets' / 'huggingface.co' / 'datasets' / 'openai' / 'gsm8k'
+    data_dir.mkdir(parents=True)
+    (data_dir / 'train.jsonl').write_text('{}\n', encoding='utf-8')
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(list(argv))
+        if argv[1] == 'login':
+            return Completed(stdout='登录成功')
+        return Completed(stdout='submitted, pending')
+
+    fetcher = _fetcher(tmp_path, runner)
+    status = fetcher.ensure('model', REPO, background=False)
+    assert status.state == '就绪'
+    assert status.message == '已在本地'
+    assert status.local_path == str(model_dir)
+    looked = fetcher.status_of('model', REPO)
+    assert looked.state == '就绪'
+    assert looked.local_path == str(model_dir)
+    dataset = fetcher.ensure('dataset', 'openai/gsm8k', background=False)
+    assert dataset.state == '就绪'
+    assert dataset.local_path == str(data_dir)
+    assert calls == []
+
+    client, _app = _client(tmp_path, runner)
+    with client as api:
+        run_id = api.post('/api/runs', json={
+            'name': '已在本地',
+            'scenario': '有文件就不要再 clone',
+            'base_model': REPO,
+        }).json()['run']['id']
+        viewed = api.get(f'/api/runs/{run_id}')
+        assert viewed.status_code == 200
+        assert calls == []
+        forced = api.post(f'/api/runs/{run_id}/fetch', json={'model': REPO, 'dataset': 'openai/gsm8k'})
+        assert forced.status_code == 200, forced.text
+        kinds = [item[1] for item in calls]
+        assert kinds.count('clone') == 2
+        assert 'list' not in kinds
+        rows = {row['kind']: row for row in forced.json()['fetches']}
+        assert rows['model']['state'] == '就绪'
+        assert rows['model']['local_path'] == str(model_dir)
+        assert rows['dataset']['state'] == '就绪'
+        assert rows['dataset']['local_path'] == str(data_dir)
+    calls.clear()
+    skipped = fetcher.ensure('model', REPO, background=False)
+    assert skipped.state == '就绪'
+    assert skipped.local_path == str(model_dir)
+    assert calls == []
 
 
 def test_clone_into_huggingface_co_flips_the_fetch_row(tmp_path, hope_env):
