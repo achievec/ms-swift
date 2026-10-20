@@ -95,6 +95,69 @@ def _format_errors(report: dict) -> str:
     return '数据格式不符合要求：' + ('；'.join(parts) if parts else '未知错误')
 
 
+def _is_adapter_checkpoint(path: Path) -> bool:
+    """LoRA (and mock) checkpoints have no full ``config.json``."""
+    if not path.is_dir():
+        return False
+    if (path / 'adapter_config.json').is_file():
+        return True
+    return not (path / 'config.json').is_file()
+
+
+def _model_from_args(path: Path) -> str:
+    args_path = path / 'args.json'
+    if not args_path.is_file():
+        return ''
+    try:
+        data = json.loads(args_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return ''
+    if not isinstance(data, dict):
+        return ''
+    for key in ('model', 'model_id_or_path'):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ''
+
+
+def _path_key(path: Path) -> str:
+    try:
+        return str(path.expanduser().resolve())
+    except OSError:
+        return str(path)
+
+
+def _adapter_base_model(checkpoint: Path, fallback: str) -> str:
+    """Base ``--model`` from the checkpoint args, else the RSI run base."""
+    seen = set()
+    current = checkpoint
+    while True:
+        key = _path_key(current)
+        if key in seen:
+            break
+        seen.add(key)
+        recorded = _model_from_args(current)
+        if not recorded or _path_key(Path(recorded)) in seen:
+            break
+        candidate = Path(recorded).expanduser()
+        if candidate.is_dir() and _is_adapter_checkpoint(candidate):
+            current = candidate
+            continue
+        return recorded
+    text = (fallback or '').strip()
+    if not text:
+        return ''
+    fallback_path = Path(text).expanduser()
+    try:
+        if fallback_path.is_dir() and _is_adapter_checkpoint(fallback_path) and _path_key(fallback_path) == _path_key(
+                checkpoint):
+            return ''
+    except OSError:
+        return text
+    return text
+
+
 def _slug(name: str, round_index: int, kind: str) -> str:
     ascii_name = re.sub(r'[^A-Za-z0-9]+', '-', name or '').strip('-').lower()
     if not ascii_name:
@@ -308,6 +371,32 @@ class Pipeline:
         if status is None or status.state in {'保持', '缺少'}:
             return
         self.store.upsert_fetch(status.as_row())
+
+    def _place_trained_checkpoint(self, merged: dict, run: dict) -> None:
+        """Hand a LoRA checkpoint to swift as ``--adapters``, not ``--model``.
+
+        A directory with ``adapter_config.json``, or without ``config.json``, is an
+        adapter. The base ``--model`` comes from that checkpoint's ``args.json``.
+        When args.json has no model, the run's base model is used. A full
+        checkpoint (``config.json`` and no adapter file) stays ``--model``.
+        """
+        raw = str(merged.get('model') or '').strip()
+        if not raw:
+            return
+        path = Path(raw).expanduser()
+        try:
+            is_dir = path.is_dir()
+        except OSError:
+            return
+        if not is_dir or not _is_adapter_checkpoint(path):
+            return
+        base = _adapter_base_model(path, (run or {}).get('base_model') or '')
+        merged['adapters'] = str(path)
+        if base:
+            merged['model'] = base
+        else:
+            merged['model'] = ''
+        self._pin_identity(merged, run)
 
     def _pin_identity(self, merged: dict, run: dict) -> None:
         model = str(merged.get('model') or '')
@@ -551,6 +640,7 @@ class Pipeline:
             if not dataset:
                 merged['dataset'] = '<dataset>'
             self._rewrite_model(merged, run, side, strict)
+            self._place_trained_checkpoint(merged, run)
             return merged, side
 
         if stage in {'sft_eval', 'rl_eval'}:
@@ -600,6 +690,7 @@ class Pipeline:
                     raise PipelineError('请填写 eval_dataset')
                 merged['eval_dataset'] = 'itops-heldout'
             self._rewrite_model(merged, run, side, strict)
+            self._place_trained_checkpoint(merged, run)
             self._attach_eval_locals(merged, strict)
             return merged, side
 
@@ -1075,6 +1166,7 @@ class Pipeline:
         merged['host'] = merged.get('host') or '127.0.0.1'
         side = {}
         self._rewrite_model(merged, run, side, strict)
+        self._place_trained_checkpoint(merged, run)
         if side.get('fetch_state') == '同步中' and strict:
             raise PipelineError('同步中')
         return merged
@@ -1099,6 +1191,7 @@ class Pipeline:
         if not port_is_free(host, port):
             raise PipelineError(f'端口 {port} 已被占用，换一个端口再启动')
         command = format_shell(build_argv('serve', merged))
+        trained = str(merged.get('adapters') or merged.get('model') or '')
         backend_name = self._serve_backend_name()
         if backend_name == 'swift':
             self._start_swift_serve(run, merged, command)
@@ -1106,7 +1199,7 @@ class Pipeline:
         else:
             try:
                 self.serve.start_mock(run_id, host, port, merged['served_model_name'], merged.get('api_key') or '',
-                                      run['scenario'], merged['model'])
+                                      run['scenario'], trained)
             except TimeoutError as exc:
                 raise PipelineError(f'推理服务没有在预期时间内起来：{exc}') from exc
             logs = f'推理服务已监听 http://{loopback(host)}:{port}/v1\n{command}\n'
@@ -1115,13 +1208,13 @@ class Pipeline:
             'mock': backend_name != 'swift',
             'base_url': f'http://{loopback(host)}:{port}/v1',
             'served_model_name': merged['served_model_name'],
-            'checkpoint': merged['model'],
+            'checkpoint': trained,
         }
         with self.store.transaction() as conn:
             self.store.insert_service(
                 conn, {
                     'run_id': run_id,
-                    'checkpoint': merged['model'],
+                    'checkpoint': trained,
                     'served_model_name': merged['served_model_name'],
                     'host': host,
                     'port': port,
