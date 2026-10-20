@@ -92,11 +92,11 @@ def blocked_message(stage: str, active: dict, rnd: dict | None) -> str:
     if stage == 'rl':
         verdict = eval_verdict(active.get('sft_eval'))
         if verdict is False:
-            return 'SFT 评测未通过，不能进入在线 RL'
+            return 'SFT 评测未通过，不能进入 RL'
         if verdict is not True:
             return '请先完成「SFT 评测」'
     if stage == 'rl_eval' and not _done(active, 'rl'):
-        return '请先完成「在线 RL」'
+        return '请先完成「RL」'
     if stage == 'promote':
         return '请先完成评测'
     if stage == 'next_round':
@@ -238,7 +238,7 @@ def assemble_flow(run, rnd, active, status_of, metric_of) -> dict:
     sft_fail = _box('sft_fail', '不通过', 176, EXIT_Y)
     sft_next = _box('sft_next', '下一轮数据', 316, EXIT_Y)
     sft_finish = _box('sft_finish', '完成', 456, EXIT_Y)
-    rl = _box('rl', '在线 RL', 588, TRUNK_Y)
+    rl = _box('rl', 'RL', 588, TRUNK_Y)
     rl_eval = _box('rl_eval', 'RL 评测', 736, TRUNK_Y)
     rl_fail = _box('rl_fail', '不通过', 596, EXIT_Y)
     rl_next = _box('rl_next', '下一轮数据', 736, EXIT_Y)
@@ -269,7 +269,7 @@ def assemble_flow(run, rnd, active, status_of, metric_of) -> dict:
     }
     nodes = []
     for node_id, label, _x in (
-        ('data', '数据', 0), ('sft', 'SFT', 0), ('sft_eval', 'SFT 评测', 0), ('rl', '在线 RL', 0), ('rl_eval', 'RL 评测', 0),
+        ('data', '数据', 0), ('sft', 'SFT', 0), ('sft_eval', 'SFT 评测', 0), ('rl', 'RL', 0), ('rl_eval', 'RL 评测', 0),
     ):
         box = placed[node_id]
         verdict = ''

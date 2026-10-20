@@ -72,7 +72,7 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         assert 'bone' in sft['tuner_type']['choices']
         assert 'ia3' in sft['tuner_type']['choices']
         assert 'dora' not in sft['tuner_type']['choices']
-        assert sft['torch_dtype']['choices'] == ['bfloat16', 'float16', 'float32']
+        assert sft['torch_dtype']['choices'] == ['', 'bfloat16', 'float16', 'float32']
         assert 'flash_attention_2' in sft['attn_impl']['choices']
         assert 'zero3_offload' in sft['deepspeed']['choices']
 
@@ -117,6 +117,10 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         assert 'data-dataset-mode' in page
         assert '内置示例' not in page
         assert '由实验创建时决定，不能在这里修改' in page
+        assert 'renderBlocks' in page
+        assert 'chip-clear' in page
+        assert 'if (item.locked) return raw == null ? \'\' : raw;' in page
+        assert '在线 RL' not in page
 
         sft_eval = by_key('sft_eval')
         assert sft_eval['eval_backend']['choices'] == ['Native', 'OpenCompass', 'VLMEvalKit']
@@ -125,13 +129,24 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         assert by_key('rl_eval')['eval_dataset']['type'] == 'multicombo'
 
         rl = by_key('rl')
-        assert rl['reward_funcs']['type'] == 'multiselect'
-        assert 'accuracy' in rl['reward_funcs']['choices']
-        assert 'itops_checklist' in rl['reward_funcs']['choices']
+        assert rl['reward_funcs']['type'] == 'multicombo'
+        assert rl['reward_funcs']['choices'] == ['accuracy', 'format', 'cosine', 'repetition', 'soft_overlong']
+        assert rl['reward_funcs'].get('allow_custom') is True
+        assert 'rlhf_type' not in rl
         assert rl['ref_model']['type'] == 'combo'
-        assert rl['rlhf_type']['choices'][0] == 'dpo'
-        assert 'grpo' in rl['rlhf_type']['choices']
+        assert rl['ref_model'].get('locked') is not True
         assert rl['sleep_level']['choices'] == ['0', '1']
+        assert rl['dataset']['type'] == 'multicombo'
+        assert rl['dataset']['info'] == '选择训练的数据集，支持复选/本地路径'
+        assert sft['dataset']['type'] == 'multicombo'
+        assert sft['dataset']['label'] == '数据集名称(--dataset)'
+        assert schema['stages'][3]['label'] == 'RL'
+        assert [row['key'] for row in schema['fields']['sft_eval']] == [row['key'] for row in schema['fields']['rl_eval']]
+        assert 'eval_dataset' in schema['stage_layouts']['rl_eval']['by_id']
+        assert schema['stage_layouts']['sft']['by_id']['dataset']['multiselect'] is True
+        assert any(block.get('label') == '数据集设置' for block in schema['stage_layouts']['sft']['blocks'])
+        assert any(block.get('label') == '训练参数设置' for block in schema['stage_layouts']['sft']['blocks'])
+        assert any(block.get('label') == '奖励模型设置(更多参数->GRPO高级参数设置)' for block in schema['stage_layouts']['rl']['blocks'])
 
         created = api.post('/api/runs', json={
             'name': 'IT 运维助手',

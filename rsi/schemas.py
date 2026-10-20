@@ -7,6 +7,7 @@ import yaml
 
 from rsi.backends import detect_gpu
 from rsi.llm_infer_spec import llm_infer_layout
+from rsi.webui_stage_spec import stage_layout
 from rsi.model_fetch import hf_dataset_choices, model_source
 from rsi.webui_catalog import eval_datasets_by_backend, load_catalog
 
@@ -32,8 +33,8 @@ STAGE_META = [
     },
     {
         'id': 'rl',
-        'label': '在线 RL',
-        'summary': '在线强化学习，默认 GRPO。从本轮 SFT 检查点继续。',
+        'label': 'RL',
+        'summary': 'GRPO。从本轮 SFT 检查点继续。',
     },
     {
         'id': 'rl_eval',
@@ -355,6 +356,11 @@ def presets() -> dict:
 def public_schema() -> dict:
     preset = presets()
     catalog = load_catalog()
+    device_count = len((detect_gpu().get('devices') or []))
+    stage_layouts = {stage: stage_layout(stage, device_count) for stage in ('sft', 'sft_eval', 'rl', 'rl_eval')}
+    fields = {key: list(value) for key, value in FIELDS.items()}
+    for stage, layout in stage_layouts.items():
+        fields[stage] = layout['fields']
     datasets = list(catalog['datasets'])
     seen = set(datasets)
     for item in PUBLIC_DATASETS:
@@ -365,7 +371,8 @@ def public_schema() -> dict:
     return {
         'stages': STAGE_META,
         'stage_order': STAGE_ORDER,
-        'fields': FIELDS,
+        'fields': fields,
+        'stage_layouts': stage_layouts,
         'presets': {key: preset.get(key, {})
                     for key in ('data', 'sft', 'sft_eval', 'rl', 'rl_eval', 'serve', 'next_round')},
         'public_datasets': PUBLIC_DATASETS,
@@ -373,7 +380,7 @@ def public_schema() -> dict:
         'hardware': preset.get('hardware', {}),
         'base_model_default': 'Qwen/Qwen2.5-7B-Instruct',
         'model_source': model_source(),
-        'llm_infer': llm_infer_layout(len((detect_gpu().get('devices') or []))),
+        'llm_infer': llm_infer_layout(device_count),
         'catalog': {
             'models': sorted(catalog['models']),
             'model_types': sorted(catalog['model_types']),

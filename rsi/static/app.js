@@ -395,14 +395,14 @@ function datasetTokens(value) {
 
 function paintDatasetChips(box) {
   if (!box) return;
-  const hidden = box.querySelector('[data-field="dataset"]');
+  const hidden = chipField(box);
   const tokens = datasetTokens(hidden && hidden.value);
   box.querySelectorAll('.chip').forEach((el) => el.remove());
   const query = box.querySelector('.chip-query');
   if (!query) return;
   const html = tokens.map((token) => `<span class="chip"><span>${escapeHtml(token)}</span><button type="button" data-chip-remove="${escapeHtml(token)}" aria-label="移除">×</button></span>`).join('');
   query.insertAdjacentHTML('beforebegin', html);
-  const clear = box.querySelector('[data-action="dataset-clear"]');
+  const clear = box.querySelector('[data-action="chip-clear"], [data-action="dataset-clear"]');
   if (clear) clear.hidden = tokens.length === 0;
 }
 
@@ -535,8 +535,10 @@ function renderStage(stage) {
       ${promote}
       ${stage === 'data'
         ? `<div class="infer-form data-settings">${renderLockedModelRow(fields, values)}${renderDatasetSettings(fields, values)}</div>`
-        : renderGroups(fields, values)}
-      ${stage === 'data' ? '' : `<details class="yaml">
+        : (state.schema.stage_layouts && state.schema.stage_layouts[stage]
+          ? `<div class="infer-form stage-form">${renderBlocks(state.schema.stage_layouts[stage].blocks, values)}</div>`
+          : renderGroups(fields, values))}
+      ${stage === 'data' || (state.schema.stage_layouts && state.schema.stage_layouts[stage]) ? '' : `<details class="yaml">
         <summary>高级参数 YAML</summary>
         <textarea id="extra-yaml">${escapeHtml((values && values.extra_yaml) || '')}</textarea>
       </details>`}
@@ -703,6 +705,7 @@ function serveFormValues(view) {
 function inferItemValue(item, values) {
   const raw = values ? values[item.id] : undefined;
   if (raw === false || raw === 0) return raw;
+  if (item.locked) return raw == null ? '' : raw;
   if (raw !== undefined && raw !== null && raw !== '') return raw;
   if (item.default !== undefined && item.default !== null) return item.default;
   return '';
@@ -777,6 +780,23 @@ function inferPathControl(item, value) {
   return `<textarea class="path" data-field="${item.id}" rows="2" title="${escapeHtml(text)}" ${read}>${escapeHtml(text)}</textarea>`;
 }
 
+function chipField(box) {
+  return box ? box.querySelector('input[type="hidden"][data-field]') : null;
+}
+
+function renderChipBox(item, value) {
+  const tokens = datasetTokens(value);
+  const chips = tokens.map((token) => `<span class="chip"><span>${escapeHtml(token)}</span><button type="button" data-chip-remove="${escapeHtml(token)}" aria-label="移除">×</button></span>`).join('');
+  const clearHidden = tokens.length ? '' : 'hidden';
+  const from = item.choices_from ? ` data-choices-from="${escapeHtml(item.choices_from)}"` : '';
+  const inline = !item.choices_from && item.choices && item.choices.length
+    ? ` data-choice-list="${escapeHtml(JSON.stringify(item.choices.map((choice) => String(choice))))}"` : '';
+  const custom = item.allow_custom ? '' : ' data-allow-custom="0"';
+  const read = item.locked ? 'readonly' : '';
+  const placeholder = item.allow_custom ? '选择或输入' : '选择';
+  return `<div class="combo chip-combo"><div class="combo-anchor chip-box">${chips}<input class="chip-query" data-combo="1" data-chip="1"${from}${inline}${custom} value="" autocomplete="off" placeholder="${placeholder}" ${read}/><button type="button" class="chip-clear" data-action="chip-clear" aria-label="清空" ${clearHidden}>×</button><button type="button" class="chip-caret" data-action="chip-menu" aria-label="展开">▾</button><input type="hidden" data-field="${escapeHtml(item.id)}" value="${escapeHtml(tokens.join(' '))}" /><div class="combo-list" hidden></div></div></div>`;
+}
+
 function renderInferControl(item, values, running, fill) {
   const value = inferItemValue(item, values);
   const locked = item.locked ? 'disabled' : '';
@@ -822,6 +842,9 @@ function renderInferControl(item, values, running, fill) {
       : '';
     return `<div class="field" data-key="${item.id}"${lockTitle}>${caption}<div class="control">${inferPathControl(item, value)}</div><div class="extra">${extra}</div></div>`;
   }
+  if (item.widget === 'Dropdown' && item.multiselect) {
+    return `<div class="field" data-key="${item.id}"${lockTitle}>${caption}<div class="control">${renderChipBox(item, value)}</div><div class="extra"></div></div>`;
+  }
   if (item.widget === 'Dropdown') {
     const choice = inferChoices(item, value);
     if (item.locked) {
@@ -841,6 +864,23 @@ function renderInferControl(item, values, running, fill) {
     ? `<textarea class="tall" data-field="${item.id}" rows="${item.lines}" ${item.locked ? 'readonly' : ''}>${escapeHtml(value)}</textarea>`
     : `<input type="text" data-field="${item.id}" value="${escapeHtml(value)}" title="${escapeHtml(value == null ? '' : String(value))}" ${item.locked ? 'readonly' : ''}/>`;
   return `<div class="field" data-key="${item.id}"${lockTitle}>${caption}<div class="control">${control}</div><div class="extra"></div></div>`;
+}
+
+function renderBlocks(blocks, values) {
+  return (blocks || []).map((block) => renderBlock(block, values)).join('');
+}
+
+function renderBlock(block, values) {
+  if (!block) return '';
+  if (block.kind === 'row') return renderInferRow(block.widgets || [], values, false, null);
+  if (block.kind === 'accordion' || block.kind === 'tab') {
+    const open = block.open ? ' open' : '';
+    return `<details class="infer-runtime"${open}><summary>${escapeHtml(block.label || '设置')}</summary><div class="body">${renderBlocks(block.blocks, values)}</div></details>`;
+  }
+  if (block.kind === 'tabs') {
+    return (block.tabs || []).map((tab, index) => `<details class="infer-runtime"${index === 0 ? ' open' : ''}><summary>${escapeHtml(tab.label || '参数')}</summary><div class="body">${renderBlocks(tab.blocks, values)}</div></details>`).join('');
+  }
+  return '';
 }
 
 function renderInferRow(row, values, running, fill) {
@@ -1171,11 +1211,12 @@ document.addEventListener('keydown', (event) => {
   if (event.key !== 'Enter') return;
   const input = event.target;
   if (!input.dataset || input.dataset.chip !== '1') return;
+  if (input.dataset.allowCustom === '0') return;
   event.preventDefault();
   const text = input.value.trim();
   if (!text) return;
   const box = input.closest('.chip-box');
-  const hidden = box.querySelector('[data-field="dataset"]');
+  const hidden = chipField(box);
   const tokens = datasetTokens(hidden.value);
   if (!tokens.includes(text)) tokens.push(text);
   hidden.value = tokens.join(' ');
@@ -1189,24 +1230,24 @@ document.addEventListener('click', async (event) => {
   if (chip) {
     event.preventDefault();
     const box = chip.closest('.chip-box');
-    const hidden = box.querySelector('[data-field="dataset"]');
+    const hidden = chipField(box);
     const drop = chip.dataset.chipRemove;
     hidden.value = datasetTokens(hidden.value).filter((item) => item !== drop).join(' ');
     paintDatasetChips(box);
     return;
   }
-  const clearAll = event.target.closest('[data-action="dataset-clear"]');
+  const clearAll = event.target.closest('[data-action="chip-clear"], [data-action="dataset-clear"]');
   if (clearAll) {
     event.preventDefault();
     const box = clearAll.closest('.chip-box');
-    const hidden = box.querySelector('[data-field="dataset"]');
+    const hidden = chipField(box);
     hidden.value = '';
     const query = box.querySelector('.chip-query');
     if (query) query.value = '';
     paintDatasetChips(box);
     return;
   }
-  const caret = event.target.closest('[data-action="dataset-menu"]');
+  const caret = event.target.closest('[data-action="chip-menu"], [data-action="dataset-menu"]');
   if (caret) {
     event.preventDefault();
     const input = caret.closest('.chip-box').querySelector('.chip-query');
@@ -1353,7 +1394,11 @@ document.addEventListener('click', async (event) => {
     }
     if (target.dataset.action === 'slider-reset') {
       const key = target.dataset.reset;
-      const item = state.schema.llm_infer && state.schema.llm_infer.by_id[key];
+      const stageLayout = state.schema.stage_layouts && state.schema.stage_layouts[state.stage];
+      const item = state.tab === 'serve'
+        ? (state.schema.llm_infer && state.schema.llm_infer.by_id[key])
+        : ((stageLayout && stageLayout.by_id && stageLayout.by_id[key])
+          || (state.schema.llm_infer && state.schema.llm_infer.by_id[key]));
       let fallback = item && item.default;
       if (fallback == null && state.schema && state.schema.fields) {
         const field = (state.schema.fields[state.stage] || []).find((row) => row.key === key);
@@ -1550,6 +1595,14 @@ function needsFetchPoll() {
 }
 
 function catalogNames(source, input) {
+  if (input && input.dataset.choiceList) {
+    try {
+      const parsed = JSON.parse(input.dataset.choiceList);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (_err) {
+      return [];
+    }
+  }
   if (source === 'datasets' && state.schema && state.schema.model_source === 'hope') {
     return (state.schema.catalog && state.schema.catalog.hf_datasets) || [];
   }
@@ -1609,7 +1662,7 @@ function showCombo(input, browse) {
   }
   let selected = new Set();
   if (chip) {
-    const hidden = input.parentElement.querySelector('[data-field="dataset"]');
+    const hidden = input.parentElement.querySelector('input[type="hidden"][data-field]');
     selected = new Set(datasetTokens(hidden && hidden.value));
   } else if (multi) {
     selected = new Set(input.value.trim().split(/\s+/).filter(Boolean));
@@ -1667,8 +1720,8 @@ document.addEventListener('mousedown', (event) => {
   const input = option.closest('.combo').querySelector('input');
   if (input.dataset.chip === '1') {
     const box = input.closest('.chip-box');
-    const hidden = box.querySelector('[data-field="dataset"]');
-    const tokens = datasetTokens(hidden.value);
+    const hidden = chipField(box);
+    const tokens = datasetTokens(hidden && hidden.value);
     const value = option.dataset.comboValue;
     hidden.value = (tokens.includes(value) ? tokens.filter((item) => item !== value) : tokens.concat(value)).join(' ');
     input.value = '';

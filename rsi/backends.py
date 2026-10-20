@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from rsi.commands import build_argv, format_shell
+from rsi.commands import apply_process_env, build_argv, stage_shell
 from rsi.logtail import announce_log, normalize_log, run_and_tee
 from rsi.model_fetch import apply_runtime_env, configured_train_python
 
@@ -250,7 +250,7 @@ class MockBackend:
     def execute(self, stage: str, params: dict, context: dict) -> dict:
         log_dir = resolve_log_dir(context, params)
         params = _pin_output_params(stage, params, log_dir)
-        command = format_shell(build_argv(stage, params))
+        command = stage_shell(stage, params)
         round_index = int(context.get('round_index') or 1)
         metrics = _mock_metrics(stage, round_index)
         lines = [command] if command else []
@@ -309,8 +309,12 @@ class MsSwiftBackend:
         if not logical:
             raise BackendError(f'{stage} 没有对应的 swift 子命令')
         argv, env = swift_launch(logical)
+        try:
+            apply_process_env(env, params)
+        except ValueError as exc:
+            raise BackendError(str(exc)) from exc
         workdir.mkdir(parents=True, exist_ok=True)
-        command = format_shell(logical)
+        command = stage_shell(stage, params)
         log_path = workdir / 'swift.log'
         prefix = f'[{stage} {context.get("run_id") or "-"}]'
         announce_log(prefix, log_path)

@@ -130,7 +130,7 @@ def test_failed_sft_eval_only_opens_next_data(client):
     assert any(edge['from'] == 'sft_eval' and edge['to'] == 'sft_finish' and not edge['live'] for edge in view['flow']['edges'])
     blocked = _run(api, run_id, 'rl', {})
     assert blocked.status_code == 400
-    assert blocked.json()['detail'] == 'SFT 评测未通过，不能进入在线 RL'
+    assert blocked.json()['detail'] == 'SFT 评测未通过，不能进入 RL'
     finish = api.post(f'/api/runs/{run_id}/decide', json={'action': 'finish'})
     assert finish.status_code == 400
     stopped = api.post(f'/api/runs/{run_id}/decide', json={'action': 'stop'})

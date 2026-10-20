@@ -6,7 +6,19 @@ from pathlib import Path
 
 # Passed through as repeated CLI values when they contain whitespace,
 # matching `swift sft --dataset a b` / `--reward_funcs accuracy format`.
-REPEAT_KEYS = {'dataset', 'val_dataset', 'eval_dataset', 'reward_funcs', 'adapters'}
+REPEAT_KEYS = {
+    'dataset',
+    'val_dataset',
+    'eval_dataset',
+    'reward_funcs',
+    'reward_model',
+    'reward_model_type',
+    'adapters',
+    'report_to',
+    'target_modules',
+    'model_name',
+    'model_author',
+}
 
 # Stored on the step, never forwarded to swift.
 INTERNAL_KEYS = {
@@ -27,6 +39,11 @@ INTERNAL_KEYS = {
     'checkpoint',
     'gpu_id',
     'infer_model_type',
+    'train_stage',
+    'use_ddp',
+    'ddp_num',
+    'envs',
+    'dry_run',
 }
 
 STAGE_COMMAND = {
@@ -52,6 +69,8 @@ def build_argv(stage: str, params: dict) -> list:
     subcommand = STAGE_COMMAND.get(stage)
     if not subcommand:
         return []
+    if stage == 'sft' and str((params or {}).get('train_stage') or '').strip() == 'pt':
+        subcommand = 'pt'
     argv = ['swift', subcommand]
     for key, value in params.items():
         if key in INTERNAL_KEYS or key.startswith('_'):
@@ -120,11 +139,65 @@ def apply_more_params(params: dict) -> dict:
     return merged
 
 
+def env_prefix(params: dict) -> str:
+    """Shell prefix matching the Web-UI GPU / DDP / env boxes. Missing GPU stays on device 0."""
+    from rsi.llm_infer_spec import cuda_visible_devices
+
+    params = params or {}
+    parts = []
+    gpu = params.get('gpu_id')
+    if gpu is None or gpu == '':
+        parts.append('CUDA_VISIBLE_DEVICES=0')
+    else:
+        try:
+            visible = cuda_visible_devices(gpu)
+        except ValueError:
+            visible = None
+        if visible:
+            parts.append(f'CUDA_VISIBLE_DEVICES={visible}')
+        elif visible is None:
+            parts.append('CUDA_VISIBLE_DEVICES=0')
+    use_ddp = params.get('use_ddp')
+    if use_ddp in {True, 'true', 'True', 1, '1'}:
+        parts.append(f"NPROC_PER_NODE={params.get('ddp_num') or 1}")
+    extra = str(params.get('envs') or '').strip()
+    if extra:
+        parts.append(extra)
+    return ' '.join(parts)
+
+
+def apply_process_env(env: dict, params: dict) -> dict:
+    """Copy GPU, DDP, and ``envs`` onto the process environment."""
+    from rsi.llm_infer_spec import cuda_visible_devices
+
+    params = params or {}
+    gpu = params.get('gpu_id')
+    if gpu not in (None, ''):
+        visible = cuda_visible_devices(gpu)
+        if visible == '':
+            env.pop('CUDA_VISIBLE_DEVICES', None)
+        elif visible:
+            env['CUDA_VISIBLE_DEVICES'] = visible
+    if params.get('use_ddp') in {True, 'true', 'True', 1, '1'}:
+        env['NPROC_PER_NODE'] = str(params.get('ddp_num') or 1)
+    for token in str(params.get('envs') or '').split():
+        if '=' not in token:
+            continue
+        key, value = token.split('=', 1)
+        if key:
+            env[key] = value
+    return env
+
+
+def stage_shell(stage: str, params: dict) -> str:
+    return format_shell(build_argv(stage, params), env_prefix(params))
+
+
 def format_shell(argv: list, env_prefix: str = 'CUDA_VISIBLE_DEVICES=0') -> str:
     if not argv:
         return ''
     parts = [shlex.quote(token) for token in argv]
-    lines = [f'{env_prefix} \\']
+    lines = [f'{env_prefix} \\'] if env_prefix else []
     head = parts[0] if len(parts) == 1 else f'{parts[0]} {parts[1]}'
     if len(parts) <= 2:
         lines.append(head)

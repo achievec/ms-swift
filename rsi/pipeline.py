@@ -16,7 +16,7 @@ import yaml
 
 from rsi.backends import BackendError, swift_launch
 from rsi.eval_report import inside_directory, merge_eval_report
-from rsi.commands import STAGE_COMMAND, apply_more_params, build_argv, format_shell
+from rsi.commands import STAGE_COMMAND, apply_more_params, build_argv, format_shell, stage_shell
 from rsi.llm_infer_spec import chat_request_body, cuda_visible_devices, template_default_system
 from rsi.dataset_validate import MAX_BYTES, validate_file, validate_public_id
 from rsi.flow import ACTION_LABELS, assemble_flow, blocked_message, decision_actions, stage_unlocked
@@ -743,6 +743,16 @@ class Pipeline:
         defaults = self._defaults_for(run, rnd, stage)
         merged = _merge(defaults, user)
         self._lock_model_fields(merged, defaults)
+        if 'more_params' in (user or {}):
+            text = '' if user.get('more_params') is None else str(user.get('more_params'))
+            merged['more_params'] = text
+            try:
+                merged = apply_more_params(merged)
+            except ValueError as exc:
+                raise PipelineError(str(exc)) from exc
+            self._lock_model_fields(merged, defaults)
+            if text.strip():
+                merged['more_params'] = text
         side = {}
         if stage == 'data':
             dataset, report = self.resolve_dataset(merged)
@@ -1069,7 +1079,7 @@ class Pipeline:
         run = self._require_run(run_id)
         rnd = self.store.get_round(run_id, run['round_index'])
         merged, _side = self._prepare(run, rnd, stage, params or {}, strict=False)
-        command = format_shell(build_argv(stage, merged)) if stage in STAGE_COMMAND else ''
+        command = stage_shell(stage, merged) if stage in STAGE_COMMAND else ''
         return {'params': merged, 'command': command}
 
     def stage_log(self, run_id: str, stage: str, round_index=None, offset=None, limit=None) -> dict:
@@ -1182,7 +1192,7 @@ class Pipeline:
                 'ok': True,
                 'status': 'running',
                 'step_id': step_id,
-                'command': format_shell(build_argv(stage, merged)),
+                'command': stage_shell(stage, merged),
                 'result': None,
                 'view': self.view(run_id),
             }
@@ -1193,7 +1203,7 @@ class Pipeline:
             logs = getattr(exc, 'logs', '') or str(exc)
             with self.store.transaction() as conn:
                 self.store.finish_step(conn, step_id, 'failed', {'error': str(exc), 'backend': self.backend.name}, logs,
-                                       format_shell(build_argv(stage, merged)) if stage in STAGE_COMMAND else '')
+                                       stage_shell(stage, merged) if stage in STAGE_COMMAND else '')
             raise PipelineError(str(exc)) from exc
 
         self._commit_success(run_id, rnd['round_index'], stage, step_id, merged, outcome)
@@ -1216,7 +1226,7 @@ class Pipeline:
             logs = getattr(exc, 'logs', '') or str(exc)
             with self.store.transaction() as conn:
                 self.store.finish_step(conn, step_id, 'failed', {'error': str(exc), 'backend': self.backend.name}, logs,
-                                       format_shell(build_argv(stage, params)))
+                                       stage_shell(stage, params))
             return
         self._commit_success(run_id, round_index, stage, step_id, params, outcome)
 
