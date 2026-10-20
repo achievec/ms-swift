@@ -232,6 +232,7 @@ def test_guide_draws_every_branch_before_evaluation(client):
     assert nodes['rl_next']['label'] == '下一轮数据'
     assert nodes['rl_finish']['label'] == '完成'
     assert nodes['promote']['label'] == '晋级'
+    assert nodes['promote']['h'] == nodes['data']['h'] == nodes['sft_eval']['h']
     edges = view['flow']['edges']
 
     def linked(src, dst, label):
@@ -247,6 +248,7 @@ def test_guide_draws_every_branch_before_evaluation(client):
     assert linked('promote', 'data', '下一轮')
     assert all(not edge['live'] for edge in edges if edge['from'] in {'sft_eval', 'rl_eval'})
     boxes = view['flow']['nodes']
+    assert all(item['h'] >= 52 for item in boxes)
     for index, left in enumerate(boxes):
         for right in boxes[index + 1:]:
             apart = (left['x'] + left['w'] <= right['x'] or right['x'] + right['w'] <= left['x']

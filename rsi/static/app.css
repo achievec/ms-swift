@@ -172,12 +172,16 @@ h3 { margin: 16px 0 8px; font-size: 14px; font-weight: 600; color: var(--accent-
   background: #ffffff;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 8px;
+  padding: 7px 8px;
   box-shadow: none;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
 }
-.flow-node b { display: block; font-size: 13px; }
-.flow-node small { display: block; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.flow-node b { display: block; font-size: 13px; line-height: 16px; }
+.flow-node small { display: block; color: var(--muted); font-size: 12px; line-height: 15px; white-space: nowrap; }
 .flow-node.succeeded { background: var(--green-soft); border-color: var(--green-line); }
 .flow-node.ready { background: var(--amber-soft); border-color: var(--amber-line); }
 .flow-node.failed { background: var(--red-soft); border-color: var(--red-line); }
@@ -185,7 +189,7 @@ h3 { margin: 16px 0 8px; font-size: 14px; font-weight: 600; color: var(--accent-
 .flow-node.locked b { color: #4b5563; }
 .flow-node.locked small { color: #9ca3af; }
 .flow-node.minor { border-style: dashed; }
-.flow-node.minor b { font-size: 12px; font-weight: 600; }
+.flow-node.minor b { font-size: 13px; line-height: 16px; font-weight: 600; }
 .flow-node.selected {
   outline: none;
   border-color: var(--accent);

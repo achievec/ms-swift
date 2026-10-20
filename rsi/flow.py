@@ -19,9 +19,9 @@ NODE_H = 52
 TRUNK_Y = 16
 EXIT_Y = 132
 PROMOTE_W = 92
-PROMOTE_H = 40
+PROMOTE_H = NODE_H
 PROMOTE_Y = 236
-CANVAS = {'width': 1004, 'height': 318}
+CANVAS = {'width': 1004, 'height': 332}
 
 
 def _loads(value):
