@@ -91,9 +91,11 @@ class SwiftEval(SwiftPipeline):
     def get_native_task_cfg(self, dataset: List[str], url: str):
         args = self.args
         work_dir = os.path.join(args.eval_output_dir, 'native')
+        # 1.12+ calls the local OpenAI-compatible server OPENAI_API. Older evalscope used SERVICE.
+        eval_type = getattr(EvalType, 'OPENAI_API', None) or EvalType.SERVICE
         return TaskConfig(
             model=args.model_suffix,
-            eval_type=EvalType.SERVICE,
+            eval_type=eval_type,
             api_url=url,
             api_key=args.api_key or 'EMPTY',
             datasets=dataset,
