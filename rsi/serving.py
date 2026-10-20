@@ -10,6 +10,7 @@ import urllib.request
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
 
 def find_free_port() -> int:
@@ -71,6 +72,14 @@ def build_openai_app(model_name: str, api_key: str, scenario: str, checkpoint: s
                 user_text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
                 break
         reply = f'已收到「{user_text}」。当前检查点：{checkpoint}。'
+        if body.get('stream'):
+
+            async def chunks():
+                piece = {'choices': [{'delta': {'content': reply}}]}
+                yield f'data: {json.dumps(piece, ensure_ascii=False)}\n\n'
+                yield 'data: [DONE]\n\n'
+
+            return StreamingResponse(chunks(), media_type='text/event-stream')
         now = int(time.time())
         return {
             'id': f'chatcmpl-mock-{now}',

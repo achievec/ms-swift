@@ -5,6 +5,8 @@ from pathlib import Path
 
 import yaml
 
+from rsi.backends import detect_gpu
+from rsi.llm_infer_spec import llm_infer_layout
 from rsi.model_fetch import hf_dataset_choices, model_source
 from rsi.webui_catalog import eval_datasets_by_backend, load_catalog
 
@@ -362,6 +364,7 @@ def public_schema() -> dict:
         'hardware': preset.get('hardware', {}),
         'base_model_default': 'Qwen/Qwen2.5-7B-Instruct',
         'model_source': model_source(),
+        'llm_infer': llm_infer_layout(len((detect_gpu().get('devices') or []))),
         'catalog': {
             'models': sorted(catalog['models']),
             'model_types': sorted(catalog['model_types']),

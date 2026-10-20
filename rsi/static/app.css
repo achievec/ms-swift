@@ -426,9 +426,45 @@ dialog label input, dialog label textarea { font-weight: 400; color: var(--ink);
   .flow-node.running.selected { box-shadow: inset 0 0 0 2px #6366f1, 0 0 0 3px rgba(245, 158, 11, 0.45); }
   .flow-edge.flowing { stroke-dasharray: none; }
 }
+.infer-form { display: flex; flex-direction: column; gap: 4px; }
+.infer-row { display: flex; gap: 12px; align-items: flex-end; }
+.infer-row > .field,
+.infer-row > .infer-action { flex: 1; min-width: 0; }
+.infer-row > .field.check,
+.infer-row > .infer-action:has(button.ghost) { flex: 0 0 auto; }
+.infer-row.actions > .infer-action { flex: 1; }
+.infer-row.actions button,
+.infer-row .infer-action button.primary { width: 100%; }
+.infer-row .field small { display: block; font-weight: 400; }
+.field input[readonly],
+.field textarea[readonly],
+.field select:disabled,
+.field input:disabled { background: #f3f4f6; color: #4b5563; }
+.slider-line { display: flex; align-items: center; gap: 8px; }
+.slider-line input[type="range"] { flex: 1; padding: 0; box-shadow: none; }
+.slider-line output { min-width: 3.2em; text-align: right; color: #374151; }
+.ghost.icon { padding: 4px 8px; }
+.infer-runtime { border: 1px solid var(--line); border-radius: 8px; background: #fff; margin: 8px 0; }
+.infer-runtime summary { padding: 10px 12px; cursor: pointer; font-weight: 600; }
+.infer-runtime .body { padding: 0 12px 12px; }
+.infer-chat-wrap { margin: 8px 0; }
+.chat-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.infer-chat { min-height: 220px; max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 12px; }
+.prompt-row { align-items: stretch; }
+.prompt-row > .field { flex: 1; }
+.media-tabs { flex: 1; border: 1px solid var(--line); border-radius: 8px; background: #fff; min-width: 0; }
+.media-tabbar { display: flex; gap: 16px; padding: 8px 12px 0; border-bottom: 1px solid var(--line); }
+.media-tabbar button { border: 0; background: transparent; box-shadow: none; border-radius: 0; padding: 6px 2px 8px; color: #6b7280; }
+.media-tabbar button.active { color: #111827; box-shadow: inset 0 -2px 0 #111827; }
+.drop { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 168px; margin: 12px; border: 1px dashed #d1d5db; border-radius: 8px; color: #6b7280; text-align: center; cursor: pointer; }
+.drop input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.drop-copy b { font-size: 22px; color: #9ca3af; }
+.drop-name { margin-top: 8px; color: #111827; }
+
 @media (max-width: 900px) {
   .shell { grid-template-columns: 1fr; }
   aside { border-right: 0; border-bottom: 1px solid var(--line); }
-  .grid, .candidates, .model-grid { grid-template-columns: 1fr; }
+  .grid, .candidates, .model-grid, .infer-row { grid-template-columns: 1fr; }
+  .infer-row { flex-wrap: wrap; }
   .top { flex-direction: column; align-items: flex-start; }
 }

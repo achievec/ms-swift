@@ -17,6 +17,7 @@ import yaml
 from rsi.backends import BackendError, swift_launch
 from rsi.eval_report import inside_directory, merge_eval_report
 from rsi.commands import STAGE_COMMAND, apply_more_params, build_argv, format_shell
+from rsi.llm_infer_spec import chat_request_body, cuda_visible_devices, template_default_system
 from rsi.dataset_validate import MAX_BYTES, validate_file, validate_public_id
 from rsi.flow import ACTION_LABELS, assemble_flow, blocked_message, decision_actions, stage_unlocked
 from rsi.logtail import announce_log, read_log_window, slice_bytes
@@ -568,6 +569,8 @@ class Pipeline:
         if stage == 'serve':
             preset.update(self._serve_targets(run, rnd))
             self._apply_model_meta(preset, run)
+            if not str(preset.get('system') or '').strip():
+                preset['system'] = template_default_system(str(preset.get('template') or ''))
             return preset
         return preset
 
@@ -1351,6 +1354,15 @@ class Pipeline:
         import subprocess
         logical = build_argv('serve', params)
         argv, env = swift_launch(logical)
+        try:
+            visible = cuda_visible_devices(params.get('gpu_id'))
+        except ValueError as exc:
+            raise PipelineError(str(exc)) from exc
+        if visible is not None:
+            if visible == '':
+                env.pop('CUDA_VISIBLE_DEVICES', None)
+            else:
+                env['CUDA_VISIBLE_DEVICES'] = visible
         log_dir = self.stage_dir(run['id'], run['round_index'], 'serve')
         log_path = log_dir / 'deploy.log'
         announce_log(f'[serve {run["id"]}]', log_path)
@@ -1374,27 +1386,59 @@ class Pipeline:
             self.store.finish_step(conn, step_id, 'succeeded', {'stopped': service['id']}, '[rsi] 推理服务已停止。\n', '')
         return {'ok': True, 'view': self.view(run_id)}
 
-    def chat(self, run_id: str, messages: list, temperature=None) -> dict:
+    def serve_log(self, run_id: str) -> dict:
+        """Deploy log for the 运行时 panel. The file wins; otherwise the service row."""
+        run = self._require_run(run_id)
+        service = self.store.latest_service(run_id)
+        path = self.home / 'runs' / run_id / f'round_{int(run["round_index"])}' / 'serve' / 'deploy.log'
+        text = ''
+        owned = self._owned_named_log(run_id, path, 'deploy.log')
+        if owned and owned.is_file():
+            text = owned.read_bytes()[-65536:].decode('utf-8', errors='replace')
+        elif service:
+            text = service.get('logs') or ''
+        return {
+            'log': text,
+            'running': bool(service and service.get('status') == 'running'),
+            'command': (service or {}).get('command') or '',
+        }
+
+    def _owned_named_log(self, run_id: str, candidate: Path, name: str) -> Path | None:
+        root = (self.home / 'runs' / run_id).resolve()
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            return None
+        if resolved.name != name:
+            return None
+        if resolved != root and root not in resolved.parents:
+            return None
+        return resolved
+
+    def _chat_request(self, run_id: str, messages: list, stream: bool, temperature=None, **kwargs):
         self._require_run(run_id)
         service = self.store.latest_service(run_id)
         if not service or service['status'] != 'running':
             raise PipelineError('推理服务未启动')
         if not messages:
             raise PipelineError('messages 不能为空')
-        import urllib.error
         import urllib.request
+        body = chat_request_body(service['served_model_name'], messages, temperature=temperature, stream=stream,
+                                 **kwargs)
         host = loopback(service['host'])
-        url = f"http://{host}:{service['port']}/v1/chat/completions"
-        payload = {'model': service['served_model_name'], 'messages': messages}
-        if temperature is not None:
-            payload['temperature'] = temperature
         request = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode('utf-8'),
+            f"http://{host}:{service['port']}/v1/chat/completions",
+            data=json.dumps(body).encode('utf-8'),
             headers={'Content-Type': 'application/json'},
         )
         if service.get('api_key'):
             request.add_header('Authorization', f"Bearer {service['api_key']}")
+        return request
+
+    def chat(self, run_id: str, messages: list, temperature=None, **kwargs) -> dict:
+        import urllib.error
+        import urllib.request
+        request = self._chat_request(run_id, messages, False, temperature, **kwargs)
         try:
             with urllib.request.urlopen(request, timeout=10) as response:
                 return json.loads(response.read().decode('utf-8'))
@@ -1403,3 +1447,37 @@ class Pipeline:
             raise PipelineError(f'推理服务返回 {exc.code}: {detail}', exc.code if exc.code in {401, 404} else 502) from exc
         except urllib.error.URLError as exc:
             raise PipelineError(f'无法连接推理服务：{exc.reason}', 502) from exc
+
+    def iter_chat_sse(self, run_id: str, messages: list, temperature=None, **kwargs):
+        """Proxy the OpenAI stream. A JSON backend becomes one delta, then [DONE]."""
+        import urllib.error
+        import urllib.request
+        request = self._chat_request(run_id, messages, True, temperature, **kwargs)
+        try:
+            response = urllib.request.urlopen(request, timeout=120)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode('utf-8', errors='replace')
+            raise PipelineError(f'推理服务返回 {exc.code}: {detail}', exc.code if exc.code in {401, 404} else 502) from exc
+        except urllib.error.URLError as exc:
+            raise PipelineError(f'无法连接推理服务：{exc.reason}', 502) from exc
+
+        def generate():
+            try:
+                content_type = response.headers.get('Content-Type', '')
+                if 'text/event-stream' in content_type:
+                    while True:
+                        chunk = response.read(2048)
+                        if not chunk:
+                            break
+                        yield chunk
+                    return
+                payload = json.loads(response.read().decode('utf-8'))
+                choice = ((payload.get('choices') or [{}])[0]) or {}
+                text = ((choice.get('message') or {}).get('content')) or choice.get('text') or ''
+                event = {'choices': [{'delta': {'content': text}}]}
+                yield f'data: {json.dumps(event, ensure_ascii=False)}\n\n'.encode()
+                yield b'data: [DONE]\n\n'
+            finally:
+                response.close()
+
+        return generate()

@@ -25,6 +25,8 @@ INTERNAL_KEYS = {
     'pass_threshold',
     'more_params',
     'checkpoint',
+    'gpu_id',
+    'infer_model_type',
 }
 
 STAGE_COMMAND = {

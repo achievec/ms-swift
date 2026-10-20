@@ -12,6 +12,10 @@ const state = {
   liveBusy: false,
   serveDraft: null,
   serveDraftRun: null,
+  inferLogVisible: false,
+  inferLog: '',
+  mediaTab: 'image',
+  mediaFiles: { image: null, video: null, audio: null },
 };
 
 function evalReportLink(stage, result, roundIndex) {
@@ -577,42 +581,166 @@ function renderAudit() {
 }
 
 function serveFormValues(view) {
-  if (state.serveDraft && state.serveDraftRun === view.run.id) return state.serveDraft;
-  return view.serve_form || {};
+  const base = state.serveDraft && state.serveDraftRun === view.run.id
+    ? { ...state.serveDraft }
+    : { ...(view.serve_form || {}) };
+  const fill = view.serve_fill || {};
+  ['model', 'model_type', 'template', 'adapters'].forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(fill, key)) base[key] = fill[key] == null ? '' : fill[key];
+  });
+  return base;
+}
+
+function inferItemValue(item, values) {
+  const raw = values ? values[item.id] : undefined;
+  if (raw === false || raw === 0) return raw;
+  if (raw !== undefined && raw !== null && raw !== '') return raw;
+  if (item.default !== undefined && item.default !== null) return item.default;
+  return '';
+}
+
+function inferChoices(item, value) {
+  let entries = (item.choices || []).map((choice) => String(choice));
+  if (!entries.length && item.choices_from && state.schema.catalog) {
+    entries = (state.schema.catalog[item.choices_from] || []).map((choice) => String(choice));
+  }
+  const tokens = item.multiselect ? String(value ?? '').split(/[\s,]+/).filter(Boolean) : [String(value ?? '')];
+  const selected = new Set(tokens);
+  selected.forEach((token) => {
+    if (token && !entries.includes(token)) entries.unshift(token);
+  });
+  return { entries, selected };
+}
+
+function inferAction(id) {
+  return {
+    reset: 'reset-infer',
+    load_checkpoint: 'serve',
+    refresh_tasks: 'serve-refresh',
+    show_log: 'serve-log',
+    stop_show_log: 'serve-log-stop',
+    kill_task: 'serve-stop',
+    clear_history: 'clear-chat',
+    submit: 'chat',
+  }[id] || id;
+}
+
+function renderInferControl(item, values, running) {
+  const value = inferItemValue(item, values);
+  const locked = item.locked ? 'disabled' : '';
+  const lockTitle = item.locked ? ' title="由本轮实验决定，不能在这里修改"' : '';
+  const info = item.info ? `<small>${escapeHtml(item.info)}</small>` : '';
+  if (item.widget === 'Button') {
+    const action = inferAction(item.id);
+    let disabled = '';
+    if (item.id === 'load_checkpoint' && !(values.model || values.adapters)) disabled = 'disabled';
+    if (item.id === 'kill_task' && !running) disabled = 'disabled';
+    if (item.id === 'submit' && !running) disabled = 'disabled';
+    const klass = item.primary ? 'primary' : (item.id === 'kill_task' ? 'danger' : 'ghost');
+    return `<div class="infer-action"><button type="button" class="${klass}" data-action="${action}" ${disabled}>${escapeHtml(item.label)}</button></div>`;
+  }
+  if (item.widget === 'Checkbox') {
+    const checked = value === true || value === 'true' ? 'checked' : '';
+    return `<div class="field check" data-key="${item.id}"${lockTitle}><label class="check"><input type="checkbox" data-field="${item.id}" ${checked} ${locked}/> ${escapeHtml(item.label)}</label>${info}</div>`;
+  }
+  if (item.widget === 'Slider') {
+    const min = item.minimum == null ? 0 : item.minimum;
+    const max = item.maximum == null ? 1 : item.maximum;
+    const step = item.step == null ? 'any' : item.step;
+    return `<label class="field infer-slider" data-key="${item.id}"><span>${escapeHtml(item.label)}</span>${info}<div class="slider-line"><input type="range" data-field="${item.id}" min="${min}" max="${max}" step="${step}" value="${escapeHtml(value)}" /><output>${escapeHtml(value)}</output><button type="button" class="ghost icon" data-action="slider-reset" data-reset="${item.id}" title="恢复初始值">↺</button></div></label>`;
+  }
+  if (item.widget === 'Dropdown') {
+    const choice = inferChoices(item, value);
+    if (item.locked) {
+      const current = String(value ?? '');
+      choice.entries = current ? [current] : [];
+      choice.selected = new Set(current ? [current] : []);
+    }
+    const options = choice.entries.map((entry) => {
+      const mark = choice.selected.has(entry) ? 'selected' : '';
+      return `<option value="${escapeHtml(entry)}" ${mark}>${escapeHtml(entry || '（空）')}</option>`;
+    }).join('');
+    const multi = item.multiselect ? 'multiple data-multi size="4"' : '';
+    return `<label class="field" data-key="${item.id}"${lockTitle}><span>${escapeHtml(item.label)}</span>${info}<select data-field="${item.id}" ${multi} ${locked}>${options}</select></label>`;
+  }
+  if (item.id === 'log') {
+    const hidden = state.inferLogVisible ? '' : 'hidden';
+    return `<label class="field infer-log" data-key="log" ${hidden}><span>${escapeHtml(item.label)}</span>${info}<textarea readonly rows="8">${escapeHtml(state.inferLog || '')}</textarea></label>`;
+  }
+  if (item.id === 'running_tasks') {
+    const services = (state.view && state.view.services) || [];
+    const options = services.map((service) => {
+      const mark = service.status === 'running' ? 'selected' : '';
+      const text = `${service.status === 'running' ? '运行中' : '已停止'} ${service.command || service.served_model_name || service.id}`;
+      return `<option value="${escapeHtml(String(service.id))}" ${mark}>${escapeHtml(text)}</option>`;
+    }).join('');
+    return `<label class="field" data-key="running_tasks"><span>${escapeHtml(item.label)}</span>${info}<select>${options || '<option value="">没有部署</option>'}</select></label>`;
+  }
+  const long = Number(item.lines) >= 4;
+  const control = long
+    ? `<textarea data-field="${item.id}" rows="${item.lines}" ${item.locked ? 'readonly' : ''}>${escapeHtml(value)}</textarea>`
+    : `<input type="text" data-field="${item.id}" value="${escapeHtml(value)}" ${item.locked ? 'readonly' : ''}/>`;
+  return `<label class="field" data-key="${item.id}"${lockTitle}><span>${escapeHtml(item.label)}</span>${info}${control}</label>`;
+}
+
+function renderInferRow(row, values, running, fill) {
+  const cells = row.map((item) => {
+    const control = renderInferControl(item, values, running);
+    if (item.id !== 'adapters' || !fill.checkpoint) return control;
+    return `${control}<button type="button" class="ghost" data-action="fill-serve">填入本轮晋级 checkpoint</button>`;
+  }).join('');
+  return `<div class="infer-row n${row.length}">${cells}</div>`;
+}
+
+function renderMediaTabs() {
+  const tabs = ['image', 'video', 'audio'];
+  const labels = { image: 'Image', video: 'Video', audio: 'Audio' };
+  const accept = { image: 'image/*', video: 'video/*', audio: 'audio/*' };
+  const bar = tabs.map((tab) => `<button type="button" data-media-tab="${tab}" class="${state.mediaTab === tab ? 'active' : ''}">${labels[tab]}</button>`).join('');
+  const files = state.mediaFiles || {};
+  const panels = tabs.map((tab) => {
+    const file = files[tab];
+    const name = file ? escapeHtml(file.name) : '';
+    return `<label class="drop" data-drop="${tab}" ${state.mediaTab === tab ? '' : 'hidden'}><input type="file" data-media="${tab}" accept="${accept[tab]}" /><span class="drop-copy"><b>↑</b><br/>Drop ${labels[tab]} Here<br/>- or -<br/>Click to Upload</span><span class="drop-name">${name}</span></label>`;
+  }).join('');
+  return `<div class="media-tabs"><div class="media-tabbar">${bar}</div>${panels}</div>`;
+}
+
+function renderChatbot(label) {
+  const bubbles = state.chat.map((item) => `<div class="bubble ${item.role}">${escapeHtml(item.content)}</div>`).join('');
+  return `<div class="infer-chat-wrap"><span class="chat-label">${escapeHtml(label || 'Chatbot')}</span><div class="infer-chat">${bubbles}</div></div>`;
 }
 
 function renderServe() {
   const view = state.view;
-  const fields = state.schema.fields.serve;
+  const layout = state.schema.llm_infer;
   const values = serveFormValues(view);
   const fill = view.serve_fill || {};
-  const service = view.service;
-  const running = service && service.status === 'running';
-  const canFill = Boolean(fill.checkpoint);
-  const bubbles = state.chat.map((item) => `<div class="bubble ${item.role}">${escapeHtml(item.content)}</div>`).join('');
-  const endpoint = running ? `http://${service.host === '0.0.0.0' ? '127.0.0.1' : service.host}:${service.port}/v1` : '';
-  return `<section class="panel">
-    <h2>推理服务</h2>
-    <p class="muted">基座走 --model，LoRA 走 --adapters。不勾选合并 LoRA 时，服务加载基座加适配器。</p>
-    ${renderGroups(fields, values)}
-    ${fetchNote()}
-    <div class="row-actions">
-      <button type="button" class="primary" data-action="serve" ${values.model || values.adapters ? '' : 'disabled'}>${running ? '重新部署' : '部署推理服务'}</button>
-      ${canFill ? '<button type="button" class="ghost" data-action="fill-serve">填入本轮晋级 checkpoint</button>' : ''}
-      ${refetchButton()}
-      <button type="button" class="danger" data-action="serve-stop" ${running ? '' : 'disabled'}>停止</button>
-    </div>
-    ${running ? `<p>服务中：<code>${escapeHtml(endpoint)}</code> · 模型名 <code>${escapeHtml(service.served_model_name)}</code> · 检查点 <span class="mono">${escapeHtml(service.checkpoint)}</span></p>
-      <pre class="command">curl ${escapeHtml(endpoint)}/chat/completions \\
-  -H 'Content-Type: application/json' \\
-  -d '{"model":"${escapeHtml(service.served_model_name)}","messages":[{"role":"user","content":"你好"}]}'</pre>` : ''}
-    <h3>试一句</h3>
-    <div class="chat-log">${bubbles}</div>
-    <div class="row-actions">
-      <input id="chat-input" type="text" placeholder="输入内容" ${running ? '' : 'disabled'} />
-      <button type="button" class="primary" data-action="chat" ${running ? '' : 'disabled'}>发送</button>
-    </div>
-  </section>`;
+  const running = Boolean(view.service && view.service.status === 'running');
+  if (!layout) {
+    return '<section class="panel infer-form"><p>推理服务布局还没加载。</p></section>';
+  }
+  const chunks = layout.sections.map((section) => {
+    if (section.kind === 'rows') {
+      return (section.rows || []).map((row) => renderInferRow(row, values, running, fill)).join('');
+    }
+    if (section.kind === 'accordion') {
+      const body = (section.rows || []).map((row) => renderInferRow(row, values, running, fill)).join('');
+      return `<details class="infer-runtime"><summary>${escapeHtml(section.label || '运行时')}</summary><div class="body">${body}</div></details>`;
+    }
+    if (section.kind === 'chatbot') {
+      return renderChatbot(section.item && section.item.label);
+    }
+    if (section.kind === 'prompt') {
+      const prompt = section.prompt || { label: '请输入：' };
+      return `<div class="infer-row prompt-row"><label class="field"><span>${escapeHtml(prompt.label)}</span><textarea id="chat-input" rows="4"></textarea></label>${renderMediaTabs()}</div>`;
+    }
+    if (section.kind === 'actions') {
+      return `<div class="infer-row actions">${(section.items || []).map((item) => renderInferControl(item, values, running)).join('')}</div>`;
+    }
+    return '';
+  }).join('');
+  return `<section class="panel infer-form">${chunks}${fetchNote()}</section>`;
 }
 
 function render() {
@@ -730,7 +858,8 @@ async function startServe() {
   state.view = payload.view;
   state.serveDraft = null;
   state.serveDraftRun = null;
-  toast('推理服务已启动');
+  const alerts = (state.schema.llm_infer && state.schema.llm_infer.alerts) || {};
+  toast(alerts.loaded_alert || '模型加载完成');
   render();
 }
 
@@ -741,22 +870,90 @@ async function stopServe() {
   render();
 }
 
+function readDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+async function buildUserContent(text, files) {
+  const parts = [];
+  if (text) parts.push({ type: 'text', text });
+  if (files.image) parts.push({ type: 'image_url', image_url: { url: await readDataUrl(files.image) } });
+  if (files.video) parts.push({ type: 'video_url', video_url: { url: await readDataUrl(files.video) } });
+  if (files.audio) parts.push({ type: 'input_audio', input_audio: { data: await readDataUrl(files.audio) } });
+  if (parts.length === 1 && parts[0].type === 'text') return text;
+  return parts.length ? parts : text;
+}
+
 async function sendChat() {
+  const alerts = (state.schema.llm_infer && state.schema.llm_infer.alerts) || {};
+  const running = state.view.service && state.view.service.status === 'running';
+  if (!running) {
+    toast(alerts.generate_alert || '请先部署模型');
+    return;
+  }
   const input = document.getElementById('chat-input');
   const content = input.value.trim();
-  if (!content) return;
-  state.chat.push({ role: 'user', content });
+  const files = state.mediaFiles || {};
+  if (!content && !files.image && !files.video && !files.audio) return;
+  const params = collectParams();
+  const userContent = await buildUserContent(content, files);
+  const history = state.chat.map((item) => ({ role: item.role, content: item.content }));
+  history.push({ role: 'user', content: userContent });
+  state.chat.push({ role: 'user', content: content || '（多媒体）' });
+  state.chat.push({ role: 'assistant', content: '' });
   input.value = '';
   render();
-  const payload = await api(`/api/runs/${state.view.run.id}/chat`, {
+  const response = await fetch(`/api/runs/${state.view.run.id}/chat`, {
     method: 'POST',
-    body: JSON.stringify({ messages: [{ role: 'user', content }] }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messages: history,
+      stream: true,
+      system: params.system || '',
+      temperature: params.temperature,
+      top_k: params.top_k,
+      top_p: params.top_p,
+      repetition_penalty: params.repetition_penalty,
+      max_new_tokens: params.max_new_tokens,
+      infer_model_type: params.infer_model_type || '',
+    }),
   });
-  const reply = payload.choices && payload.choices[0] && payload.choices[0].message
-    ? payload.choices[0].message.content
-    : JSON.stringify(payload);
-  state.chat.push({ role: 'assistant', content: reply });
-  render();
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.detail || '发送失败');
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const step = await reader.read();
+    if (step.done) break;
+    buffer += decoder.decode(step.value, { stream: true });
+    const pieces = buffer.split('\n\n');
+    buffer = pieces.pop();
+    pieces.forEach((piece) => {
+      const data = piece.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n');
+      if (!data || data === '[DONE]') return;
+      let payload;
+      try {
+        payload = JSON.parse(data);
+      } catch (err) {
+        return;
+      }
+      const choice = (payload.choices || [])[0] || {};
+      const delta = (choice.delta && choice.delta.content) || (choice.message && choice.message.content) || '';
+      if (!delta) return;
+      const last = state.chat[state.chat.length - 1];
+      last.content += delta;
+      const node = document.querySelector('.infer-chat .bubble.assistant:last-child');
+      if (node) node.textContent = last.content;
+    });
+  }
 }
 
 document.addEventListener('click', async (event) => {
@@ -880,6 +1077,63 @@ document.addEventListener('click', async (event) => {
       toast('已填入本轮 checkpoint');
       return;
     }
+    if (target.dataset.action === 'reset-infer') {
+      const layout = state.schema.llm_infer;
+      const current = collectParams();
+      const locked = new Set((layout && layout.locked) || []);
+      const next = { ...current };
+      Object.values((layout && layout.by_id) || {}).forEach((item) => {
+        if (!item || item.widget === 'Button' || locked.has(item.id)) return;
+        next[item.id] = item.default == null ? '' : item.default;
+      });
+      state.serveDraft = next;
+      state.serveDraftRun = state.view.run.id;
+      render();
+      toast('已恢复初始值');
+      return;
+    }
+    if (target.dataset.action === 'slider-reset') {
+      const key = target.dataset.reset;
+      const item = state.schema.llm_infer && state.schema.llm_infer.by_id[key];
+      const input = document.querySelector(`[data-field="${key}"]`);
+      if (input && item) {
+        input.value = item.default;
+        const out = input.parentElement.querySelector('output');
+        if (out) out.textContent = item.default;
+        rememberServeDraft({ target: input });
+      }
+      return;
+    }
+    if (target.dataset.mediaTab) {
+      state.mediaTab = target.dataset.mediaTab;
+      render();
+      return;
+    }
+    if (target.dataset.action === 'clear-chat') {
+      state.chat = [];
+      state.mediaFiles = { image: null, video: null, audio: null };
+      render();
+      return;
+    }
+    if (target.dataset.action === 'serve-refresh') {
+      const round = state.view.round.round_index;
+      state.view = await api(`/api/runs/${state.view.run.id}?round=${round}`);
+      render();
+      toast('已找回部署');
+      return;
+    }
+    if (target.dataset.action === 'serve-log') {
+      const payload = await api(`/api/runs/${state.view.run.id}/serve/log`);
+      state.inferLog = payload.log || '';
+      state.inferLogVisible = true;
+      render();
+      return;
+    }
+    if (target.dataset.action === 'serve-log-stop') {
+      state.inferLogVisible = false;
+      render();
+      return;
+    }
     if (target.dataset.action === 'serve') {
       state.busy = true;
       await startServe();
@@ -916,9 +1170,22 @@ function rememberServeDraft(event) {
   state.serveDraftRun = state.view.run.id;
 }
 
-document.addEventListener('input', rememberServeDraft);
+document.addEventListener('input', (event) => {
+  if (event.target && event.target.type === 'range') {
+    const out = event.target.parentElement && event.target.parentElement.querySelector('output');
+    if (out) out.textContent = event.target.value;
+  }
+  rememberServeDraft(event);
+});
 
 document.addEventListener('change', async (event) => {
+  const media = event.target.dataset && event.target.dataset.media;
+  if (media && event.target.files && event.target.files[0]) {
+    state.mediaFiles = state.mediaFiles || { image: null, video: null, audio: null };
+    state.mediaFiles[media] = event.target.files[0];
+    const name = event.target.parentElement && event.target.parentElement.querySelector('.drop-name');
+    if (name) name.textContent = event.target.files[0].name;
+  }
   rememberServeDraft(event);
   if (event.target.dataset && event.target.dataset.field === 'source') syncSource();
   if (event.target.dataset && event.target.dataset.field === 'eval_backend') {

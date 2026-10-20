@@ -150,23 +150,20 @@ rl_eval:
   custom_eval_config: rsi/examples/itops_eval.jsonl
 
 serve:
-  infer_backend: vllm
+  infer_backend: transformers
   host: 127.0.0.1
   port: 8000
   api_key: ""
   template: qwen2_5
-  torch_dtype: bfloat16
   adapters: ""
   merge_lora: false
   system: ""
-  max_new_tokens: 512
+  max_new_tokens: 2048
   temperature: 0.3
   top_k: 20
   top_p: 0.7
   repetition_penalty: 1.05
   more_params: ""
-  vllm_gpu_memory_utilization: 0.9
-  vllm_max_model_len: 8192
 
 next_round:
   reuse_dataset: true

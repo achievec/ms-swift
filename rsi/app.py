@@ -463,10 +463,27 @@ def create_app(home: Path | None = None) -> FastAPI:
         await read_json(request)
         return pipeline.stop_serve(run_id)
 
+    @app.get('/api/runs/{run_id}/serve/log')
+    def serve_log(run_id: str):
+        return pipeline.serve_log(run_id)
+
     @app.post('/api/runs/{run_id}/chat')
     async def chat(run_id: str, request: Request):
-        body = await read_json(request)
-        return pipeline.chat(run_id, body.get('messages') or [], body.get('temperature'))
+        body = await read_json(request) or {}
+        messages = body.get('messages') or []
+        options = {
+            'temperature': body.get('temperature'),
+            'top_k': body.get('top_k'),
+            'top_p': body.get('top_p'),
+            'repetition_penalty': body.get('repetition_penalty'),
+            'max_new_tokens': body.get('max_new_tokens'),
+            'model': body.get('infer_model_type') or '',
+            'system': body.get('system') or '',
+        }
+        if body.get('stream'):
+            chunks = pipeline.iter_chat_sse(run_id, messages, **options)
+            return StreamingResponse(chunks, media_type='text/event-stream')
+        return pipeline.chat(run_id, messages, **options)
 
     def _workbench_text(body: dict) -> tuple:
         text = body.get('text') or ''
