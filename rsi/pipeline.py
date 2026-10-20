@@ -16,7 +16,15 @@ import yaml
 
 from rsi.backends import BackendError, swift_launch
 from rsi.eval_report import inside_directory, merge_eval_report
-from rsi.commands import STAGE_COMMAND, apply_more_params, build_argv, format_shell, stage_shell
+from rsi.commands import (
+    STAGE_COMMAND,
+    apply_more_params,
+    apply_process_env,
+    build_argv,
+    env_prefix,
+    format_shell,
+    stage_shell,
+)
 from rsi.llm_infer_spec import chat_request_body, cuda_visible_devices, template_default_system
 from rsi.dataset_validate import MAX_BYTES, validate_file, validate_public_id
 from rsi.flow import ACTION_LABELS, assemble_flow, blocked_message, decision_actions, stage_unlocked
@@ -40,6 +48,39 @@ CHECKPOINT_RESET = {
     'promote': [],
     'next_round': [],
 }
+
+
+class _ExportProcs:
+    """In-flight ``swift export`` processes, one per experiment."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._procs = {}
+
+    def track(self, run_id: str, proc) -> None:
+        with self._lock:
+            previous = self._procs.get(run_id)
+            self._procs[run_id] = proc
+        if previous is not None and previous.poll() is None and previous is not proc:
+            previous.terminate()
+
+    def running(self, run_id: str) -> bool:
+        with self._lock:
+            proc = self._procs.get(run_id)
+        return proc is not None and proc.poll() is None
+
+    def stop(self, run_id: str) -> bool:
+        with self._lock:
+            proc = self._procs.pop(run_id, None)
+        if proc is None or proc.poll() is not None:
+            return False
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+            proc.wait(timeout=5)
+        return True
 
 
 class PipelineError(Exception):
@@ -224,6 +265,7 @@ class Pipeline:
         self.fetcher = ModelFetcher(self.home)
         from rsi.serving import ServeManager
         self.serve = ServeManager()
+        self._exports = _ExportProcs()
 
     def stage_dir(self, run_id: str, round_index: int, stage: str) -> Path:
         path = self.home / 'runs' / run_id / f'round_{round_index}' / stage
@@ -691,6 +733,74 @@ class Pipeline:
             'checkpoint': str(path),
         }
 
+    def _export_weights(self, run: dict, rnd: dict) -> tuple:
+        """Latest LoRA or full checkpoint for this round, else a promoted directory."""
+        round_index = (rnd or {}).get('round_index') or (run or {}).get('round_index')
+        for kind in ('rl', 'sft'):
+            row = self.store.active_checkpoint(run['id'], round_index, kind)
+            if row and row.get('path'):
+                return row['path'], kind
+        promo = self.store.latest_promotion(run['id'])
+        path = str((promo or {}).get('promoted_checkpoint') or '').strip()
+        if path:
+            try:
+                if Path(path).expanduser().is_dir():
+                    return path, (promo or {}).get('promoted_kind') or 'ckpt'
+            except OSError:
+                return '', ''
+        return '', ''
+
+    def _export_defaults(self, run: dict, rnd: dict) -> dict:
+        """Locked experiment identity plus the weights this export should start from."""
+        preset = {}
+        self._show_round_model(preset, run, rnd)
+        weights, _kind = self._export_weights(run, rnd)
+        preset['adapters'] = weights
+        preset['checkpoint'] = weights
+        preset['merge_lora'] = False
+        preset['device_map'] = ''
+        preset['quant_bits'] = ''
+        preset['quant_method'] = ''
+        preset['quant_n_samples'] = 256
+        preset['max_length'] = ''
+        preset['dataset'] = ''
+        preset['more_params'] = ''
+        preset['gpu_id'] = '0'
+        if weights:
+            path = Path(weights).expanduser()
+            try:
+                adapter = path.is_dir() and _is_adapter_checkpoint(path)
+            except OSError:
+                adapter = False
+            preset['merge_lora'] = bool(adapter)
+            preset['output_dir'] = str(path.parent / f'{path.name}-merged')
+        else:
+            preset['output_dir'] = str(self.home / 'runs' / run['id'] / f'round_{rnd["round_index"]}' / 'export')
+        return preset
+
+    def _export_argv(self, merged: dict) -> list:
+        """``swift export`` argv. A full checkpoint is ``--model``; a LoRA stays ``--adapters``."""
+        params = dict(merged)
+        weights = str(params.get('adapters') or '').strip()
+        if weights:
+            path = Path(weights).expanduser()
+            try:
+                full = path.is_dir() and (path / 'config.json').is_file() and not (path / 'adapter_config.json').is_file()
+            except OSError:
+                full = False
+            if full:
+                params['model'] = str(path)
+                params['adapters'] = ''
+                params.pop('merge_lora', None)
+        if params.get('merge_lora') not in {True, 'true', 'True', 1, '1'}:
+            params.pop('merge_lora', None)
+        if not params.get('quant_method'):
+            params.pop('quant_method', None)
+            params.pop('quant_bits', None)
+            if str(params.get('quant_n_samples') or '') in {'', '256'}:
+                params.pop('quant_n_samples', None)
+        return build_argv('export', params)
+
     def candidates(self, run: dict, rnd: dict):
         active = self.store.latest_active_steps(run['id'], rnd['round_index'])
         sft = self.store.active_checkpoint(run['id'], rnd['round_index'], 'sft')
@@ -976,6 +1086,27 @@ class Pipeline:
             service = dict(service)
             service['api_key_set'] = True
             service['api_key'] = ''
+        export_fill = self._export_defaults(run, rnd)
+        export_step = active.get('export')
+        saved_export = _loads(export_step.get('params_json')) if export_step else {}
+        export_values = dict(export_fill)
+        for key, value in saved_export.items():
+            if key in {'model', 'model_type', 'template', 'adapters', 'checkpoint'}:
+                continue
+            if value in (None, ''):
+                continue
+            export_values[key] = value
+        for key in ('model', 'model_type', 'template', 'adapters', 'checkpoint'):
+            export_values[key] = export_fill.get(key) if export_fill.get(key) is not None else ''
+        if 'merge_lora' in saved_export:
+            export_values['merge_lora'] = saved_export.get('merge_lora') in {True, 'true', 'True', 1, '1'}
+        export_running = self._exports.running(run_id)
+        export_status = 'running' if export_running else (export_step['status'] if export_step else 'idle')
+        export_job = {
+            'status': export_status,
+            'command': (export_step or {}).get('command') or '',
+            'output_dir': export_values.get('output_dir') or '',
+        }
         steps = []
         for row in self.store.list_steps(run_id):
             item = dict(row)
@@ -1001,6 +1132,17 @@ class Pipeline:
                 'adapters': serve_fill.get('adapters') or '',
                 'checkpoint': serve_fill.get('checkpoint') or '',
             },
+            'export_form': export_values,
+            'export_fill': {
+                'model': export_fill.get('model') or '',
+                'model_type': export_fill.get('model_type') or '',
+                'template': export_fill.get('template') or '',
+                'adapters': export_fill.get('adapters') or '',
+                'checkpoint': export_fill.get('checkpoint') or '',
+                'output_dir': export_fill.get('output_dir') or '',
+                'merge_lora': bool(export_fill.get('merge_lora')),
+            },
+            'export_job': export_job,
             'steps': steps,
             'checkpoints': self.store.list_checkpoints(run_id),
             'service': service,
@@ -1575,3 +1717,180 @@ class Pipeline:
                 response.close()
 
         return generate()
+
+    def _prepare_export(self, run: dict, user: dict, strict: bool) -> dict:
+        rnd = self.store.get_round(run['id'], run['round_index']) or {
+            'round_index': run['round_index'],
+            'base_model': run['base_model'],
+        }
+        user = user or {}
+        typed_more = user.get('more_params') if 'more_params' in user else None
+        defaults = self._export_defaults(run, rnd)
+        merged = _merge(defaults, user)
+        self._lock_model_fields(merged, defaults)
+        if 'adapters' in user:
+            merged['adapters'] = user.get('adapters') or ''
+        if 'merge_lora' in user:
+            merged['merge_lora'] = user.get('merge_lora') in {True, 'true', 'True', 1, '1'}
+        try:
+            merged = apply_more_params(merged)
+        except ValueError as exc:
+            raise PipelineError(str(exc)) from exc
+        self._lock_model_fields(merged, defaults)
+        if 'adapters' in user:
+            merged['adapters'] = user.get('adapters') or ''
+        if 'more_params' in user:
+            text = '' if typed_more is None else str(typed_more)
+            if text.strip():
+                merged['more_params'] = text
+            else:
+                merged.pop('more_params', None)
+        if strict and not str(merged.get('model') or '').strip() and not str(merged.get('adapters') or '').strip():
+            raise PipelineError('还没有可导出的模型')
+        try:
+            cuda_visible_devices(merged.get('gpu_id'))
+        except ValueError as exc:
+            if strict:
+                raise PipelineError(str(exc)) from exc
+        return merged
+
+    def preview_export(self, run_id: str, params: dict) -> dict:
+        run = self._require_run(run_id)
+        merged = self._prepare_export(run, params or {}, strict=False)
+        return {'params': merged, 'command': self.preview_export_command(merged)}
+
+    def _read_export_log(self, run_id: str, round_index: int) -> str:
+        path = self.home / 'runs' / run_id / f'round_{int(round_index)}' / 'export' / 'export.log'
+        owned = self._owned_named_log(run_id, path, 'export.log')
+        if owned and owned.is_file():
+            return owned.read_bytes()[-65536:].decode('utf-8', errors='replace')
+        return ''
+
+    def export_log(self, run_id: str) -> dict:
+        run = self._require_run(run_id)
+        rnd = self.store.get_round(run_id, run['round_index'])
+        step = self.store.latest_active_steps(run_id, run['round_index']).get('export')
+        self._settle_export(run_id, step)
+        step = self.store.latest_active_steps(run_id, run['round_index']).get('export')
+        text = self._read_export_log(run_id, (rnd or run)['round_index'])
+        if not text and step:
+            text = step.get('logs') or ''
+        running = self._exports.running(run_id) or bool(step and step.get('status') == 'running')
+        status = 'running' if running else (step['status'] if step else 'idle')
+        return {
+            'log': text,
+            'running': running,
+            'status': status,
+            'command': (step or {}).get('command') or '',
+        }
+
+    def _settle_export(self, run_id: str, step) -> None:
+        """Mark a finished process if the waiter has not written the step yet."""
+        if not step or step.get('status') != 'running':
+            return
+        if self._exports.running(run_id):
+            return
+        text = self._read_export_log(run_id, step['round_index'])
+        if not text:
+            return
+        status = 'failed'
+        if '模型导出已完成' in text or text.rstrip().endswith('exit 0'):
+            status = 'succeeded'
+        with self.store.transaction() as conn:
+            self.store.finish_step(conn, step['id'], status, {'output_dir': ''}, text, step.get('command') or '')
+
+    def preview_export_command(self, merged: dict) -> str:
+        return format_shell(self._export_argv(merged), env_prefix(merged))
+
+    def start_model_export(self, run_id: str, params: dict) -> dict:
+        run = self._require_run(run_id)
+        if self._exports.running(run_id):
+            raise PipelineError('这个实验已经有一个导出在跑')
+        merged = self._prepare_export(run, params or {}, strict=True)
+        command = self.preview_export_command(merged)
+        argv = self._export_argv(merged)
+        output_dir = str(merged.get('output_dir') or '')
+        log_dir = self.stage_dir(run['id'], run['round_index'], 'export')
+        log_path = log_dir / 'export.log'
+        backend_name = 'mock' if self.backend.name == 'mock' else 'swift'
+        with self.store.transaction() as conn:
+            step_id = self.store.insert_step(conn, run_id, run['round_index'], 'export', merged, backend_name)
+        if backend_name == 'mock':
+            log_path.write_text(f'[rsi] 模型导出已完成。\n{command}\n输出目录：{output_dir}\n', encoding='utf-8')
+            if output_dir:
+                folder = Path(output_dir)
+                folder.mkdir(parents=True, exist_ok=True)
+                (folder / 'export_ok.txt').write_text('mock export\n', encoding='utf-8')
+            text = log_path.read_text(encoding='utf-8')
+            with self.store.transaction() as conn:
+                self.store.finish_step(conn, step_id, 'succeeded', {'output_dir': output_dir, 'mock': True}, text,
+                                       command)
+            return {
+                'ok': True,
+                'status': 'succeeded',
+                'command': command,
+                'output_dir': output_dir,
+                'log': text,
+                'view': self.view(run_id),
+            }
+        announce_log(f'[export {run_id}]', log_path)
+        try:
+            launched, env = swift_launch(argv)
+            apply_process_env(env, merged)
+        except ValueError as exc:
+            with self.store.transaction() as conn:
+                self.store.finish_step(conn, step_id, 'failed', {}, str(exc), command)
+            raise PipelineError(str(exc)) from exc
+        if str(merged.get('quant_method') or '') == 'gptq':
+            env['OMP_NUM_THREADS'] = '14'
+        log_file = log_path.open('w', encoding='utf-8')
+        log_file.write(command + '\n')
+        log_file.write('exec: ' + ' '.join(launched) + '\n')
+        log_file.flush()
+        import subprocess
+        try:
+            process = subprocess.Popen(launched, stdout=log_file, stderr=subprocess.STDOUT, env=env)
+        except OSError as exc:
+            log_file.write(f'\n[rsi] 无法启动导出：{exc}\n')
+            log_file.close()
+            text = log_path.read_text(encoding='utf-8', errors='replace')
+            with self.store.transaction() as conn:
+                self.store.finish_step(conn, step_id, 'failed', {}, text, command)
+            raise PipelineError(f'无法启动导出：{exc}') from exc
+        self._exports.track(run_id, process)
+
+        def _wait():
+            code = process.wait()
+            log_file.write(f'\nexit {code}\n')
+            log_file.flush()
+            log_file.close()
+            text = log_path.read_text(encoding='utf-8', errors='replace')
+            status = 'succeeded' if code == 0 else 'failed'
+            with self.store.transaction() as conn:
+                row = conn.execute('SELECT status FROM steps WHERE id=?', (step_id, )).fetchone()
+                if row and row['status'] == 'running':
+                    self.store.finish_step(conn, step_id, status, {'output_dir': output_dir, 'returncode': code}, text,
+                                           command)
+
+        threading.Thread(target=_wait, daemon=True).start()
+        return {
+            'ok': True,
+            'status': 'running',
+            'command': command,
+            'output_dir': output_dir,
+            'log': self._read_export_log(run_id, run['round_index']),
+            'view': self.view(run_id),
+        }
+
+    def stop_model_export(self, run_id: str) -> dict:
+        run = self._require_run(run_id)
+        step = self.store.latest_active_steps(run_id, run['round_index']).get('export')
+        stopped = self._exports.stop(run_id)
+        if not stopped and (not step or step.get('status') != 'running'):
+            raise PipelineError('没有正在运行的导出')
+        note = '\n[rsi] 导出已停止。\n'
+        text = self._read_export_log(run_id, run['round_index']) + note
+        if step and step.get('status') == 'running':
+            with self.store.transaction() as conn:
+                self.store.finish_step(conn, step['id'], 'failed', {'stopped': True}, text, step.get('command') or '')
+        return {'ok': True, 'view': self.view(run_id)}

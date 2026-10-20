@@ -6,6 +6,7 @@ from pathlib import Path
 import yaml
 
 from rsi.backends import detect_gpu
+from rsi.llm_export_spec import export_layout
 from rsi.llm_infer_spec import llm_infer_layout
 from rsi.webui_stage_spec import stage_layout
 from rsi.model_fetch import hf_dataset_choices, model_source
@@ -381,6 +382,7 @@ def public_schema() -> dict:
         'base_model_default': 'Qwen/Qwen2.5-7B-Instruct',
         'model_source': model_source(),
         'llm_infer': llm_infer_layout(device_count),
+        'llm_export': export_layout(device_count),
         'catalog': {
             'models': sorted(catalog['models']),
             'model_types': sorted(catalog['model_types']),

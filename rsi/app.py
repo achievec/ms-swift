@@ -230,6 +230,27 @@ def create_app(home: Path | None = None) -> FastAPI:
         service = pipeline.store.latest_service(run_id)
         return workbench.probe_service(service)
 
+    @app.post('/api/runs/{run_id}/export/preview')
+    async def preview_model_export(run_id: str, request: Request):
+        body = await read_json(request)
+        params = body.get('params') if isinstance(body, dict) else {}
+        return pipeline.preview_export(run_id, params or {})
+
+    @app.post('/api/runs/{run_id}/export/run')
+    async def run_model_export(run_id: str, request: Request):
+        body = await read_json(request)
+        params = body.get('params') if isinstance(body, dict) else {}
+        return pipeline.start_model_export(run_id, params or {})
+
+    @app.get('/api/runs/{run_id}/export/log')
+    def model_export_log(run_id: str):
+        return pipeline.export_log(run_id)
+
+    @app.post('/api/runs/{run_id}/export/stop')
+    async def stop_model_export(run_id: str, request: Request):
+        await read_json(request)
+        return pipeline.stop_model_export(run_id)
+
     @app.post('/api/runs/{run_id}/export')
     def start_export(run_id: str):
         view = pipeline.view(run_id)

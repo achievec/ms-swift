@@ -258,7 +258,7 @@ SWIFT_UI_LANG=en swift web-ui
 
 ### RSI closed-loop UI
 
-A click-through recursive self-improvement loop lives in [`rsi/`](rsi/README.md). After a passed SFT eval you can run online RL, open the next round of data, or finish. A failed eval can only open the next round. RL eval can finish or open the next round, and does not offer RL again. It reuses ms-swift parameter names and, by default, runs `swift sft` / `eval` / `rlhf` / `deploy` from this checkout on GPU 0. Set `RSI_BACKEND=mock` to walk the loop without a GPU.
+A click-through recursive self-improvement loop lives in [`rsi/`](rsi/README.md). After a passed SFT eval you can run online RL, open the next round of data, or finish. A failed eval can only open the next round. RL eval can finish or open the next round, and does not offer RL again. It reuses ms-swift parameter names and, by default, runs `swift sft` / `eval` / `rlhf` / `deploy` / `export` from this checkout on GPU 0. The 模型导出 tab follows the Web-UI LLM导出 form. Set `RSI_BACKEND=mock` to walk the loop without a GPU.
 
 ```shell
 pip install -r rsi/requirements.txt

@@ -50,6 +50,7 @@ Then:
 5. **晋级**. RL is recommended when its mock accuracy is higher. You can still pick SFT or stay on the base.
 6. **下一轮数据**. Choosing it opens 晋级 first. The promoted checkpoint becomes the next base and the board returns to 数据. Previous rounds stay in the audit.
 7. **推理服务**. The tab uses the same fields, order, and Chinese labels as the SWIFT Web-UI **LLM推理** page (`swift/ui/llm_infer`). `--model`, `--model_type`, `--template`, and `--adapters` are filled from this round and locked. Deploy still starts the RSI service (`swift deploy --model --adapters`). After it is up, the chat box streams to that OpenAI-compatible API. Weights are not loaded in mock mode. The **更多参数** text is stored on that experiment's deploy record. Deploy does not clear it, and opening the experiment again shows the saved text. Another experiment stays empty until it is set there. **运行中部署** lists that experiment's running service as soon as deploy returns; **找回部署** reloads the same list. While that service is running, **日志输出** is on screen and refreshes by itself. The red button is **停止推理** (it stops the deploy). The Web-UI **展示部署状态** / **停止展示** buttons are not on this page.
+8. **模型导出**. The tab sits next to 推理服务 and follows Web-UI **LLM导出** (`swift export`). `--model`, `--model_type`, and `--template` stay on the experiment. `--adapters` is filled from this round's RL checkpoint when there is one, otherwise the SFT checkpoint, and can be edited. **预览命令** shows the command; **开始导出** runs it and the 运行时 log follows the job. Mock mode writes the log without loading weights.
 
 Re-running an earlier stage keeps the old audit row and marks later stages in that round as 已作废.
 
@@ -128,6 +129,8 @@ rsi_home: /opt/meituan/dolphinfs_liubo108/ms-swift/workspace
 在 Linux 上，`./run.sh` 用 `fetch.yaml` 的 `train_python`（`/usr/local/conda/envs/model-train/bin/python`）启动 RSI 本身，并先 `conda activate model-train`。这个文件存在时不会改用 `rsi/.venv`。文件不存在时日志会写明路径，再退回 `.venv`。`RSI_TRAIN_PYTHON` 覆盖解释器。`RSI_CONDA_ENV` 换环境名；设为空字符串则不激活。macOS 仍用 `rsi/.venv`。
 
 SFT、评测和 RL 也不用界面那个精简 `rsi/.venv`。同一个 `train_python` 存在且可执行时，swift 用它启动。当前机器没有这个路径时会跳过，仍用启动界面的那个 Python。`RSI_SWIFT_BIN` 换掉整个启动命令。
+
+「模型导出」在「推理服务」旁边，字段和分组跟 Web-UI「LLM导出」一致。`--model`、`--model_type`、`--template` 仍是新建实验时的值，不能改。`--adapters` 默认填本轮最新的 RL 或 SFT 权重，可以改。点「预览命令」看 `swift export`，点「开始导出」后「运行时」里的日志会跟上。没有单独的「展示导出状态」按钮，日志在任务进行时自动刷新，红色按钮是「停止导出」。
 
 推理服务页和 SWIFT Web-UI 的「LLM推理」是同一套字段、顺序和中文标签（含 `(--参数)` 和说明）。`--model`、`--model_type`、`--template`、`--adapters` 按本轮实验填好并且不能改。部署仍走 RSI 自己的服务管理。起来之后可以在页面里流式对话。「更多参数」写在该实验的部署记录里。点「部署模型」不会清空；再次打开这个实验仍显示上次保存的内容。别的实验没填过就是空的。「运行中部署」在部署返回后列出该实验正在运行的服务；「找回部署」重新加载同一份列表。服务在跑时「日志输出」直接显示并自动刷新。红色按钮是「停止推理」，用来停掉这次部署。页面上没有「展示部署状态」和「停止展示」。
 

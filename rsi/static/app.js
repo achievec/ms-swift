@@ -15,6 +15,11 @@ const state = {
   inferLog: '',
   inferLogTimer: null,
   inferRuntimeOpen: false,
+  exportDraft: null,
+  exportDraftRun: null,
+  exportLog: '',
+  exportLogTimer: null,
+  exportRuntimeOpen: false,
   mediaTab: 'image',
   mediaFiles: { image: null, video: null, audio: null },
 };
@@ -111,6 +116,7 @@ function labelOf(stage) {
   if (found) return found.label;
   if (stage === 'serve') return '推理服务';
   if (stage === 'serve_stop') return '停止推理';
+  if (stage === 'export') return '模型导出';
   if (stage === 'decide') return '选择';
   if (stage === 'finish') return '完成';
   return stage;
@@ -251,6 +257,9 @@ async function openRun(id, round, keepStage) {
   state.view = await api(`/api/runs/${id}${query}`);
   state.serveDraft = null;
   state.serveDraftRun = null;
+  state.exportDraft = null;
+  state.exportDraftRun = null;
+  state.exportLog = '';
   state.round = state.view.round.round_index;
   if (!keepStage) {
     const current = state.view.run.current_stage;
@@ -748,6 +757,14 @@ function runningTaskText(service) {
 }
 
 function inferAction(id) {
+  if (state.tab === 'export') {
+    return {
+      export: 'export-run',
+      export_preview: 'export-preview',
+      refresh_tasks: 'export-refresh',
+      kill_task: 'export-stop',
+    }[id] || id;
+  }
   return {
     reset: 'reset-infer',
     load_checkpoint: 'serve',
@@ -806,14 +823,21 @@ function renderInferControl(item, values, running, fill) {
     const action = inferAction(item.id);
     let disabled = '';
     if (item.id === 'load_checkpoint' && !(values.model || values.adapters)) disabled = 'disabled';
+    if (item.id === 'export' && !(values.model || values.adapters)) disabled = 'disabled';
+    if (item.id === 'export' && running) disabled = 'disabled';
     if (item.id === 'kill_task' && !running) disabled = 'disabled';
     if (item.id === 'submit' && !chatCanSend()) disabled = 'disabled';
     let klass = item.primary ? 'primary' : (item.id === 'kill_task' ? 'danger' : 'ghost');
     if (item.id === 'submit') klass = chatCanSend() ? 'primary' : 'ghost';
-    return `<div class="infer-action"><button type="button" class="${klass}" data-action="${action}" ${disabled}>${escapeHtml(item.label)}</button></div>`;
+    const why = item.id === 'export' && disabled
+      ? (running ? '导出进行中' : '还没有可导出的模型')
+      : '';
+    const tip = why ? ` title="${escapeHtml(why)}"` : '';
+    return `<div class="infer-action"><button type="button" class="${klass}" data-action="${action}" ${disabled}${tip}>${escapeHtml(item.label)}</button></div>`;
   }
   if (item.id === 'log') {
-    return `<div class="log-panel infer-log" data-key="log"><div class="log-head"><div class="log-title"><span>${escapeHtml(item.label)}</span>${info}</div>${logTools()}</div><textarea class="log" readonly rows="18">${escapeHtml(state.inferLog || '')}</textarea></div>`;
+    const logText = state.tab === 'export' ? (state.exportLog || '') : (state.inferLog || '');
+    return `<div class="log-panel infer-log" data-key="log"><div class="log-head"><div class="log-title"><span>${escapeHtml(item.label)}</span>${info}</div>${logTools()}</div><textarea class="log" readonly rows="18">${escapeHtml(logText)}</textarea></div>`;
   }
   const caption = inferCaption(item);
   if (item.widget === 'Checkbox') {
@@ -826,6 +850,15 @@ function renderInferControl(item, values, running, fill) {
     const step = item.step == null ? 'any' : item.step;
     return `<div class="field infer-slider" data-key="${item.id}">${caption}<div class="control slider-head"><input type="number" class="slider-num" data-slider-num="${item.id}" min="${min}" max="${max}" step="${step}" value="${escapeHtml(value)}" /><button type="button" class="ghost icon" data-action="slider-reset" data-reset="${item.id}" title="恢复初始值">↺</button></div><div class="extra"><input type="range" data-field="${item.id}" min="${min}" max="${max}" step="${step}" value="${escapeHtml(value)}" /><div class="slider-ends"><span>${escapeHtml(min)}</span><span>${escapeHtml(max)}</span></div></div></div>`;
   }
+  if (item.id === 'running_tasks' && state.tab === 'export') {
+    const job = (state.view && state.view.export_job) || {};
+    const active = job.status === 'running';
+    const label = active ? `导出进行中 · ${job.output_dir || ''}`.trim() : '';
+    const options = active
+      ? `<option value="export" selected>${escapeHtml(label)}</option>`
+      : '<option value="">没有导出任务</option>';
+    return `<div class="field" data-key="running_tasks">${caption}<div class="control"><select>${options}</select></div><div class="extra"></div></div>`;
+  }
   if (item.id === 'running_tasks') {
     const services = ((state.view && state.view.services) || []).filter((service) => service.status === 'running');
     const current = services[services.length - 1];
@@ -837,8 +870,10 @@ function renderInferControl(item, values, running, fill) {
     return `<div class="field" data-key="running_tasks">${caption}<div class="control"><select>${options || empty}</select></div><div class="extra"></div></div>`;
   }
   if (item.id === 'model' || item.id === 'adapters') {
+    const fillAction = state.tab === 'export' ? 'fill-export' : 'fill-serve';
+    const fillText = state.tab === 'export' ? '填入本轮权重' : '填入本轮晋级 checkpoint';
     const extra = item.id === 'adapters' && fill && fill.checkpoint
-      ? '<button type="button" class="ghost fill-serve" data-action="fill-serve">填入本轮晋级 checkpoint</button>'
+      ? `<button type="button" class="ghost fill-serve" data-action="${fillAction}">${fillText}</button>`
       : '';
     return `<div class="field" data-key="${item.id}"${lockTitle}>${caption}<div class="control">${inferPathControl(item, value)}</div><div class="extra">${extra}</div></div>`;
   }
@@ -884,7 +919,7 @@ function renderBlock(block, values) {
 }
 
 function renderInferRow(row, values, running, fill) {
-  if (row.length === 1 && row[0].id === 'log' && !running) return '';
+  if (row.length === 1 && row[0].id === 'log' && !running && !(state.tab === 'export' && state.exportLog)) return '';
   const fields = [];
   const sides = [];
   row.forEach((item) => {
@@ -952,6 +987,46 @@ function renderServe() {
   return `<section class="panel infer-form">${chunks}${fetchNote()}</section>`;
 }
 
+function exportFormValues(view) {
+  const drafted = state.exportDraft && state.exportDraftRun === view.run.id;
+  const base = drafted ? { ...state.exportDraft } : { ...(view.export_form || {}) };
+  const fill = view.export_fill || {};
+  ['model', 'model_type', 'template'].forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(fill, key)) base[key] = fill[key] == null ? '' : fill[key];
+  });
+  if (!drafted && Object.prototype.hasOwnProperty.call(fill, 'adapters')) {
+    base.adapters = fill.adapters == null ? '' : fill.adapters;
+  }
+  return base;
+}
+
+function renderExport() {
+  const view = state.view;
+  const layout = state.schema.llm_export;
+  const values = exportFormValues(view);
+  const fill = view.export_fill || {};
+  const job = view.export_job || {};
+  const running = job.status === 'running';
+  if (!layout) {
+    return '<section class="panel infer-form"><p>模型导出布局还没加载。</p></section>';
+  }
+  if (running) state.exportRuntimeOpen = true;
+  const chunks = (layout.sections || []).map((section) => {
+    if (section.kind === 'rows') {
+      return (section.rows || []).map((row) => renderInferRow(row, values, running, fill)).join('');
+    }
+    if (section.kind === 'accordion') {
+      const body = (section.rows || []).map((row) => renderInferRow(row, values, running, fill)).join('');
+      const open = state.exportRuntimeOpen ? ' open' : '';
+      return `<details class="infer-runtime" data-runtime="export"${open}><summary>${escapeHtml(section.label || '运行时')}</summary><div class="body">${body}</div></details>`;
+    }
+    return '';
+  }).join('');
+  const reason = running ? '导出进行中' : (!(values.model || values.adapters) ? '还没有可导出的模型' : '');
+  const note = reason ? `<p class="muted run-reason">${escapeHtml(reason)}</p>` : '';
+  return `<section class="panel infer-form export-form">${chunks}${note}<div id="export-command"></div></section>`;
+}
+
 function render() {
   syncLogScrollLock();
   renderRuns();
@@ -966,7 +1041,7 @@ function render() {
   const view = state.view;
   const rounds = (view.rounds || []).map((round) => `
     <button type="button" data-round="${round.round_index}" class="${round.round_index === view.round.round_index ? 'active' : ''}">第 ${round.round_index} 轮${round.promoted_kind ? ' · ' + round.promoted_kind : ''}</button>`).join('');
-  const body = state.tab === 'audit' ? renderAudit() : state.tab === 'serve' ? renderServe() : renderFlow();
+  const body = state.tab === 'audit' ? renderAudit() : state.tab === 'serve' ? renderServe() : state.tab === 'export' ? renderExport() : renderFlow();
   main.innerHTML = `
     <p class="kicker">第 ${view.round.round_index} 轮</p>
     <h1>${escapeHtml(view.run.name)}</h1>
@@ -977,6 +1052,7 @@ function render() {
       <button type="button" data-tab="flow" class="${state.tab === 'flow' ? 'active' : ''}">流程</button>
       <button type="button" data-tab="audit" class="${state.tab === 'audit' ? 'active' : ''}">实验记录</button>
       <button type="button" data-tab="serve" class="${state.tab === 'serve' ? 'active' : ''}">推理服务</button>
+      <button type="button" data-tab="export" class="${state.tab === 'export' ? 'active' : ''}">模型导出</button>
     </div>
     ${body}`;
   syncSource();
@@ -985,6 +1061,11 @@ function render() {
   syncSendButton();
   if (inferDeployRunning()) ensureInferLogPoll();
   else stopInferLogPoll();
+  if (exportJobRunning()) ensureExportLogPoll();
+  else stopExportLogPoll();
+  if (state.tab === 'export' && !state.exportLog && state.view.export_job && state.view.export_job.status && state.view.export_job.status !== 'idle') {
+    refreshExportLog().catch(() => {});
+  }
 }
 
 async function runCurrent() {
@@ -1097,6 +1178,77 @@ function ensureInferLogPoll() {
   state.inferLogTimer = setInterval(() => {
     refreshInferLog().catch(() => {});
   }, 1000);
+}
+
+function stopExportLogPoll() {
+  if (!state.exportLogTimer) return;
+  clearInterval(state.exportLogTimer);
+  state.exportLogTimer = null;
+}
+
+function exportJobRunning() {
+  const view = state.view;
+  if (!view || state.tab !== 'export') return false;
+  return Boolean(view.export_job && view.export_job.status === 'running');
+}
+
+async function refreshExportLog() {
+  if (!state.view || state.tab !== 'export') return;
+  const payload = await api(`/api/runs/${state.view.run.id}/export/log`);
+  const was = state.view.export_job && state.view.export_job.status;
+  state.exportLog = payload.log || '';
+  if (state.view.export_job) state.view.export_job.status = payload.status || state.view.export_job.status;
+  const box = document.querySelector('[data-key="log"] textarea');
+  if (box && box.value !== state.exportLog) {
+    const follow = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    box.value = state.exportLog;
+    if (follow) box.scrollTop = box.scrollHeight;
+  }
+  if (was === 'running' && payload.status && payload.status !== 'running') {
+    stopExportLogPoll();
+    render();
+  }
+}
+
+function ensureExportLogPoll() {
+  if (state.exportLogTimer || !exportJobRunning()) return;
+  refreshExportLog().catch(() => {});
+  state.exportLogTimer = setInterval(() => {
+    refreshExportLog().catch(() => {});
+  }, 1000);
+}
+
+async function previewExport() {
+  const params = collectParams();
+  const payload = await api(`/api/runs/${state.view.run.id}/export/preview`, {
+    method: 'POST',
+    body: JSON.stringify({ params }),
+  });
+  const slot = document.getElementById('export-command');
+  if (slot) slot.innerHTML = outputPanel('命令预览', payload.command || '没有可预览的命令。', 'command');
+}
+
+async function startExport() {
+  const params = collectParams();
+  const payload = await api(`/api/runs/${state.view.run.id}/export/run`, {
+    method: 'POST',
+    body: JSON.stringify({ params }),
+  });
+  state.view = payload.view;
+  state.exportDraft = null;
+  state.exportDraftRun = null;
+  state.exportLog = payload.log || '';
+  state.exportRuntimeOpen = true;
+  toast(payload.status === 'running' ? '导出已开始' : '导出已完成');
+  render();
+}
+
+async function stopExport() {
+  const payload = await api(`/api/runs/${state.view.run.id}/export/stop`, { method: 'POST', body: '{}' });
+  state.view = payload.view;
+  state.exportRuntimeOpen = true;
+  toast('导出已停止');
+  render();
 }
 
 async function startServe() {
@@ -1362,6 +1514,23 @@ document.addEventListener('click', async (event) => {
       render();
       return;
     }
+    if (target.dataset.action === 'fill-export') {
+      const fill = (state.view && state.view.export_fill) || {};
+      const current = collectParams();
+      state.exportDraft = {
+        ...current,
+        model: fill.model || '',
+        model_type: fill.model_type || '',
+        template: fill.template || '',
+        adapters: fill.adapters || '',
+        output_dir: fill.output_dir || current.output_dir || '',
+        merge_lora: Boolean(fill.merge_lora),
+      };
+      state.exportDraftRun = state.view.run.id;
+      render();
+      toast('已填入本轮权重');
+      return;
+    }
     if (target.dataset.action === 'fill-serve') {
       const fill = (state.view && state.view.serve_fill) || {};
       const current = collectParams();
@@ -1397,8 +1566,10 @@ document.addEventListener('click', async (event) => {
       const stageLayout = state.schema.stage_layouts && state.schema.stage_layouts[state.stage];
       const item = state.tab === 'serve'
         ? (state.schema.llm_infer && state.schema.llm_infer.by_id[key])
-        : ((stageLayout && stageLayout.by_id && stageLayout.by_id[key])
-          || (state.schema.llm_infer && state.schema.llm_infer.by_id[key]));
+        : state.tab === 'export'
+          ? (state.schema.llm_export && state.schema.llm_export.by_id[key])
+          : ((stageLayout && stageLayout.by_id && stageLayout.by_id[key])
+            || (state.schema.llm_infer && state.schema.llm_infer.by_id[key]));
       let fallback = item && item.default;
       if (fallback == null && state.schema && state.schema.fields) {
         const field = (state.schema.fields[state.stage] || []).find((row) => row.key === key);
@@ -1440,6 +1611,27 @@ document.addEventListener('click', async (event) => {
       await stopServe();
       return;
     }
+    if (target.dataset.action === 'export-preview') {
+      await previewExport();
+      return;
+    }
+    if (target.dataset.action === 'export-run') {
+      state.busy = true;
+      await startExport();
+      return;
+    }
+    if (target.dataset.action === 'export-stop') {
+      await stopExport();
+      return;
+    }
+    if (target.dataset.action === 'export-refresh') {
+      const round = state.view.round.round_index;
+      state.view = await api(`/api/runs/${state.view.run.id}?round=${round}`);
+      state.exportRuntimeOpen = true;
+      render();
+      toast('已找回导出任务');
+      return;
+    }
     if (target.dataset.action === 'chat') {
       state.busy = true;
       await sendChat();
@@ -1462,13 +1654,19 @@ document.addEventListener('click', (event) => {
 document.addEventListener('toggle', (event) => {
   const node = event.target;
   if (!node || !node.classList || !node.classList.contains('infer-runtime')) return;
-  state.inferRuntimeOpen = Boolean(node.open);
+  if (node.dataset.runtime === 'export') state.exportRuntimeOpen = Boolean(node.open);
+  else state.inferRuntimeOpen = Boolean(node.open);
 }, true);
 
 function rememberServeDraft(event) {
-  if (state.tab !== 'serve' || !state.view) return;
+  if ((state.tab !== 'serve' && state.tab !== 'export') || !state.view) return;
   const field = event.target && event.target.dataset && event.target.dataset.field;
   if (!field || !event.target.closest('#main')) return;
+  if (state.tab === 'export') {
+    state.exportDraft = collectParams();
+    state.exportDraftRun = state.view.run.id;
+    return;
+  }
   state.serveDraft = collectParams();
   state.serveDraftRun = state.view.run.id;
 }

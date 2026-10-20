@@ -688,7 +688,8 @@ dialog label input, dialog label textarea { font-weight: 400; color: var(--ink);
 .infer-runtime summary::before { content: "▶"; margin-right: 8px; color: #2563eb; font-size: 12px; }
 .infer-runtime[open] summary::before { content: "▼"; }
 .infer-runtime .body { padding: 0 12px 12px; display: flex; flex-direction: column; gap: 8px; }
-.infer-form.stage-form { display: flex; flex-direction: column; gap: 8px; }
+.infer-form.stage-form,
+.infer-form.export-form { display: flex; flex-direction: column; gap: 8px; }
 .infer-runtime .infer-runtime { background: #f8fafc; }
 .infer-group > .log-panel { flex: 1; min-width: 0; }
 .infer-log .log-head { margin: 0 0 6px; align-items: flex-start; }

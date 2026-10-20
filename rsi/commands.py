@@ -52,6 +52,7 @@ STAGE_COMMAND = {
     'rl': 'rlhf',
     'rl_eval': 'eval',
     'serve': 'deploy',
+    'export': 'export',
 }
 
 
