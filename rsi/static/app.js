@@ -58,6 +58,27 @@ function escapeHtml(value) {
   }[ch]));
 }
 
+function normalizeBase(value) {
+  let text = String(value == null ? '' : value).trim().replace(/\\/g, '/');
+  while (text.indexOf('//') !== -1) text = text.replace('//', '/');
+  while (text.endsWith('/')) text = text.slice(0, -1);
+  return text;
+}
+
+function sameBase(left, right) {
+  return normalizeBase(left) === normalizeBase(right);
+}
+
+function baseCaption(initial, current) {
+  const first = initial == null ? '' : String(initial);
+  const round = current == null ? '' : String(current);
+  if (sameBase(first, round)) {
+    const shown = normalizeBase(round) ? round : (normalizeBase(first) ? first : '');
+    return `基座 <span class="mono">${escapeHtml(shown)}</span>`;
+  }
+  return `最初基座 <span class="mono">${escapeHtml(first)}</span><br/>本轮基座 <span class="mono">${escapeHtml(round)}</span>`;
+}
+
 function toast(message) {
   const el = document.getElementById('toast');
   el.hidden = false;
@@ -813,7 +834,7 @@ function render() {
     <p class="kicker">第 ${view.round.round_index} 轮</p>
     <h1>${escapeHtml(view.run.name)}</h1>
     <p>${escapeHtml(view.run.scenario)}</p>
-    <p class="muted">最初基座 <span class="mono">${escapeHtml(view.run.base_model)}</span><br/>本轮基座 <span class="mono">${escapeHtml(view.round.base_model)}</span></p>
+    <p class="muted">${baseCaption(view.run.base_model, view.round.base_model)}</p>
     <div class="rounds">${rounds}</div>
     <div class="tabs">
       <button type="button" data-tab="flow" class="${state.tab === 'flow' ? 'active' : ''}">流程</button>

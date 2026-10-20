@@ -1,4 +1,5 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
+import json
 import subprocess
 from pathlib import Path
 
@@ -272,6 +273,64 @@ def test_page_hides_hardware_and_stop_copy():
     assert '递归自改进' not in html
     assert '新建 RSI' not in html
     assert '>RSI<' not in html
+
+
+def _js_function(source, name):
+    marker = f'function {name}('
+    start = source.index(marker)
+    brace = source.index('{', start)
+    depth = 0
+    for index in range(brace, len(source)):
+        char = source[index]
+        if char == '{':
+            depth += 1
+        elif char == '}':
+            depth -= 1
+            if depth == 0:
+                return source[start:index + 1]
+    raise AssertionError(f'{name} is missing its closing brace')
+
+
+def test_header_base_caption_collapses_when_unchanged():
+    page = Path(__file__).resolve().parents[1].joinpath('static', 'app.js').read_text(encoding='utf-8')
+    assert 'baseCaption(view.run.base_model, view.round.base_model)' in page
+    assert '最初基座 <span class="mono">${escapeHtml(view.run.base_model)}' not in page
+    script = '\n'.join(_js_function(page, name) for name in ('escapeHtml', 'normalizeBase', 'sameBase', 'baseCaption'))
+    script += r"""
+const cases = [
+  ['same-id', 'Qwen/Qwen2.5-7B-Instruct', 'Qwen/Qwen2.5-7B-Instruct'],
+  ['slash', 'Qwen/Qwen2.5-7B-Instruct/', 'Qwen//Qwen2.5-7B-Instruct'],
+  ['windows', 'C:\\models\\Qwen', 'C:/models/Qwen'],
+  ['space', '  Qwen/Qwen2.5-7B-Instruct  ', 'Qwen/Qwen2.5-7B-Instruct'],
+  ['empty', '', ''],
+  ['blank', '   ', null],
+  ['escape', 'A<B>&', 'A<B>&'],
+  ['promoted', 'Qwen/Qwen2.5-7B-Instruct', '/data/out/checkpoint-100'],
+  ['suffix', 'Qwen/Qwen2.5-7B-Instruct', '/ckpt/Qwen/Qwen2.5-7B-Instruct'],
+];
+for (const [name, initial, current] of cases) {
+  console.log(JSON.stringify({ name, html: baseCaption(initial, current) }));
+}
+"""
+    completed = subprocess.run(['node', '-e', script], check=True, capture_output=True, text=True)
+    rows = {item['name']: item['html'] for item in map(json.loads, completed.stdout.splitlines())}
+    single = '基座 <span class="mono">Qwen/Qwen2.5-7B-Instruct</span>'
+    assert rows['same-id'] == single
+    assert rows['slash'] == '基座 <span class="mono">Qwen//Qwen2.5-7B-Instruct</span>'
+    assert rows['windows'] == '基座 <span class="mono">C:/models/Qwen</span>'
+    assert rows['space'] == single
+    assert rows['empty'] == '基座 <span class="mono"></span>'
+    assert rows['blank'] == '基座 <span class="mono"></span>'
+    assert rows['escape'] == '基座 <span class="mono">A&lt;B&gt;&amp;</span>'
+    for name in ('same-id', 'slash', 'windows', 'space', 'empty', 'blank', 'escape'):
+        assert '最初基座' not in rows[name]
+        assert '本轮基座' not in rows[name]
+    promoted = rows['promoted']
+    assert promoted.startswith('最初基座 <span class="mono">Qwen/Qwen2.5-7B-Instruct</span><br/>')
+    assert '本轮基座 <span class="mono">/data/out/checkpoint-100</span>' in promoted
+    suffix = rows['suffix']
+    assert '最初基座' in suffix and '本轮基座' in suffix
+    assert '/ckpt/Qwen/Qwen2.5-7B-Instruct' in suffix
 
 
 def test_displayed_times_use_shanghai():
