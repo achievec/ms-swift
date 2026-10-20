@@ -71,7 +71,6 @@ aside {
   border-right: 1px solid var(--line);
   background: #ffffff;
 }
-.aside-note { color: var(--muted); font-size: 13px; }
 .run-card, .ghost, .primary, .danger {
   border-radius: 8px;
   border: 1px solid var(--line);

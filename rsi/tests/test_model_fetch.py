@@ -660,7 +660,11 @@ def test_run_sh_does_not_install_hope():
     assert 'RSI_MODEL_SOURCE=modelscope' in readme
     assert 'RSI_HOPE_TOKEN' in readme
     page = Path(__file__).resolve().parents[1].joinpath('static', 'app.js').read_text(encoding='utf-8')
-    assert '模型来源：' in page
+    html = Path(__file__).resolve().parents[1].joinpath('static', 'index.html').read_text(encoding='utf-8')
+    assert '模型来源：' not in page
+    assert '模型来源' not in html
+    assert '重新拉取' in page
+    assert '同步中，进度见进程日志' in page
 
 
 PASSWORD_PROMPT = 'Warning: Password input may be echoed. mis密码(非jumper密码):'
