@@ -194,6 +194,29 @@ def test_more_params_stay_with_the_experiment(client):
     assert not cleared.json()['view']['serve_form'].get('more_params')
 
 
+def test_running_deploy_is_listed_for_the_runtime_dropdown(client):
+    import socket
+    api = client
+    run_id = _create(api)
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+    served = api.post(f'/api/runs/{run_id}/serve', json={'params': {'port': port}})
+    assert served.status_code == 200, served.text
+    view = served.json()['view']
+    running = [row for row in view['services'] if row['status'] == 'running']
+    assert len(running) == 1
+    assert running[0]['port'] == port
+    assert 'swift deploy' in (running[0]['command'] or '')
+    page = Path(__file__).resolve().parents[1].joinpath('static', 'app.js').read_text(encoding='utf-8')
+    tasks = page.index("if (item.id === 'running_tasks')")
+    dropdown = page.index("if (item.widget === 'Dropdown')")
+    assert 0 <= tasks < dropdown
+    assert 'state.view.services' in page
+    assert "service.status === 'running'" in page
+    assert 'state.inferRuntimeOpen = true' in page
+
+
 def test_finished_sft_deploys_base_plus_lora(client):
     import socket
     api = client

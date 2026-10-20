@@ -604,6 +604,13 @@ function inferChoices(item, value) {
   return { entries, selected };
 }
 
+function runningTaskText(service) {
+  const cmd = String(service.command || '').replace(/\s+/g, ' ').trim();
+  const where = service.port ? `${service.host || '127.0.0.1'}:${service.port}` : '';
+  const bits = ['运行中', service.served_model_name || '', where, cmd];
+  return bits.filter(Boolean).join(' · ');
+}
+
 function inferAction(id) {
   return {
     reset: 'reset-infer',
@@ -641,6 +648,16 @@ function renderInferControl(item, values, running) {
     const step = item.step == null ? 'any' : item.step;
     return `<div class="field infer-slider" data-key="${item.id}"><div class="slider-head"><span>${escapeHtml(item.label)}</span><input type="number" class="slider-num" data-slider-num="${item.id}" min="${min}" max="${max}" step="${step}" value="${escapeHtml(value)}" /><button type="button" class="ghost icon" data-action="slider-reset" data-reset="${item.id}" title="恢复初始值">↺</button></div>${info}<input type="range" data-field="${item.id}" min="${min}" max="${max}" step="${step}" value="${escapeHtml(value)}" /><div class="slider-ends"><span>${escapeHtml(min)}</span><span>${escapeHtml(max)}</span></div></div>`;
   }
+  if (item.id === 'running_tasks') {
+    const services = ((state.view && state.view.services) || []).filter((service) => service.status === 'running');
+    const current = services[services.length - 1];
+    const options = services.map((service) => {
+      const mark = service === current ? 'selected' : '';
+      return `<option value="${escapeHtml(String(service.id))}" ${mark}>${escapeHtml(runningTaskText(service))}</option>`;
+    }).join('');
+    const empty = '<option value="">没有部署</option>';
+    return `<label class="field" data-key="running_tasks"><span>${escapeHtml(item.label)}</span>${info}<select>${options || empty}</select></label>`;
+  }
   if (item.widget === 'Dropdown') {
     const choice = inferChoices(item, value);
     if (item.locked) {
@@ -657,15 +674,6 @@ function renderInferControl(item, values, running) {
   }
   if (item.id === 'log') {
     return `<div class="log-panel infer-log" data-key="log"><div class="log-head"><div class="log-title"><span>${escapeHtml(item.label)}</span>${info}</div>${logTools()}</div><textarea class="log" readonly rows="8">${escapeHtml(state.inferLog || '')}</textarea></div>`;
-  }
-  if (item.id === 'running_tasks') {
-    const services = (state.view && state.view.services) || [];
-    const options = services.map((service) => {
-      const mark = service.status === 'running' ? 'selected' : '';
-      const text = `${service.status === 'running' ? '运行中' : '已停止'} ${service.command || service.served_model_name || service.id}`;
-      return `<option value="${escapeHtml(String(service.id))}" ${mark}>${escapeHtml(text)}</option>`;
-    }).join('');
-    return `<label class="field" data-key="running_tasks"><span>${escapeHtml(item.label)}</span>${info}<select>${options || '<option value="">没有部署</option>'}</select></label>`;
   }
   const long = Number(item.lines) >= 4;
   const control = long
@@ -886,6 +894,7 @@ async function startServe() {
   state.view = payload.view;
   state.serveDraft = null;
   state.serveDraftRun = null;
+  state.inferRuntimeOpen = true;
   const alerts = (state.schema.llm_infer && state.schema.llm_infer.alerts) || {};
   toast(alerts.loaded_alert || '模型加载完成');
   render();
