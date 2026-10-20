@@ -1003,17 +1003,23 @@ def test_describe_startup_reports_presence_only(tmp_path, monkeypatch, capsys, c
     monkeypatch.setattr(entry, 'create_app', lambda: app)
     monkeypatch.setattr(entry, 'mount_swift_ui', lambda _app: True)
     monkeypatch.setattr(entry.uvicorn, 'run', lambda *args, **kwargs: None)
-    kicked = []
-    monkeypatch.setattr(entry, 'kick_hope_login', lambda: kicked.append(True))
+    logins = []
+    monkeypatch.setattr(
+        ModelFetcher, '_ensure_login',
+        lambda self, **kwargs: logins.append(kwargs) or 'ok')
     monkeypatch.setenv('RSI_HOPE_TOKEN', 'super-secret')
-    monkeypatch.delenv('RSI_HOPE_USERNAME', raising=False)
+    monkeypatch.setenv('RSI_HOPE_USERNAME', 'alice')
+    monkeypatch.setenv('RSI_MODEL_SOURCE', 'hope')
     entry.main()
+    time.sleep(0.3)
     captured = capsys.readouterr()
     combined = captured.out + captured.err + caplog.text
-    assert 'RSI 启动 model_source=hope hope_username=no hope_token=yes' in combined
+    assert 'RSI 启动 model_source=hope hope_username=yes hope_token=yes' in combined
     assert 'super-secret' not in combined
     assert 'alice' not in combined
-    assert kicked == [True]
+    assert logins == []
+    assert 'hope 开始 hope login' not in combined
+    assert '大象' not in combined
 
 
 LOGIN_BANNER = (
@@ -1256,6 +1262,44 @@ def test_missing_username_asks_to_set_hope_username(tmp_path, monkeypatch):
     assert calls == []
     assert status.state == '失败'
     assert status.message == 'hope 未登录：请设置 hope_username'
+
+
+def test_startup_does_not_hope_login_download_still_does(tmp_path, hope_env, monkeypatch, capsys, caplog):
+    """Process start never logs in. A missing-model fetch still runs hope login first."""
+    caplog.set_level(logging.INFO, logger='rsi.model_fetch')
+    import rsi.__main__ as entry
+    app = SimpleNamespace(state=SimpleNamespace(pipeline=SimpleNamespace(backend=SimpleNamespace(name='mock'))))
+    monkeypatch.setattr(entry, 'create_app', lambda: app)
+    monkeypatch.setattr(entry, 'mount_swift_ui', lambda _app: True)
+    monkeypatch.setattr(entry.uvicorn, 'run', lambda *args, **kwargs: None)
+    started = []
+    real_ensure = ModelFetcher._ensure_login
+
+    def spy_ensure(self, **kwargs):
+        started.append(kwargs)
+        return 'ok'
+
+    monkeypatch.setattr(ModelFetcher, '_ensure_login', spy_ensure)
+    entry.main()
+    time.sleep(0.3)
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err + caplog.text
+    assert started == []
+    assert 'hope 开始 hope login' not in combined
+    assert '大象' not in combined
+
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(list(argv))
+        if argv[1] == 'login':
+            return Completed(stdout='登录成功')
+        return Completed(stdout='')
+
+    monkeypatch.setattr(ModelFetcher, '_ensure_login', real_ensure)
+    _fetcher(tmp_path, runner).ensure('model', REPO, background=False)
+    assert calls[0] == ['hope', 'login', USER]
+    assert calls[1][1] == 'clone'
 
 
 def test_kick_hope_login_is_nonblocking(tmp_path, hope_env, monkeypatch):

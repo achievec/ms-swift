@@ -892,7 +892,11 @@ def stream_subprocess(argv, cwd: Path, on_chunk) -> int:
 
 
 def kick_hope_login(runner=None) -> None:
-    """Start one non-blocking ``hope login`` when this process serves hope."""
+    """Start one non-blocking ``hope login``. Process start does not call this.
+
+    A model download logs in from ``ModelFetcher._run`` immediately before
+    ``hope clone``. ``./run.sh`` and ``main()`` must not.
+    """
     if model_source() != 'hope' or not hope_username():
         return
     fetcher = ModelFetcher(Path.cwd(), runner=runner)
