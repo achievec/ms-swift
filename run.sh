@@ -311,9 +311,10 @@ cmd_start() {
     exit 1
   done
   ensure_deps
+  # Fresh log each start so /server-log and /api/server-log only show this run.
+  rm -rf "${LOG_FILE}"
   echo "[启动] 正在后台启动 python -m rsi …"
   {
-    echo ""
     echo "===== $(date '+%Y-%m-%d %H:%M:%S') start port=${PORT} ====="
   } >> "${LOG_FILE}"
   cd "${ROOT}"

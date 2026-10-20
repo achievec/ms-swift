@@ -37,7 +37,7 @@ pip install -r rsi/requirements.txt
 ./run.sh
 ```
 
-`./run.sh` with no arguments restarts the UI. `./run.sh start`, `./run.sh stop`, and `./run.sh restart` do what they say. The process id is `rsi/.rsi.pid` and the log is `rsi/.rsi.log`. `python -m rsi` still works if you want the server in the foreground.
+`./run.sh` with no arguments restarts the UI. `./run.sh start`, `./run.sh stop`, and `./run.sh restart` do what they say. The process id is `rsi/.rsi.pid` and the log is `rsi/.rsi.log` (deleted and recreated on each successful `start`). `python -m rsi` still works if you want the server in the foreground.
 
 The server listens on `0.0.0.0:8418`. On this machine open http://127.0.0.1:8418
 
