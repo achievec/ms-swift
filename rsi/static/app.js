@@ -604,6 +604,22 @@ function inferChoices(item, value) {
   return { entries, selected };
 }
 
+function chatCanSend() {
+  const input = document.getElementById('chat-input');
+  const text = input ? input.value.trim() : '';
+  const files = state.mediaFiles || {};
+  return Boolean(text || files.image || files.video || files.audio);
+}
+
+function syncSendButton() {
+  const button = document.querySelector('[data-action="chat"]');
+  if (!button) return;
+  const ready = chatCanSend();
+  button.disabled = !ready;
+  button.classList.toggle('primary', ready);
+  button.classList.toggle('ghost', !ready);
+}
+
 function runningTaskText(service) {
   const cmd = String(service.command || '').replace(/\s+/g, ' ').trim();
   const where = service.port ? `${service.host || '127.0.0.1'}:${service.port}` : '';
@@ -634,8 +650,9 @@ function renderInferControl(item, values, running) {
     let disabled = '';
     if (item.id === 'load_checkpoint' && !(values.model || values.adapters)) disabled = 'disabled';
     if (item.id === 'kill_task' && !running) disabled = 'disabled';
-    if (item.id === 'submit' && !running) disabled = 'disabled';
-    const klass = item.primary ? 'primary' : (item.id === 'kill_task' ? 'danger' : 'ghost');
+    if (item.id === 'submit' && !chatCanSend()) disabled = 'disabled';
+    let klass = item.primary ? 'primary' : (item.id === 'kill_task' ? 'danger' : 'ghost');
+    if (item.id === 'submit') klass = chatCanSend() ? 'primary' : 'ghost';
     return `<div class="infer-action"><button type="button" class="${klass}" data-action="${action}" ${disabled}>${escapeHtml(item.label)}</button></div>`;
   }
   if (item.widget === 'Checkbox') {
@@ -782,6 +799,7 @@ function render() {
   syncSource();
   syncLive();
   syncLogScrollLock();
+  syncSendButton();
   if (state.tab === 'serve' && state.inferLogVisible) ensureInferLogPoll();
   else if (state.tab !== 'serve') stopInferLogPoll();
 }
@@ -995,7 +1013,7 @@ async function sendChat() {
 
 document.addEventListener('click', async (event) => {
   const target = event.target.closest('button');
-  if (!target || state.busy) return;
+  if (!target || target.disabled || state.busy) return;
   try {
     if (target.id === 'new-run') {
       const form = document.getElementById('create-form');
@@ -1230,6 +1248,7 @@ document.addEventListener('input', (event) => {
       return;
     }
   }
+  if (target && target.id === 'chat-input') syncSendButton();
   rememberServeDraft(event);
 });
 
@@ -1240,6 +1259,7 @@ document.addEventListener('change', async (event) => {
     state.mediaFiles[media] = event.target.files[0];
     const name = event.target.parentElement && event.target.parentElement.querySelector('.drop-name');
     if (name) name.textContent = event.target.files[0].name;
+    syncSendButton();
   }
   rememberServeDraft(event);
   if (event.target.dataset && event.target.dataset.field === 'source') syncSource();

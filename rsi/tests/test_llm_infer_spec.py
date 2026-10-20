@@ -1,5 +1,6 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 import json
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -148,3 +149,16 @@ def test_mock_serve_streams_one_delta():
         assert response.text.strip().endswith('data: [DONE]')
         payload = json.loads(response.text.split('data: ', 1)[1].split('\n', 1)[0])
         assert payload['choices'][0]['delta']['content']
+
+
+def test_send_button_tracks_prompt_and_media():
+    root = Path(__file__).resolve().parents[1] / 'static'
+    page = (root / 'app.js').read_text(encoding='utf-8')
+    css = (root / 'app.css').read_text(encoding='utf-8')
+    assert 'function chatCanSend()' in page
+    assert 'function syncSendButton()' in page
+    assert "input.value.trim()" in page
+    assert 'files.image || files.video || files.audio' in page
+    assert "target.id === 'chat-input'" in page
+    assert 'button.disabled = !ready' in page
+    assert '.infer-row.actions button.primary { background: #2563eb;' in css

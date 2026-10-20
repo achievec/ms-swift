@@ -547,6 +547,9 @@ dialog label input, dialog label textarea { font-weight: 400; color: var(--ink);
 .infer-row.actions { gap: 8px; }
 .infer-row.actions .infer-action { flex: 1; display: flex; }
 .infer-row.actions button { width: 100%; min-height: 44px; box-shadow: none; }
+.infer-row.actions button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+.infer-row.actions button.primary:hover:not(:disabled) { background: #1d4ed8; border-color: #1d4ed8; }
+.infer-row.actions button:disabled { opacity: 0.45; cursor: not-allowed; }
 
 @media (max-width: 900px) {
   .shell { grid-template-columns: 1fr; }
