@@ -37,7 +37,7 @@ pip install -r rsi/requirements.txt
 ./run.sh
 ```
 
-`./run.sh` with no arguments restarts the UI. `./run.sh start`, `./run.sh stop`, and `./run.sh restart` do what they say. The process id is `rsi/.rsi.pid` and the log is `rsi/.rsi.log` (deleted and recreated on each successful `start`). `python -m rsi` still works if you want the server in the foreground.
+`./run.sh` with no arguments restarts the UI. `./run.sh start`, `./run.sh stop`, and `./run.sh restart` do what they say. The process id is `rsi/.rsi.pid` and the process log is `rsi/.rsi.log` (deleted and recreated on each successful `start`; it holds startup and hope clone). Each experiment writes its own training and eval log at `RSI_HOME/runs/<run_id>/round_<n>/<stage>/swift.log` (eval uses `eval_output/swift.log` under that stage; deploy uses `serve/deploy.log`). The process log only gets one line pointing at that file. `python -m rsi` still works if you want the server in the foreground.
 
 The server listens on `0.0.0.0:8418`. On this machine open http://127.0.0.1:8418
 
@@ -124,7 +124,9 @@ hope 本身要事先装好（`./run.sh` 不会安装它）。来源是 hope 但�
 pip3 install hope==3.6.6 --no-cache-dir -i https://pypi.sankuai.com/simple
 ```
 
-进程日志是 `rsi/.rsi.log`。纯文本是 `http://<主机>:8418/api/server-log`（没有这个文件时是 404）。自动跟上新日志的页面是 `/server-log`。它先用 SSE `/api/server-log/events`；几秒内没有推送就改为定时拉取 `/api/server-log/stream`。`hope login` 会把命令、目录、退出码和输出写进这份日志。`hope clone` 一开始就写命令和目录，随后把 stdout/stderr 原样追加进同一个文件（不等进程结束，用户名和 token 会抹掉），结束时再写退出码。hope 的标准输入是关闭的，不会停在密码提示上。
+进程日志是 `rsi/.rsi.log`（每次 `./run.sh start` 成功启动前会删掉重建），只放服务启动和 hope 拉取。纯文本是 `http://<主机>:8418/api/server-log`（没有这个文件时是 404）。自动跟上新日志的页面是 `/server-log`。它先用 SSE `/api/server-log/events`；几秒内没有推送就改为定时拉取 `/api/server-log/stream`。`hope login` 会把命令、目录、退出码和输出写进这份日志。`hope clone` 一开始就写命令和目录，随后把 stdout/stderr 原样追加进同一个文件（不等进程结束，用户名和 token 会抹掉），结束时再写退出码。hope 的标准输入是关闭的，不会停在密码提示上。
+
+训练、评测的完整输出按实验分开，不进进程日志。路径是 `runs/<实验 id>/round_<轮次>/<阶段>/swift.log`（评测在该阶段下的 `eval_output/swift.log`，推理是 `serve/deploy.log`）。进程日志里最多一行，例如 `[sft <实验 id>] 实验日志：<上面的路径>`。页面上的阶段日志读的就是这个文件。
 
 `hope --version` 应为 3.6.6。同步是异步的。页面上的拉取状态只看本地文件：目录里出现 `config.json` 后才是「就绪」，在这之前是「同步中，进度见进程日志」。不会调用 `hope list`。训练命令的 `--model` 改为本地路径，并带上 `--model_type` 和 `--template`。子进程会设置 `HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`、`HF_DATASETS_OFFLINE=1`。
 

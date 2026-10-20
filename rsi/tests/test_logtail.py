@@ -175,6 +175,102 @@ def test_eval_log_lives_under_eval_output(client):
     assert body['done'] is False
 
 
+def test_mock_writes_swift_log_under_the_experiment(client, tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    api, home = client
+    created = api.post('/api/runs', json={
+        'name': '实验日志',
+        'scenario': '每次实验的训练日志落在自己的目录',
+        'base_model': 'Qwen/Qwen2.5-7B-Instruct',
+    })
+    assert created.status_code == 200, created.text
+    run_id = created.json()['run']['id']
+    assert api.post(f'/api/runs/{run_id}/stages/data/run', json={'params': {'source': 'bundled'}}).status_code == 200
+    dotted = api.post(f'/api/runs/{run_id}/stages/sft/run', json={'params': {'output_dir': '.'}})
+    assert dotted.status_code == 200, dotted.text
+    assert api.post(f'/api/runs/{run_id}/stages/sft_eval/run', json={'params': {'eval_output_dir': '.'}}).status_code == 200
+    assert api.post(f'/api/runs/{run_id}/stages/rl/run', json={'params': {}}).status_code == 200
+    assert api.post(f'/api/runs/{run_id}/stages/rl_eval/run', json={'params': {}}).status_code == 200
+
+    expected = {
+        'sft': home / 'runs' / run_id / 'round_1' / 'sft' / 'swift.log',
+        'sft_eval': home / 'runs' / run_id / 'round_1' / 'sft_eval' / 'eval_output' / 'swift.log',
+        'rl': home / 'runs' / run_id / 'round_1' / 'rl' / 'swift.log',
+        'rl_eval': home / 'runs' / run_id / 'round_1' / 'rl_eval' / 'eval_output' / 'swift.log',
+    }
+    out = capsys.readouterr().out
+    assert not (tmp_path / 'swift.log').exists()
+    for stage, path in expected.items():
+        assert path.is_file(), stage
+        text = path.read_text(encoding='utf-8')
+        assert 'swift ' in text
+        assert text not in out
+        assert f'实验日志：{path}' in out
+        shown = api.get(f'/api/runs/{run_id}/stages/{stage}/log', params={'offset': 0}).json()
+        assert shown['size'] == path.stat().st_size
+        assert shown['text'].strip()
+        assert 'swift' in shown['text']
+    assert out.count('实验日志：') == 4
+
+
+def test_training_stream_stays_out_of_the_process_log(tmp_path, monkeypatch, capsys):
+    script = tmp_path / 'fake-swift.py'
+    script.write_text(textwrap.dedent("""\
+        #!/usr/bin/env python3
+        import sys
+        from pathlib import Path
+        args = sys.argv[1:]
+        print('TRAIN_STREAM_LINE')
+        print('prog 1\\rprog 2')
+        if '--output_dir' in args:
+            out = Path(args[args.index('--output_dir') + 1])
+            ckpt = out / 'checkpoint-3'
+            ckpt.mkdir(parents=True, exist_ok=True)
+            (ckpt / 'args.json').write_text('{}')
+        raise SystemExit(0)
+    """), encoding='utf-8')
+    script.chmod(0o755)
+    monkeypatch.setenv('RSI_SWIFT_BIN', str(script))
+    monkeypatch.chdir(tmp_path)
+    from rsi.backends import BackendError, MockBackend, MsSwiftBackend
+
+    work = tmp_path / 'runs' / 'abcd1234' / 'round_1' / 'sft'
+    backend = MsSwiftBackend()
+    outcome = backend.execute('sft', {'output_dir': '.', 'model': 'Qwen/Qwen2.5-7B-Instruct'}, {
+        'workdir': str(work),
+        'run_id': 'abcd1234',
+        'round_index': 1,
+    })
+    log_path = work / 'swift.log'
+    raw = log_path.read_text(encoding='utf-8')
+    assert 'TRAIN_STREAM_LINE' in raw
+    assert 'TRAIN_STREAM_LINE' in outcome['logs']
+    assert (work / 'checkpoint-3').is_dir()
+    assert not (tmp_path / 'swift.log').exists()
+    assert not (tmp_path / 'checkpoint-3').exists()
+    out = capsys.readouterr().out
+    assert out.strip() == f'[sft abcd1234] 实验日志：{log_path}'
+    assert 'TRAIN_STREAM_LINE' not in out
+
+    with pytest.raises(BackendError, match='当前工作目录'):
+        MockBackend().execute('sft', {'output_dir': '.'}, {'workdir': '.', 'round_index': 1, 'run_id': 'x'})
+    with pytest.raises(BackendError, match='当前工作目录'):
+        MsSwiftBackend().execute('sft', {'output_dir': '.'}, {'workdir': '', 'round_index': 1})
+    assert not (tmp_path / 'swift.log').exists()
+
+
+def test_run_and_tee_can_skip_the_console(tmp_path, capsys):
+    script = tmp_path / 'quiet.py'
+    script.write_text('print("only-in-file")\n', encoding='utf-8')
+    log_path = tmp_path / 'swift.log'
+    from rsi.logtail import run_and_tee
+    with log_path.open('wb') as handle:
+        code = run_and_tee([sys.executable, str(script)], None, handle, '[sft x]', echo=False)
+    assert code == 0
+    assert b'only-in-file' in log_path.read_bytes()
+    assert capsys.readouterr().out == ''
+
+
 def test_running_styles_and_live_log_hooks():
     root = Path(__file__).resolve().parents[1]
     css = (root / 'static' / 'app.css').read_text(encoding='utf-8')

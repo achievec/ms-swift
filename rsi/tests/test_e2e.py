@@ -248,6 +248,12 @@ def test_swift_backend_subprocess(tmp_path, monkeypatch):
         assert status == 'succeeded', logs
         assert 'SWIFT_OK' in logs
         assert logs
+        stage_log = home / 'runs' / run_id / 'round_1' / 'sft' / 'swift.log'
+        assert stage_log.is_file()
+        assert 'SWIFT_OK' in stage_log.read_text(encoding='utf-8')
+        tailed = api.get(f'/api/runs/{run_id}/stages/sft/log', params={'offset': 0})
+        assert tailed.status_code == 200
+        assert 'SWIFT_OK' in tailed.json()['text']
         checkpoint = view['forms']['sft']['result']['checkpoint']
         assert checkpoint.endswith('checkpoint-7')
         assert view['forms']['sft']['result']['mock'] is False

@@ -183,11 +183,19 @@ def _write_stdout(line: str):
         return
 
 
-def run_and_tee(argv: list, env: dict | None, log_file, prefix: str, interval: float = 1.0) -> int:
-    """Run ``argv``, write combined stdout/stderr to ``log_file``, and echo it.
+def announce_log(prefix: str, log_path: Path):
+    """One process-log line pointing at an experiment log. The stream stays in the file."""
+    _write_stdout(f'{prefix} 实验日志：{log_path}')
+
+
+def run_and_tee(argv: list, env: dict | None, log_file, prefix: str, interval: float = 1.0,
+                echo: bool = True) -> int:
+    """Run ``argv`` and write combined stdout/stderr to ``log_file``.
 
     ``log_file`` must be a binary file. The file keeps raw bytes (including
-    ``\\r`` and ANSI). The console copy is normalized and progress is throttled.
+    ``\\r`` and ANSI). When ``echo`` is true, a normalized copy is also written
+    to the process stdout, with carriage-return progress throttled. Training
+    stages pass ``echo=False`` so the process log is not the experiment log.
     """
     proc = subprocess.Popen(
         argv,
@@ -196,7 +204,7 @@ def run_and_tee(argv: list, env: dict | None, log_file, prefix: str, interval: f
         env=env,
         bufsize=0,
     )
-    tee = ConsoleTee(prefix, interval=interval)
+    tee = ConsoleTee(prefix, interval=interval) if echo else None
     try:
         assert proc.stdout is not None
         while True:
@@ -205,8 +213,10 @@ def run_and_tee(argv: list, env: dict | None, log_file, prefix: str, interval: f
                 break
             log_file.write(chunk)
             log_file.flush()
-            tee.feed(chunk)
-        tee.finish()
+            if tee is not None:
+                tee.feed(chunk)
+        if tee is not None:
+            tee.finish()
     except Exception:
         if proc.poll() is None:
             proc.kill()

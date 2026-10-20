@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from rsi.commands import build_argv, format_shell
-from rsi.logtail import normalize_log, run_and_tee
+from rsi.logtail import announce_log, normalize_log, run_and_tee
 from rsi.model_fetch import apply_runtime_env
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -105,6 +105,43 @@ def _mock_metrics(stage: str, round_index: int) -> dict:
     return {}
 
 
+def resolve_log_dir(context: dict, params: dict) -> Path:
+    """Absolute directory for this stage's swift.log.
+
+    A missing path, ``.``, or any relative path is refused. Training output must
+    not land in the process working directory.
+    """
+    for raw in (context.get('workdir'), params.get('output_dir'), params.get('eval_output_dir')):
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if text in {'', '.'}:
+            continue
+        path = Path(text).expanduser()
+        if path.is_absolute():
+            return path
+    raise BackendError('缺少实验目录，训练日志不会写到当前工作目录')
+
+
+def _absolute_output(raw, fallback: Path) -> Path:
+    text = str(raw or '').strip()
+    if text in {'', '.'}:
+        return fallback
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        return fallback
+    return path
+
+
+def _pin_output_params(stage: str, params: dict, workdir: Path) -> dict:
+    pinned = dict(params)
+    if stage in {'sft', 'rl'}:
+        pinned['output_dir'] = str(_absolute_output(pinned.get('output_dir'), workdir))
+    if stage in {'sft_eval', 'rl_eval'}:
+        pinned['eval_output_dir'] = str(_absolute_output(pinned.get('eval_output_dir'), workdir))
+    return pinned
+
+
 def _write_mock_checkpoint(output_dir: Path, params: dict, stage: str, round_index: int, metrics: dict) -> Path:
     checkpoint = output_dir / 'checkpoint-final'
     checkpoint.mkdir(parents=True, exist_ok=True)
@@ -134,6 +171,8 @@ class MockBackend:
     name = 'mock'
 
     def execute(self, stage: str, params: dict, context: dict) -> dict:
+        log_dir = resolve_log_dir(context, params)
+        params = _pin_output_params(stage, params, log_dir)
         command = format_shell(build_argv(stage, params))
         round_index = int(context.get('round_index') or 1)
         metrics = _mock_metrics(stage, round_index)
@@ -166,12 +205,17 @@ class MockBackend:
                 metrics = dict(metrics)
                 metrics['eval_rows'] = rows
         logs = '\n'.join(lines) + '\n'
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / 'swift.log'
+        log_path.write_text(logs, encoding='utf-8')
+        announce_log(f'[{stage} {context.get("run_id") or "-"}]', log_path)
         return {
             'ok': True,
             'logs': logs,
             'command': command,
             'metrics': metrics,
             'checkpoint': checkpoint,
+            'log_path': str(log_path),
             'mock': True,
         }
 
@@ -182,19 +226,21 @@ class MsSwiftBackend:
     name = 'swift'
 
     def execute(self, stage: str, params: dict, context: dict) -> dict:
+        workdir = resolve_log_dir(context, params)
+        params = _pin_output_params(stage, params, workdir)
         logical = build_argv(stage, params)
         if not logical:
             raise BackendError(f'{stage} 没有对应的 swift 子命令')
         argv, env = swift_launch(logical)
-        workdir = Path(context.get('workdir') or params.get('output_dir') or '.')
         workdir.mkdir(parents=True, exist_ok=True)
         command = format_shell(logical)
         log_path = workdir / 'swift.log'
         prefix = f'[{stage} {context.get("run_id") or "-"}]'
+        announce_log(prefix, log_path)
         with log_path.open('wb') as log_file:
             log_file.write((command + '\nexec: ' + ' '.join(argv) + '\n').encode('utf-8'))
             log_file.flush()
-            returncode = run_and_tee(argv, env, log_file, prefix)
+            returncode = run_and_tee(argv, env, log_file, prefix, echo=False)
         logs = normalize_log(log_path.read_text(encoding='utf-8', errors='replace'))
         if returncode != 0:
             raise BackendError(f'swift 退出码 {returncode}', logs=logs)

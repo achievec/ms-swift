@@ -18,7 +18,7 @@ from rsi.backends import BackendError, swift_launch
 from rsi.commands import STAGE_COMMAND, build_argv, format_shell
 from rsi.dataset_validate import MAX_BYTES, validate_file, validate_public_id
 from rsi.flow import ACTION_LABELS, assemble_flow, blocked_message, decision_actions, stage_unlocked
-from rsi.logtail import read_log_window, slice_bytes
+from rsi.logtail import announce_log, read_log_window, slice_bytes
 from rsi.model_fetch import ModelFetcher, benchmark_dir, dataset_block_message, hf_cloneable, is_repo_id, model_source
 from rsi.schemas import STAGE_META, STAGE_ORDER, presets
 from rsi.webui_catalog import match_model
@@ -164,6 +164,24 @@ class Pipeline:
         path = self.home / 'runs' / run_id / f'round_{round_index}' / stage
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    def stage_log_dir(self, run_id: str, round_index: int, stage: str) -> Path:
+        """Where this stage's swift.log lives. Eval uses ``eval_output`` under the stage."""
+        path = self.stage_dir(run_id, round_index, stage)
+        if stage in {'sft_eval', 'rl_eval'}:
+            path = path / 'eval_output'
+            path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _concrete_output(self, run_id: str, round_index: int, stage: str, raw, eval_output: bool) -> str:
+        """Keep ``.`` and relative output dirs inside the experiment. Absolute paths stay."""
+        fallback = self.stage_log_dir(run_id, round_index, stage) if eval_output else self.stage_dir(
+            run_id, round_index, stage)
+        text = str(raw or '').strip()
+        path = Path(text).expanduser() if text else None
+        if path is None or not path.is_absolute():
+            return str(fallback)
+        return str(path)
 
     def create_run(self, name: str, scenario: str, base_model: str, model_type: str = '', template: str = '') -> dict:
         name = (name or '').strip()
@@ -528,9 +546,9 @@ class Pipeline:
                         raise PipelineError(_format_errors(report))
                 if not merged.get('model'):
                     raise PipelineError('缺少模型路径')
-                if not merged.get('output_dir'):
-                    merged['output_dir'] = str(self.stage_dir(run['id'], rnd['round_index'], stage))
-            elif not dataset:
+            merged['output_dir'] = self._concrete_output(run['id'], rnd['round_index'], stage, merged.get('output_dir'),
+                                                          False)
+            if not dataset:
                 merged['dataset'] = '<dataset>'
             self._rewrite_model(merged, run, side, strict)
             return merged, side
@@ -547,6 +565,8 @@ class Pipeline:
                     merged['custom_eval_config'] = str(path.resolve())
                 elif strict:
                     raise PipelineError(f'自定义评测文件不存在：{custom}')
+            merged['eval_output_dir'] = self._concrete_output(
+                run['id'], rnd['round_index'], stage, merged.get('eval_output_dir'), True)
             if strict and not merged.get('model'):
                 raise PipelineError('缺少待评测的 checkpoint')
             extra = merged.get('extra_eval_args') or {}
@@ -946,15 +966,14 @@ class Pipeline:
             }
 
         if stage in SWIFT_STAGES:
+            log_dir = self.stage_log_dir(run['id'], rnd['round_index'], stage)
             context = {
                 'round_index': rnd['round_index'],
                 'run_id': run['id'],
-                'workdir': params.get('output_dir') or params.get('eval_output_dir'),
+                'workdir': str(log_dir),
                 'eval_rows': side.get('eval_rows'),
                 'scenario': run['scenario'],
             }
-            if context['workdir']:
-                Path(context['workdir']).mkdir(parents=True, exist_ok=True)
             produced = self.backend.execute(stage, params, context)
             result = {
                 'backend': self.backend.name,
@@ -1122,6 +1141,7 @@ class Pipeline:
         argv, env = swift_launch(logical)
         log_dir = self.stage_dir(run['id'], run['round_index'], 'serve')
         log_path = log_dir / 'deploy.log'
+        announce_log(f'[serve {run["id"]}]', log_path)
         log_file = log_path.open('w', encoding='utf-8')
         log_file.write(command + '\n')
         log_file.write('exec: ' + ' '.join(argv) + '\n')
