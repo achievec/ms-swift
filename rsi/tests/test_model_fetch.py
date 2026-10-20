@@ -1014,9 +1014,10 @@ def test_login_wait_is_shared_and_shown_on_the_fetch_bar(tmp_path, hope_env, mon
     release.set()
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
+        kinds = [item[0][1] for item in calls]
         model_done = fetcher.status_of('model', REPO).message != LOGIN_WAITING
         data_done = fetcher.status_of('dataset', 'openai/gsm8k').state == '同步中'
-        if model_done and data_done and not model_fetch._login_inflight:
+        if model_done and data_done and kinds.count('clone') >= 2 and not model_fetch._login_inflight:
             break
         time.sleep(0.05)
     assert [item[0][1] for item in calls].count('login') == 1
