@@ -11,3 +11,7 @@ hope_username: liyuhao03
 # GPU conda env for swift sft / eval / rlhf. Ignored when this file is absent.
 # RSI_TRAIN_PYTHON overrides it. RSI_SWIFT_BIN replaces the whole launcher.
 train_python: /usr/local/conda/envs/model-train/bin/python
+# Runs, swift logs, uploads, and rsi.sqlite. RSI_HOME overrides this.
+# Used when the directory exists, or its parent exists and is writable.
+# Otherwise the app uses rsi/workspace (a Mac without this dolphinfs path).
+rsi_home: /opt/meituan/dolphinfs_liubo108/ms-swift/workspace

@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from rsi import __version__
 from rsi.backends import build_backend, detect_gpu
 from rsi.logtail import read_log_window
+from rsi.model_fetch import resolve_rsi_home
 from rsi.pipeline import Pipeline, PipelineError
 from rsi.schemas import public_schema
 from rsi.store import StoreError
@@ -302,7 +303,8 @@ async def read_json(request: Request) -> dict:
 
 def create_app(home: Path | None = None) -> FastAPI:
     if home is None:
-        home = Path(os.environ.get('RSI_HOME', Path(__file__).resolve().parent / 'workspace'))
+        home = resolve_rsi_home(Path(__file__).resolve().parent / 'workspace')
+        logger.info('RSI_HOME=%s', home)
     home = Path(home)
     pipeline = Pipeline(home, build_backend())
 

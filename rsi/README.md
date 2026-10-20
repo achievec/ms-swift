@@ -53,7 +53,7 @@ Then:
 
 Re-running an earlier stage keeps the old audit row and marks later stages in that round as 已作废.
 
-The default bind is `0.0.0.0:8418`. Override the port with `WEBUI_PORT` or `RSI_PORT`, and the bind address with `WEBUI_SERVER` or `RSI_HOST` (for example `127.0.0.1` to refuse other machines). The header chip **打开 SWIFT Web-UI** goes to `/swift-ui/` on this same process. When Gradio and the swift training stack import, that path is the original Web-UI. Otherwise the page says it cannot be opened. The standalone `swift web-ui` command uses the same default, `0.0.0.0:8418`. `WEBUI_PORT`, `WEBUI_SERVER`, `--server_port`, and `--server_name` still override it. State (SQLite, uploads, checkpoints) lives in `rsi/workspace/`, or in `$RSI_HOME`. Keep `RSI_HOME` on a local writable disk. `model_root` and `data_root` may be on dolphinfs; the audit database must not.
+The default bind is `0.0.0.0:8418`. Override the port with `WEBUI_PORT` or `RSI_PORT`, and the bind address with `WEBUI_SERVER` or `RSI_HOST` (for example `127.0.0.1` to refuse other machines). The header chip **打开 SWIFT Web-UI** goes to `/swift-ui/` on this same process. When Gradio and the swift training stack import, that path is the original Web-UI. Otherwise the page says it cannot be opened. The standalone `swift web-ui` command uses the same default, `0.0.0.0:8418`. `WEBUI_PORT`, `WEBUI_SERVER`, `--server_port`, and `--server_name` still override it. State (SQLite, uploads, checkpoints) lives in `$RSI_HOME` when that is set, otherwise `rsi_home` in `fetch.yaml` when that directory or its parent is writable, otherwise `rsi/workspace`. The GPU config points at `/opt/meituan/dolphinfs_liubo108/ms-swift/workspace`. If SQLite cannot write, the error includes that database path; set `RSI_HOME` to another directory.
 
 ```bash
 pytest rsi/tests -q
@@ -104,6 +104,7 @@ hope 模式下可以不装 modelscope 这个 pip 包：`swift/utils/logger.py` �
 | `RSI_HOPE_USERNAME` / `RSI_HOPE_TOKEN` | 用户名同时用于 `hope login <misid>` 和 `hope clone --username=`。token 只作为 `hope clone` 的 git token（`--token=`），不是平台登录。token 不要写进 yaml |
 | `RSI_FETCH_CONFIG` | 另选一份 yaml，键与 `fetch.yaml` 相同 |
 | `RSI_TRAIN_PYTHON` | 覆盖 `fetch.yaml` 的 `train_python`。`RSI_SWIFT_BIN` 则换掉整个启动命令 |
+| `RSI_HOME` | 覆盖 `fetch.yaml` 的 `rsi_home`。实验库、运行日志、上传都在这里 |
 
 `fetch.yaml` 示例：
 
@@ -113,11 +114,14 @@ hope_username: liyuhao03
 model_root: /opt/meituan/dolphinfs_liubo108/ms-swift/models
 data_root: /opt/meituan/dolphinfs_liubo108/ms-swift/datasets
 train_python: /usr/local/conda/envs/model-train/bin/python
+rsi_home: /opt/meituan/dolphinfs_liubo108/ms-swift/workspace
 ```
 
 仓库里的 `fetch.yaml` 就是这样写的：模型落在 `/opt/meituan/dolphinfs_liubo108/ms-swift/models`，数据集落在 `/opt/meituan/dolphinfs_liubo108/ms-swift/datasets`（目录不存在时会自动创建，需要当前用户有写权限）。也可以改成 `~/models` 这类路径，`~` 会展开成当前用户的家目录。拉取模型时先进入 `model_root`，再执行 `hope clone https://huggingface.co/<org>/<name>`。hope 3.6.6 把文件放在 `<model_root>/huggingface.co/<org>/<name>`（进程日志里的「数据存储在」就是这个目录）。旧布局 `<model_root>/<org>/<name>` 也算就绪。两边都看 `config.json`，页面上的本地路径和训练的 `--model` 用实际有文件的那一个。数据集同样：`<data_root>/huggingface.co/datasets/<org>/<name>` 或 `<data_root>/<org>/<name>`。这些目录里已经有文件时，打开页面或进入阶段不会再执行 `hope clone`。只有点「重新拉取」才会再拉一次。
 
-`RSI_HOME`（默认 `rsi/workspace`，里面是 `rsi.sqlite` 和每次实验的目录）必须放在本机可写磁盘。`model_root` 和 `data_root` 可以在 dolphinfs。不要把 `RSI_HOME` 指到 dolphinfs：共享盘上建不了 SQLite 日志文件时，读实验还能成功，一点「运行本阶段」就会报审计库无法写入。
+实验目录（`rsi.sqlite`、每次运行的日志和检查点、上传文件）默认用 `fetch.yaml` 的 `rsi_home`：`/opt/meituan/dolphinfs_liubo108/ms-swift/workspace`。环境变量 `RSI_HOME` 优先。这个目录不存在、并且上一级也不存在或不可写时（Mac 上没有 dolphinfs），改用仓库里的 `rsi/workspace`，不会去创建 `/opt/meituan/...`。审计库写失败时，接口返回的中文错误里带数据库绝对路径，这时把 `RSI_HOME` 指到别的可写目录即可。
+
+内置训练集是仓库里的 `rsi/examples/itops_mix.jsonl`（6 条 IT 工单）。训练命令里的绝对路径是当前机器上这份检出的路径，不是另一台电脑的家目录。例如 GPU 上会写成 `/home/hadoop-sailorqa-ai/ms-swift/rsi/examples/itops_mix.jsonl`，文件就在该仓库的 `rsi/examples/` 下。
 
 SFT、评测和 RL 不用界面那个精简 `rsi/.venv`。`fetch.yaml` 的 `train_python` 指向 GPU 上的 conda 环境 `/usr/local/conda/envs/model-train/bin/python`。这个文件存在且可执行时，swift 用它启动。当前机器没有这个路径时会跳过，仍用启动界面的那个 Python。`RSI_TRAIN_PYTHON` 覆盖配置。`RSI_SWIFT_BIN` 换掉整个启动命令。
 

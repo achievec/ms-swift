@@ -80,7 +80,7 @@ PUBLIC_DATASETS = [
 BUNDLED = [
     {
         'id': 'itops_mix',
-        'label': '内置示例：IT 运维工单（messages + solution）'
+        'label': '内置示例：IT 运维工单（rsi/examples/itops_mix.jsonl）'
     },
 ]
 

@@ -83,16 +83,81 @@ def swift_launch(argv: list) -> tuple:
     return command, env
 
 
-def find_checkpoint(output_dir: Path):
+_VERSION_DIR = re.compile(r'^v(\d+)-(\d{8}-\d{6})$')
+_LAST_CHECKPOINT = re.compile(r'last_model_checkpoint:\s*(\S+)')
+
+
+def _checkpoint_step(path: Path) -> int:
+    match = re.search(r'(\d+)$', path.name)
+    return int(match.group(1)) if match else -1
+
+
+def _version_sort_key(name: str):
+    match = _VERSION_DIR.match(name)
+    if match:
+        return (1, int(match.group(1)), match.group(2))
+    return (0, 0, name)
+
+
+def _checkpoints_under(output_dir: Path):
+    """checkpoint-* in output_dir and in Swift version folders such as v1-20261020-122840."""
     if not output_dir.is_dir():
+        return
+    for path in output_dir.glob('checkpoint-*'):
+        if path.is_dir():
+            yield path
+    try:
+        children = list(output_dir.iterdir())
+    except OSError:
+        return
+    for child in children:
+        if not child.is_dir() or not re.match(r'^v\d+-', child.name):
+            continue
+        for path in child.glob('checkpoint-*'):
+            if path.is_dir():
+                yield path
+
+
+def _checkpoint_from_log(logs: str, output_dir: Path):
+    found = _LAST_CHECKPOINT.findall(logs or '')
+    if not found:
         return None
-    candidates = [path for path in output_dir.glob('checkpoint-*') if path.is_dir()]
+    raw = found[-1].strip().strip('\'"')
+    if raw in {'', 'None'}:
+        return None
+    path = Path(raw)
+    try:
+        if path.exists() or path.is_symlink():
+            path = path.resolve()
+    except OSError:
+        return None
+    if not path.is_dir():
+        return None
+    try:
+        path.resolve().relative_to(output_dir.resolve())
+    except (OSError, ValueError):
+        return None
+    return path
+
+
+def find_checkpoint(output_dir: Path, logs: str = ''):
+    """Latest checkpoint under output_dir, including ``v<n>-<timestamp>/checkpoint-*``.
+
+    ``last_model_checkpoint`` in the swift log wins when that directory exists
+    inside output_dir. Otherwise the highest step in the newest version folder.
+    """
+    output_dir = Path(output_dir)
+    logged = _checkpoint_from_log(logs, output_dir)
+    if logged is not None:
+        return logged
+    candidates = list(_checkpoints_under(output_dir))
     if not candidates:
         return None
 
     def sort_key(path: Path):
-        match = re.search(r'(\d+)$', path.name)
-        return int(match.group(1)) if match else -1
+        parent = path.parent
+        version = _version_sort_key(parent.name) if parent != output_dir else (0, 0, '')
+        return (version[0], version[1], version[2], _checkpoint_step(path))
 
     return sorted(candidates, key=sort_key)[-1]
 
@@ -259,9 +324,9 @@ class MsSwiftBackend:
         metrics = parse_metrics(logs)
         checkpoint = None
         if stage in {'sft', 'rl'}:
-            found = find_checkpoint(Path(params['output_dir']))
+            found = find_checkpoint(Path(params['output_dir']), logs)
             if found is None:
-                raise BackendError('swift 已结束，但 output_dir 里没有 checkpoint-*', logs=logs)
+                raise BackendError('swift 已结束，但 output_dir 里没有 checkpoint-*（也查了 v*-* 版本目录）', logs=logs)
             checkpoint = str(found)
         if stage in {'sft_eval', 'rl_eval'} and context.get('eval_rows') is not None:
             metrics = dict(metrics)

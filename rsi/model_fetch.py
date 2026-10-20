@@ -111,6 +111,49 @@ def _root(env_name: str, file_key: str, home: Path, folder: str) -> Path:
     return Path(home) / folder
 
 
+def _workspace_writable(path: Path) -> bool:
+    """True when ``path`` is a writable directory, or its parent exists and we can create it.
+
+    A missing parent is not created. That keeps a Mac from making
+    ``/opt/meituan/...`` just because fetch.yaml names it.
+    """
+    try:
+        if path.is_dir():
+            target = path
+        elif path.parent.is_dir():
+            path.mkdir(exist_ok=True)
+            target = path
+        else:
+            return False
+        probe = target / '.rsi-write-probe'
+        probe.write_text('ok', encoding='utf-8')
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def resolve_rsi_home(fallback: Path | None = None) -> Path:
+    """Where runs, logs, uploads, and rsi.sqlite live.
+
+    ``RSI_HOME`` wins. Otherwise ``rsi_home`` in fetch.yaml, but only when that
+    path already exists or its parent does and is writable. Otherwise ``fallback``
+    (``rsi/workspace``).
+    """
+    if fallback is None:
+        fallback = Path(__file__).resolve().parent / 'workspace'
+    env = os.environ.get('RSI_HOME', '').strip()
+    if env:
+        return _expand_path(env)
+    raw = str(_file_settings().get('rsi_home') or '').strip()
+    if not raw:
+        return fallback
+    path = _expand_path(raw)
+    if _workspace_writable(path):
+        return path
+    return fallback
+
+
 def configured_train_python() -> str:
     """Executable from fetch.yaml ``train_python``, or '' when unset or not on disk.
 

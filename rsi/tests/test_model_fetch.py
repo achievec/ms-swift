@@ -436,6 +436,7 @@ def test_bundled_fetch_yaml_defaults_to_hope(monkeypatch):
     assert 'hope_username: liyuhao03' in text
     assert 'model_root: /opt/meituan/dolphinfs_liubo108/ms-swift/models' in text
     assert 'data_root: /opt/meituan/dolphinfs_liubo108/ms-swift/datasets' in text
+    assert 'rsi_home: /opt/meituan/dolphinfs_liubo108/ms-swift/workspace' in text
     assert 'hope_token' not in text
     assert model_source() == 'hope'
     startup = describe_startup()

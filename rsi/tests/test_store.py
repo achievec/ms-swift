@@ -61,7 +61,8 @@ def test_operational_error_names_the_database(tmp_path, monkeypatch):
     assert '审计库无法写入' in text
     assert '目录不可写' in text
     assert '磁盘满' in text
-    assert '不要把 RSI_HOME 放在 dolphinfs' in text
+    assert '可设置 RSI_HOME' in text
+    assert 'dolphinfs' in text
     assert 'unable to open database file' in text
 
 

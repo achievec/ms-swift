@@ -28,8 +28,8 @@ def db_error_message(db_path: Path, exc: BaseException) -> str:
     reason = str(exc).strip() or 'unable to open database file'
     return (
         f'审计库无法写入：{path}。'
-        '目录不可写，或磁盘满。不要把 RSI_HOME 放在 dolphinfs，'
-        '审计库和实验目录请放在本机磁盘；模型目录和数据目录可以在 dolphinfs。'
+        '目录不可写，或磁盘满。可设置 RSI_HOME 改到别的目录；'
+        '模型目录和数据目录可以留在 dolphinfs。'
         f'（{reason}）'
     )
 
