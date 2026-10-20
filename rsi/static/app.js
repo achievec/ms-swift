@@ -92,6 +92,15 @@ function toast(message) {
   toast._timer = setTimeout(() => { el.hidden = true; }, 4200);
 }
 
+function setBusy(on) {
+  state.busy = Boolean(on);
+  document.body.classList.toggle('is-busy', state.busy);
+}
+
+function tipAttr(text) {
+  return text ? ` title="${escapeHtml(text)}"` : '';
+}
+
 async function api(url, options = {}) {
   const opts = { ...options };
   if (typeof opts.body === 'string') {
@@ -479,21 +488,31 @@ function renderDatasetSettings(fields, values) {
 
 function renderPromote(values) {
   const candidates = state.view.candidates || [];
-  const selected = values.choice || state.view.recommendation;
+  let selected = values.choice || state.view.recommendation;
+  const selectedRow = candidates.find((cand) => cand.kind === selected);
+  if (!selectedRow || !selectedRow.path) {
+    const fallback = candidates.find((cand) => cand.path);
+    selected = fallback ? fallback.kind : '';
+  }
   const cards = candidates.map((cand) => {
     const disabled = cand.path ? '' : 'disabled';
     const checked = selected === cand.kind ? 'checked' : '';
     const best = cand.kind === state.view.recommendation ? 'best' : '';
     const score = cand.score === null || cand.score === undefined ? '—' : cand.score;
-    return `<label class="candidate ${best}">
-      <input type="radio" name="choice" data-field="choice" value="${cand.kind}" ${checked} ${disabled}/>
+    const tip = cand.path ? '' : ' title="还没有检查点，不能选"';
+    return `<label class="candidate ${best}"${tip}>
+      <input type="radio" name="choice" data-field="choice" value="${cand.kind}" ${checked} ${disabled}${tip}/>
       <b>${escapeHtml(cand.label)}</b>
       ${cand.kind === state.view.recommendation ? '<span class="badge succeeded">建议</span>' : ''}
       <div class="score">${escapeHtml(score)}</div>
       <small class="mono">${escapeHtml(cand.path || '尚无检查点')}</small>
     </label>`;
   }).join('');
-  return `<div class="candidates">${cards}</div>`;
+  const missing = candidates.filter((cand) => !cand.path).map((cand) => cand.label);
+  const hint = missing.length
+    ? `<p class="muted run-reason">${escapeHtml(missing.join('、'))} 还没有检查点，${missing.length > 1 ? '这些选项不能选。' : '这个选项不能选。'}</p>`
+    : '';
+  return `<div class="candidates">${cards}</div>${hint}`;
 }
 
 function logPanel(text, liveAttrs, title) {
@@ -526,7 +545,10 @@ function renderStage(stage) {
   }[form.status] || '运行本阶段';
   const values = form.values || {};
   const promote = stage === 'promote' ? renderPromote(values) : '';
-  const validate = stage === 'data' ? '<button type="button" class="ghost" data-action="validate">校验格式</button>' : '';
+  const viewTip = tipAttr(view.mutable ? '' : '历史轮次只能查看');
+  const validate = stage === 'data'
+    ? `<button type="button" class="ghost" data-action="validate"${viewTip} ${view.mutable ? '' : 'disabled'}>校验格式</button>`
+    : '';
   const reportLink = form.result ? evalReportLink(stage, form.result) : '';
   const result = form.result ? `${scoreHeadline(form.result.metrics)}${scoreTable(form.result.metrics)}${reportLink ? `<p class="row-actions">${reportLink}</p>` : ''}${outputPanel('结果', JSON.stringify(visibleResult(form.result), null, 2))}` : '';
   const live = form.status === 'running';
@@ -553,11 +575,11 @@ function renderStage(stage) {
       </details>`}
       ${fetchNote()}
       <div class="row-actions">
-        <button type="button" class="primary" data-action="run" ${mutable ? '' : 'disabled'}>${buttonLabel}</button>
+        <button type="button" class="primary" data-action="run"${tipAttr(mutable ? '' : blockReason)} ${mutable ? '' : 'disabled'}>${buttonLabel}</button>
         ${refetchButton()}
         ${validate}
-        <button type="button" class="ghost" data-action="preview" ${view.mutable ? '' : 'disabled'}>预览命令</button>
-        <button type="button" class="ghost" data-action="preset" ${view.mutable ? '' : 'disabled'}>恢复预设</button>
+        <button type="button" class="ghost" data-action="preview"${viewTip} ${view.mutable ? '' : 'disabled'}>预览命令</button>
+        <button type="button" class="ghost" data-action="preset"${viewTip} ${view.mutable ? '' : 'disabled'}>恢复预设</button>
       </div>
       ${blockReason ? `<p class="muted run-reason">${escapeHtml(blockReason)}</p>` : ''}
       <div id="live-command"></div>
@@ -592,6 +614,13 @@ function flowEdgeGeometry(edge, from, to) {
   const x1 = from.x + from.w;
   const x2 = to.x;
   return { d: `M ${x1} ${y} L ${x2} ${y}`, x: (x1 + x2) / 2, y: y - 8, anchor: 'middle' };
+}
+
+function flowNodeTitle(node) {
+  if (node.status === 'locked') return '未解锁';
+  if (node.status === 'failed') return '这一步只展示结果';
+  if (node.status === 'running') return '运行中';
+  return '当前不能点开';
 }
 
 function flowNodeSelected(node) {
@@ -630,7 +659,8 @@ function renderGraph() {
     const selected = flowNodeSelected(node) ? 'selected' : '';
     const minor = node.minor ? 'minor' : '';
     const busy = node.status === 'running' ? ' aria-busy="true"' : '';
-    return `<button type="button" class="flow-node ${node.status} ${selected} ${minor}" data-stage="${node.id}" ${disabled}${busy} style="left:${node.x}px;top:${node.y}px;width:${node.w}px;height:${node.h}px"><b>${escapeHtml(node.label)}</b><small>${caption}</small></button>`;
+    const tip = node.clickable ? '' : tipAttr(flowNodeTitle(node));
+    return `<button type="button" class="flow-node ${node.status} ${selected} ${minor}" data-stage="${node.id}"${tip} ${disabled}${busy} style="left:${node.x}px;top:${node.y}px;width:${node.w}px;height:${node.h}px"><b>${escapeHtml(node.label)}</b><small>${caption}</small></button>`;
   }).join('');
   const actions = (flow.actions || []).map((action) => `<button type="button" class="${action.danger ? 'danger' : 'primary'}" data-decision="${action.id}">${escapeHtml(action.label)}</button>`).join('');
   const actionBar = actions
@@ -660,7 +690,7 @@ function renderTerminal() {
   };
   return `<section class="panel"><h2>${completed ? '实验已完成' : '实验已结束'}</h2><p>本轮到此结束。已有检查点仍留在记录里。</p>
     <div class="infer-form">${renderLockedModelRow([], values)}</div>
-    <div class="row-actions"><button type="button" class="primary" data-action="open-serve">去部署推理服务</button></div>
+    <div class="row-actions"><button type="button" class="primary" data-action="open-serve">去部署推理服务</button><button type="button" class="ghost" data-action="open-export">去模型导出</button></div>
   </section>`;
 }
 
@@ -822,16 +852,29 @@ function renderInferControl(item, values, running, fill) {
   if (item.widget === 'Button') {
     const action = inferAction(item.id);
     let disabled = '';
-    if (item.id === 'load_checkpoint' && !(values.model || values.adapters)) disabled = 'disabled';
-    if (item.id === 'export' && !(values.model || values.adapters)) disabled = 'disabled';
-    if (item.id === 'export' && running) disabled = 'disabled';
-    if (item.id === 'kill_task' && !running) disabled = 'disabled';
-    if (item.id === 'submit' && !chatCanSend()) disabled = 'disabled';
+    let why = '';
+    if (item.id === 'load_checkpoint' && !(values.model || values.adapters)) {
+      disabled = 'disabled';
+      why = '还没有可部署的模型';
+    }
+    if (item.id === 'export' && !(values.model || values.adapters)) {
+      disabled = 'disabled';
+      why = '还没有可导出的模型';
+    }
+    if (item.id === 'export' && running) {
+      disabled = 'disabled';
+      why = '导出进行中';
+    }
+    if (item.id === 'kill_task' && !running) {
+      disabled = 'disabled';
+      why = state.tab === 'export' ? '当前没有导出任务' : '当前没有运行中的推理';
+    }
+    if (item.id === 'submit' && !chatCanSend()) {
+      disabled = 'disabled';
+      why = '请先输入内容';
+    }
     let klass = item.primary ? 'primary' : (item.id === 'kill_task' ? 'danger' : 'ghost');
     if (item.id === 'submit') klass = chatCanSend() ? 'primary' : 'ghost';
-    const why = item.id === 'export' && disabled
-      ? (running ? '导出进行中' : '还没有可导出的模型')
-      : '';
     const tip = why ? ` title="${escapeHtml(why)}"` : '';
     return `<div class="infer-action"><button type="button" class="${klass}" data-action="${action}" ${disabled}${tip}>${escapeHtml(item.label)}</button></div>`;
   }
@@ -1071,7 +1114,7 @@ function render() {
 async function runCurrent() {
   const stage = state.stage;
   const params = collectParams();
-  state.busy = true;
+  setBusy(true);
   try {
     const payload = await api(`/api/runs/${state.view.run.id}/stages/${stage}/run`, {
       method: 'POST',
@@ -1086,7 +1129,7 @@ async function runCurrent() {
     toast(`${labelOf(stage)} ${outcome}`);
     render();
   } finally {
-    state.busy = false;
+    setBusy(false);
   }
 }
 
@@ -1479,7 +1522,17 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (target.dataset.action === 'run') {
-      state.busy = true;
+      const form = (state.view.forms || {})[state.stage] || {};
+      if (form.status === 'succeeded') {
+        const confirmed = await askConfirm({
+          title: '重新运行并作废后续阶段',
+          body: '这一阶段会重跑。本轮后面已经完成的阶段和晋级结果会作废，需要重新再跑。',
+          okLabel: '重新运行',
+          danger: true,
+        });
+        if (!confirmed) return;
+      }
+      setBusy(true);
       await runCurrent();
       return;
     }
@@ -1511,6 +1564,11 @@ document.addEventListener('click', async (event) => {
     }
     if (target.dataset.action === 'open-serve') {
       state.tab = 'serve';
+      render();
+      return;
+    }
+    if (target.dataset.action === 'open-export') {
+      state.tab = 'export';
       render();
       return;
     }
@@ -1603,11 +1661,18 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (target.dataset.action === 'serve') {
-      state.busy = true;
+      setBusy(true);
       await startServe();
       return;
     }
     if (target.dataset.action === 'serve-stop') {
+      const confirmed = await askConfirm({
+        title: '停止推理',
+        body: '当前推理服务会停掉，已打开的对话不再继续。',
+        okLabel: '停止',
+        danger: true,
+      });
+      if (!confirmed) return;
       await stopServe();
       return;
     }
@@ -1616,11 +1681,18 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (target.dataset.action === 'export-run') {
-      state.busy = true;
+      setBusy(true);
       await startExport();
       return;
     }
     if (target.dataset.action === 'export-stop') {
+      const confirmed = await askConfirm({
+        title: '停止导出',
+        body: '正在进行的导出会停掉。已经写到一半的文件会留在导出目录里。',
+        okLabel: '停止',
+        danger: true,
+      });
+      if (!confirmed) return;
       await stopExport();
       return;
     }
@@ -1633,13 +1705,13 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (target.dataset.action === 'chat') {
-      state.busy = true;
+      setBusy(true);
       await sendChat();
     }
   } catch (err) {
     toast(err.message);
   } finally {
-    state.busy = false;
+    setBusy(false);
   }
 });
 

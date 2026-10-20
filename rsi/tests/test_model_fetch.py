@@ -451,6 +451,16 @@ def test_bundled_fetch_yaml_defaults_to_hope(monkeypatch):
     assert '--username=liyuhao03' not in overridden
 
 
+def test_unwritable_model_root_fails_in_chinese(tmp_path, monkeypatch):
+    monkeypatch.setenv('RSI_MODEL_SOURCE', 'hope')
+    monkeypatch.setenv('RSI_MODEL_ROOT', '/dev/null/models')
+    calls = []
+    status = _fetcher(tmp_path, lambda *args, **kwargs: calls.append(args)).ensure('model', REPO)
+    assert status.state == '失败'
+    assert status.message.startswith('无法创建目录')
+    assert calls == []
+
+
 def test_default_source_does_not_call_hope_or_force_offline(tmp_path, monkeypatch):
     monkeypatch.setenv('RSI_MODEL_SOURCE', 'modelscope')
     monkeypatch.delenv('RSI_FETCH_CONFIG', raising=False)

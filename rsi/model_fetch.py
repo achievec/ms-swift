@@ -327,7 +327,8 @@ def login_unconfirmed_message() -> str:
 
 def _is_failure_note(note: str) -> bool:
     text = note or ''
-    return text == _TOOL_FAILURE or text.startswith('hope 未登录：') or text.startswith(_LOGIN_FAIL_PREFIX)
+    return (text == _TOOL_FAILURE or text.startswith('无法创建目录')
+            or text.startswith('hope 未登录：') or text.startswith(_LOGIN_FAIL_PREFIX))
 
 
 def hope_login_succeeded(result) -> bool:
@@ -598,7 +599,14 @@ class ModelFetcher:
                 return
             _INFLIGHT.add(key)
         root = self.model_root() if kind == 'model' else self.data_root()
-        root.mkdir(parents=True, exist_ok=True)
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            with _LOCK:
+                _INFLIGHT.discard(key)
+                self._notes[key] = f'无法创建目录 {root}'
+            logger.info('hope 无法创建目录 %s %s', root, exc.strerror or exc)
+            return
 
         def job():
             ready_now = False

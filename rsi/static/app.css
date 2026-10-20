@@ -381,6 +381,16 @@ html.log-lock, body.log-lock { overflow: hidden; }
   padding: 10px 14px; border-radius: 8px; max-width: 360px; z-index: 5;
   box-shadow: var(--shadow-lg);
 }
+#busy-note {
+  display: none;
+  position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+  background: #1f2937; color: white;
+  padding: 10px 14px; border-radius: 8px; z-index: 6;
+  box-shadow: var(--shadow-lg);
+}
+body.is-busy { cursor: progress; }
+body.is-busy #main { pointer-events: none; }
+body.is-busy #busy-note { display: block; }
 dialog {
   border: 1px solid var(--line);
   border-radius: 12px;

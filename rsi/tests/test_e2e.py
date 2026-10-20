@@ -223,6 +223,11 @@ def test_model_fields_cannot_change_after_create(client):
     assert "form.status === 'running' ? '运行中'" in script
     assert 'run-reason' in script
     assert 'dataset-clear' in script
+    assert '重新运行并作废后续阶段' in script
+    assert '还没有检查点，不能选' in script
+    assert '去模型导出' in script
+    assert '当前没有运行中的推理' in script
+    assert '正在提交…' in Path(__file__).resolve().parents[1].joinpath('static', 'index.html').read_text(encoding='utf-8')
 
 
 def test_upload_and_public_dataset(client, tmp_path):

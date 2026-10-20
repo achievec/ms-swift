@@ -273,6 +273,7 @@ def test_finished_sft_deploys_base_plus_lora(client):
 
     page = Path(__file__).resolve().parents[1].joinpath('static', 'app.js').read_text(encoding='utf-8')
     assert '去部署推理服务' in page
+    assert '去模型导出' in page
     assert '填入本轮晋级 checkpoint' in page
     assert 'llm_infer' in page
     from rsi.llm_infer_spec import llm_infer_layout
