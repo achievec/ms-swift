@@ -1,0 +1,15 @@
+/* Workbench sits beside the RSI page and reuses the same tokens. */
+body { margin: 0; }
+.top { padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--card); }
+.top a { color: var(--accent-ink); text-decoration: none; }
+main { max-width: 920px; margin: 0 auto; padding: 20px; display: grid; gap: 16px; }
+.panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+.panel h2 { margin: 0 0 8px; font-size: 16px; }
+.muted { color: var(--muted); }
+textarea, input { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 8px; background: var(--bg); }
+textarea { min-height: 120px; }
+.row-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+button { border: 1px solid var(--line); background: var(--card); border-radius: 8px; padding: 6px 12px; }
+button.primary { background: var(--accent); color: white; border-color: var(--accent); }
+pre { white-space: pre-wrap; word-break: break-word; background: var(--bg); padding: 10px; border-radius: 8px; }
+label { display: grid; gap: 4px; margin-top: 8px; }

@@ -19,6 +19,7 @@ from rsi.model_fetch import resolve_rsi_home
 from rsi.pipeline import Pipeline, PipelineError
 from rsi.schemas import public_schema
 from rsi.store import StoreError
+from rsi import workbench
 
 STATIC_DIR = Path(__file__).resolve().parent / 'static'
 # run.sh appends here: rsi/.rsi.log next to this package, never a request path.
@@ -462,6 +463,59 @@ def create_app(home: Path | None = None) -> FastAPI:
     async def chat(run_id: str, request: Request):
         body = await read_json(request)
         return pipeline.chat(run_id, body.get('messages') or [], body.get('temperature'))
+
+    def _workbench_text(body: dict) -> tuple:
+        text = body.get('text') or ''
+        if not str(text).strip():
+            raise PipelineError('请贴上 jsonl，或选择一个文件')
+        return str(text), body.get('filename') or 'data.jsonl'
+
+    @app.post('/api/workbench/inspect')
+    async def workbench_inspect(request: Request):
+        text, filename = _workbench_text(await read_json(request))
+        return workbench.inspect_text(text, filename)
+
+    @app.post('/api/workbench/split')
+    async def workbench_split(request: Request):
+        body = await read_json(request)
+        text, filename = _workbench_text(body)
+        ratio = body.get('eval_ratio')
+        seed = body.get('seed')
+        return workbench.write_split(
+            home, text, filename, 0.2 if ratio is None or ratio == '' else ratio,
+            0 if seed is None or seed == '' else seed)
+
+    @app.post('/api/workbench/next-pack')
+    async def workbench_next_pack(request: Request):
+        body = await read_json(request)
+        text, filename = _workbench_text(body)
+        minimum = body.get('min_score')
+        return workbench.pack_next_round(
+            home, text, filename, 1 if minimum is None or minimum == '' else minimum)
+
+    @app.get('/api/runs/{run_id}/report')
+    def run_report(run_id: str):
+        return PlainTextResponse(workbench.render_report(pipeline.view(run_id)))
+
+    @app.get('/api/runs/{run_id}/serve/ready')
+    def serve_ready(run_id: str):
+        pipeline._require_run(run_id)
+        service = pipeline.store.latest_service(run_id)
+        return workbench.probe_service(service)
+
+    @app.post('/api/runs/{run_id}/export')
+    def start_export(run_id: str):
+        view = pipeline.view(run_id)
+        return workbench.start_export(home, run_id, workbench.promoted_checkpoint(view))
+
+    @app.get('/api/runs/{run_id}/export')
+    def export_status(run_id: str):
+        pipeline._require_run(run_id)
+        return workbench.export_status(run_id)
+
+    @app.get('/tools')
+    def tools_page():
+        return FileResponse(STATIC_DIR / 'tools.html')
 
     @app.get('/')
     def index():
