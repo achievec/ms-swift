@@ -157,6 +157,43 @@ def test_more_params_merge_json_and_flags():
     assert flagged['verbose'] is True
 
 
+def test_more_params_stay_with_the_experiment(client):
+    import socket
+    api = client
+    run_id = _create(api)
+    other_id = _create(api)
+    text = '--vllm_gpu_memory_utilization 0.8'
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+    served = api.post(f'/api/runs/{run_id}/serve', json={'params': {'port': port, 'more_params': text}})
+    assert served.status_code == 200, served.text
+    body = served.json()
+    assert body['view']['serve_form']['more_params'] == text
+    assert '--vllm_gpu_memory_utilization 0.8' in body['command']
+    assert '--more_params' not in body['command']
+    assert 'more_params' not in body['command']
+
+    reloaded = api.get(f'/api/runs/{run_id}').json()
+    assert reloaded['serve_form']['more_params'] == text
+    assert reloaded['serve_form']['model'] == BASE
+    other = api.get(f'/api/runs/{other_id}').json()
+    assert not other['serve_form'].get('more_params')
+
+    stopped = api.post(f'/api/runs/{run_id}/serve/stop', json={})
+    assert stopped.status_code == 200, stopped.text
+    after_stop = api.get(f'/api/runs/{run_id}').json()
+    assert after_stop['serve_form']['more_params'] == text
+    assert after_stop['service']['status'] != 'running'
+
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+    cleared = api.post(f'/api/runs/{run_id}/serve', json={'params': {'port': port, 'more_params': ''}})
+    assert cleared.status_code == 200, cleared.text
+    assert not cleared.json()['view']['serve_form'].get('more_params')
+
+
 def test_finished_sft_deploys_base_plus_lora(client):
     import socket
     api = client

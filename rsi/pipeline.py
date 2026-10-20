@@ -887,9 +887,14 @@ class Pipeline:
                           'metric': metric})
         service = self.store.latest_service(run_id)
         serve_fill = self._defaults_for(run, rnd, 'serve')
-        serve_values = serve_fill
-        if service and service.get('status') == 'running' and service.get('params_json'):
-            serve_values = _loads(service['params_json'])
+        saved_serve = _loads(service.get('params_json')) if service and service.get('params_json') else {}
+        if service and service.get('status') == 'running' and saved_serve:
+            serve_values = saved_serve
+        else:
+            serve_values = dict(serve_fill)
+            remembered = saved_serve.get('more_params')
+            if remembered not in (None, ''):
+                serve_values['more_params'] = remembered
         if service and service.get('api_key'):
             service = dict(service)
             service['api_key_set'] = True
@@ -1270,6 +1275,9 @@ class Pipeline:
             'base_model': run['base_model'],
         }
         user = user or {}
+        # Keep the typed 「更多参数」 text. apply_more_params merges the flags
+        # into the swift command and drops the box, which is not a swift flag.
+        typed_more = user.get('more_params') if 'more_params' in user else None
         merged = _merge(self._defaults_for(run, rnd, 'serve'), user)
         if 'adapters' in user:
             merged['adapters'] = user.get('adapters') or ''
@@ -1294,6 +1302,12 @@ class Pipeline:
         self._place_trained_checkpoint(merged, run)
         if side.get('fetch_state') == '同步中' and strict:
             raise PipelineError('同步中')
+        if 'more_params' in user:
+            text = '' if typed_more is None else str(typed_more)
+            if text.strip():
+                merged['more_params'] = text
+            else:
+                merged.pop('more_params', None)
         return merged
 
     def _serve_backend_name(self) -> str:

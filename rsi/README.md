@@ -49,7 +49,7 @@ Then:
 4. **SFT 评测**, **在线 RL** (`swift rlhf --rlhf_type grpo`, vLLM colocate), **RL 评测**. Same pattern.
 5. **晋级**. RL is recommended when its mock accuracy is higher. You can still pick SFT or stay on the base.
 6. **下一轮数据**. Choosing it opens 晋级 first. The promoted checkpoint becomes the next base and the board returns to 数据. Previous rounds stay in the audit.
-7. **推理服务**. The tab uses the same fields, order, and Chinese labels as the SWIFT Web-UI **LLM推理** page (`swift/ui/llm_infer`). `--model`, `--model_type`, `--template`, and `--adapters` are filled from this round and locked. Deploy still starts the RSI service (`swift deploy --model --adapters`). After it is up, the chat box streams to that OpenAI-compatible API. Weights are not loaded in mock mode.
+7. **推理服务**. The tab uses the same fields, order, and Chinese labels as the SWIFT Web-UI **LLM推理** page (`swift/ui/llm_infer`). `--model`, `--model_type`, `--template`, and `--adapters` are filled from this round and locked. Deploy still starts the RSI service (`swift deploy --model --adapters`). After it is up, the chat box streams to that OpenAI-compatible API. Weights are not loaded in mock mode. The **更多参数** text is stored on that experiment's deploy record. Deploy does not clear it, and opening the experiment again shows the saved text. Another experiment stays empty until it is set there.
 
 Re-running an earlier stage keeps the old audit row and marks later stages in that round as 已作废.
 
@@ -129,7 +129,7 @@ rsi_home: /opt/meituan/dolphinfs_liubo108/ms-swift/workspace
 
 SFT、评测和 RL 也不用界面那个精简 `rsi/.venv`。同一个 `train_python` 存在且可执行时，swift 用它启动。当前机器没有这个路径时会跳过，仍用启动界面的那个 Python。`RSI_SWIFT_BIN` 换掉整个启动命令。
 
-推理服务页和 SWIFT Web-UI 的「LLM推理」是同一套字段、顺序和中文标签（含 `(--参数)` 和说明）。`--model`、`--model_type`、`--template`、`--adapters` 按本轮实验填好并且不能改。部署仍走 RSI 自己的服务管理。起来之后可以在页面里流式对话。
+推理服务页和 SWIFT Web-UI 的「LLM推理」是同一套字段、顺序和中文标签（含 `(--参数)` 和说明）。`--model`、`--model_type`、`--template`、`--adapters` 按本轮实验填好并且不能改。部署仍走 RSI 自己的服务管理。起来之后可以在页面里流式对话。「更多参数」写在该实验的部署记录里。点「部署模型」不会清空；再次打开这个实验仍显示上次保存的内容。别的实验没填过就是空的。
 
 仓库里的 `fetch.yaml` 已写 `hope_username: liyuhao03`。这个 misid 会传给 `hope login`，也会作为 `hope clone` 的 `--username=`。换 misid 改这一行，或用 `RSI_HOPE_USERNAME` 覆盖。token 仍只走 `RSI_HOPE_TOKEN`，只给 `hope clone` 当 git 凭据，不能代替平台登录。
 
