@@ -129,6 +129,8 @@ document.getElementById('pack').addEventListener('click', async () => {
 });
 
 document.getElementById('complete').addEventListener('click', async () => {
+  const button = document.getElementById('complete');
+  await withButton(button, '补全中…', async () => {
   try {
     const id = selectedRun();
     const payload = retryPath ? { path: retryPath } : dataBody();
@@ -146,6 +148,7 @@ document.getElementById('complete').addEventListener('click', async () => {
   } catch (err) {
     show('data-out', err.message);
   }
+  });
 });
 
 let retryPath = '';
@@ -166,6 +169,31 @@ function selectedRun() {
   const id = document.getElementById('run').value;
   if (!id) throw new Error('先创建或选择一个实验');
   return id;
+}
+
+function showRecord(id, title, record) {
+  const lines = [title];
+  if (record.status) lines.push('状态：' + record.status);
+  if (record.ready === true) lines.push('推理接口已就绪');
+  if (record.ready === false && record.detail) lines.push(record.detail);
+  if (record.command) lines.push(record.command);
+  if (record.log) lines.push(record.log);
+  showPaths(id, lines.filter(Boolean).join('\n'), [
+    ['导出目录', record.output_dir || ''],
+    ['地址', record.url || ''],
+  ]);
+}
+
+async function withButton(button, label, work) {
+  const previous = button.textContent;
+  button.disabled = true;
+  button.textContent = label;
+  try {
+    await work();
+  } finally {
+    button.disabled = false;
+    button.textContent = previous;
+  }
 }
 
 document.getElementById('load-data').addEventListener('click', async () => {
@@ -199,25 +227,28 @@ document.getElementById('report').addEventListener('click', async () => {
 document.getElementById('ready').addEventListener('click', async () => {
   try {
     const id = selectedRun();
-    show('run-out', await api(`/api/runs/${id}/serve/ready`));
+    showRecord('run-out', '推理检查', await api(`/api/runs/${id}/serve/ready`));
   } catch (err) {
     show('run-out', err.message);
   }
 });
 
 document.getElementById('export').addEventListener('click', async () => {
-  try {
-    const id = selectedRun();
-    show('run-out', await api(`/api/runs/${id}/export`, { method: 'POST' }));
-  } catch (err) {
-    show('run-out', err.message);
-  }
+  const button = document.getElementById('export');
+  await withButton(button, '导出中…', async () => {
+    try {
+      const id = selectedRun();
+      showRecord('run-out', '已开始合并导出，训练检查点不会被替换。', await api(`/api/runs/${id}/export`, { method: 'POST' }));
+    } catch (err) {
+      show('run-out', err.message);
+    }
+  });
 });
 
 document.getElementById('export-status').addEventListener('click', async () => {
   try {
     const id = selectedRun();
-    show('run-out', await api(`/api/runs/${id}/export`));
+    showRecord('run-out', '导出状态', await api(`/api/runs/${id}/export`));
   } catch (err) {
     show('run-out', err.message);
   }
