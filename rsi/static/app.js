@@ -673,7 +673,7 @@ function renderInferControl(item, values, running) {
     return `<label class="field" data-key="${item.id}"${lockTitle}><span>${escapeHtml(item.label)}</span>${info}<select data-field="${item.id}" ${multi} ${locked}>${options}</select></label>`;
   }
   if (item.id === 'log') {
-    return `<div class="log-panel infer-log" data-key="log"><div class="log-head"><div class="log-title"><span>${escapeHtml(item.label)}</span>${info}</div>${logTools()}</div><textarea class="log" readonly rows="8">${escapeHtml(state.inferLog || '')}</textarea></div>`;
+    return `<div class="log-panel infer-log" data-key="log"><div class="log-head"><div class="log-title"><span>${escapeHtml(item.label)}</span>${info}</div>${logTools()}</div><textarea class="log" readonly rows="18">${escapeHtml(state.inferLog || '')}</textarea></div>`;
   }
   const long = Number(item.lines) >= 4;
   const control = long

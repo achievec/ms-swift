@@ -299,7 +299,7 @@ summary { cursor: pointer; color: var(--accent-ink); font-weight: 600; }
   padding: 12px;
   border-radius: 8px;
   overflow: auto;
-  max-height: 280px;
+  max-height: 360px;
   white-space: pre-wrap;
   font-size: 12px;
   box-shadow: none;
@@ -334,7 +334,7 @@ tr.expand td { background: #f9fafb; }
   vertical-align: 1px;
   animation: rsi-dot 1.2s ease-in-out infinite;
 }
-.live-log { max-height: 280px; }
+.live-log { max-height: 360px; }
 .log-head {
   display: flex;
   align-items: center;
@@ -523,7 +523,9 @@ dialog label input, dialog label textarea { font-weight: 400; color: var(--ink);
 .infer-log .log-title small { display: block; color: #6b7280; font-size: 12px; font-weight: 400; }
 .infer-log textarea.log {
   width: 100%;
-  min-height: 160px;
+  height: 360px;
+  min-height: 360px;
+  max-height: none;
   background: #f3f4f6;
   border: 0;
   box-shadow: none;

@@ -140,3 +140,7 @@ def test_fullscreen_exit_clears_scroll_lock():
     assert 'navigator.clipboard' in tools
     assert 'execCommand' in tools
     assert 'class="log-panel infer-log"' in script
+    assert 'max-height: 360px' in css
+    assert 'min-height: 360px' in css
+    assert '.log-panel.log-fullscreen .log' in css
+    assert 'max-height: none' in css
