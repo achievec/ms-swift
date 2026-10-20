@@ -126,6 +126,8 @@ def test_linux_run_sh_activates_conda_env_and_warns_when_missing(tmp_path):
 
     env = os.environ.copy()
     env.pop('RSI_CONDA_ENV', None)
+    env.pop('RSI_TRAIN_PYTHON', None)
+    env.pop('VIRTUAL_ENV', None)
     env.pop('CONDA_EXE', None)
     env['CONDA_BASE'] = str(base)
     env['HOME'] = str(tmp_path / 'home')
@@ -184,4 +186,68 @@ def test_linux_run_sh_activates_conda_env_and_warns_when_missing(tmp_path):
     assert fallback.returncode == 0, fallback_out
     assert '未找到 conda' not in fallback_out
     assert '使用已有虚拟环境：rsi/.venv' in fallback_out
+    assert 'train_python 不存在：' in fallback_out
     assert fallback_out.strip().endswith(str(venv))
+
+
+def test_linux_resolve_python_prefers_train_python_over_venv(tmp_path):
+    train = tmp_path / 'model-train' / 'bin' / 'python'
+    _executable(train)
+    venv = tmp_path / 'rsi' / '.venv' / 'bin' / 'python'
+    _executable(venv)
+    cfg = tmp_path / 'fetch.yaml'
+    cfg.write_text(f'train_python: {train}\nconda_env: model-train\n', encoding='utf-8')
+    uname_dir = tmp_path / 'darwin-bin'
+    uname_dir.mkdir()
+    uname = uname_dir / 'uname'
+    uname.write_text('#!/bin/sh\nif [ "$1" = "-s" ]; then echo Darwin; exit 0; fi\nexec /usr/bin/uname "$@"\n', encoding='utf-8')
+    uname.chmod(0o755)
+
+    env = os.environ.copy()
+    env.pop('RSI_CONDA_ENV', None)
+    env.pop('RSI_TRAIN_PYTHON', None)
+    env.pop('VIRTUAL_ENV', None)
+    env['RSI_FETCH_CONFIG'] = str(cfg)
+    env['PATH'] = '/usr/bin:/bin'
+    env['HOME'] = str(tmp_path / 'home')
+    env['VIRTUAL_ENV'] = str(tmp_path / 'rsi' / '.venv')
+
+    chosen = _run_conda_hook(tmp_path, env, 'resolve_python; printf "PY=%s\\n" "$PY"')
+    chosen_out = chosen.stdout + chosen.stderr
+    assert chosen.returncode == 0, chosen_out
+    assert f'使用 train_python：{train}' in chosen_out
+    assert chosen_out.strip().endswith(str(train))
+    assert '改用' not in chosen_out
+
+    env.pop('VIRTUAL_ENV')
+    missing = tmp_path / 'no-such-python'
+    env['RSI_TRAIN_PYTHON'] = str(missing)
+    fell = _run_conda_hook(tmp_path, env, 'resolve_python; printf "PY=%s\\n" "$PY"')
+    fell_out = fell.stdout + fell.stderr
+    assert fell.returncode == 0, fell_out
+    assert f'train_python 不存在：{missing}，改用 {venv}' in fell_out
+    assert '使用已有虚拟环境：rsi/.venv' in fell_out
+    assert fell_out.strip().endswith(str(venv))
+
+    env.pop('RSI_TRAIN_PYTHON')
+    env['PATH'] = f'{uname_dir}:/usr/bin:/bin'
+    macos = _run_conda_hook(tmp_path, env, 'resolve_python; printf "PY=%s\\n" "$PY"')
+    macos_out = macos.stdout + macos.stderr
+    assert macos.returncode == 0, macos_out
+    assert '使用 train_python' not in macos_out
+    assert '使用已有虚拟环境：rsi/.venv' in macos_out
+    assert macos_out.strip().endswith(str(venv))
+
+
+def test_fallback_pip_command_names_train_python(tmp_path, monkeypatch):
+    train = tmp_path / 'model-train' / 'bin' / 'python'
+    _executable(train)
+    cfg = tmp_path / 'fetch.yaml'
+    cfg.write_text(f'train_python: {train}\n', encoding='utf-8')
+    monkeypatch.setenv('RSI_FETCH_CONFIG', str(cfg))
+    monkeypatch.delenv('RSI_TRAIN_PYTHON', raising=False)
+    from rsi.__main__ import swift_ui_fallback_page, swift_ui_python
+    assert swift_ui_python() == str(train)
+    page = swift_ui_fallback_page("No module named 'gradio'")
+    assert f'{train} -m pip install' in page
+    assert 'gradio&lt;5.33' in page

@@ -12,6 +12,7 @@ LOCK_FILE="${RSI_DIR}/.rsi.lock"
 PORT="${WEBUI_PORT:-${RSI_PORT:-8418}}"
 HOST="${WEBUI_SERVER:-${RSI_HOST:-0.0.0.0}}"
 PY=""
+PY_FROM_TRAIN=0
 PORT_BLOCKED=0
 
 browser_url() {
@@ -30,7 +31,7 @@ usage() {
   restart  先停止再启动
 不带参数时等同于 restart。
 日志：rsi/.rsi.log    进程号：rsi/.rsi.pid
-Linux 会先激活 fetch.yaml 的 conda_env（model-train）。RSI_CONDA_ENV 覆盖该名字；设为空字符串则不激活。macOS 不激活。
+Linux 会先激活 fetch.yaml 的 conda_env（model-train），并用 train_python 启动 RSI。该文件不存在时才用 rsi/.venv。RSI_CONDA_ENV 覆盖环境名（空字符串不激活）。RSI_TRAIN_PYTHON 覆盖解释器。macOS 仍用 .venv。
 EOF
 }
 
@@ -59,7 +60,38 @@ release_lock() {
   fi
 }
 
+configured_train_python() {
+  # Non-empty RSI_TRAIN_PYTHON wins. Otherwise train_python in fetch.yaml.
+  local raw cfg
+  if [[ -n "${RSI_TRAIN_PYTHON:-}" ]]; then
+    printf '%s\n' "${RSI_TRAIN_PYTHON}"
+    return 0
+  fi
+  cfg="${RSI_FETCH_CONFIG:-${RSI_DIR}/configs/fetch.yaml}"
+  if [[ -f "${cfg}" ]]; then
+    raw="$(sed -n 's/^[[:space:]]*train_python:[[:space:]]*//p' "${cfg}" | head -n 1)"
+    raw="${raw%%#*}"
+    raw="${raw// /}"
+    raw="${raw//\"/}"
+    raw="${raw//\'/}"
+    printf '%s\n' "${raw}"
+  fi
+}
+
 resolve_python() {
+  local configured=""
+  PY_FROM_TRAIN=0
+  # Linux RSI runs in the GPU conda env. rsi/.venv is only the fallback when
+  # that interpreter is missing. macOS keeps the virtualenv order below.
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    configured="$(configured_train_python)"
+    if [[ -n "${configured}" && -f "${configured}" && -x "${configured}" ]]; then
+      PY="${configured}"
+      PY_FROM_TRAIN=1
+      echo "[环境] 使用 train_python：${PY}"
+      return 0
+    fi
+  fi
   if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
     PY="${VIRTUAL_ENV}/bin/python"
     echo "[依赖] 使用已激活的虚拟环境：${VIRTUAL_ENV}"
@@ -79,6 +111,9 @@ resolve_python() {
     echo "[依赖] 未找到 python3，无法启动。"
     exit 1
   fi
+  if [[ "$(uname -s)" == "Linux" && -n "${configured}" ]]; then
+    echo "[环境] train_python 不存在：${configured}，改用 ${PY}"
+  fi
 }
 
 python_ready() {
@@ -90,7 +125,7 @@ install_requirements() {
   if "${PY}" -m pip install -r "${RSI_DIR}/requirements.txt"; then
     return 0
   fi
-  if [[ -n "${VIRTUAL_ENV:-}" || "${PY}" == "${RSI_DIR}/.venv/bin/python" || "${PY}" == "${ROOT}/.venv/bin/python" ]]; then
+  if [[ "${PY_FROM_TRAIN}" == "1" || -n "${VIRTUAL_ENV:-}" || "${PY}" == "${RSI_DIR}/.venv/bin/python" || "${PY}" == "${ROOT}/.venv/bin/python" ]]; then
     echo "[依赖] 依赖安装失败。请查看上面的 pip 输出。"
     exit 1
   fi
@@ -290,12 +325,12 @@ activate_linux_conda() {
     done
   fi
   if [[ -z "${conda_bin}" ]]; then
-    echo "[环境] 未找到 conda，未激活 ${env_name}，继续使用当前 Python。"
+    echo "[环境] 未找到 conda，未激活 ${env_name}。"
     return 0
   fi
   base="$("${conda_bin}" info --base 2>/dev/null)" || base=""
   if [[ -z "${base}" || ! -f "${base}/etc/profile.d/conda.sh" ]]; then
-    echo "[环境] 未找到 conda 的初始化脚本，未激活 ${env_name}，继续使用当前 Python。"
+    echo "[环境] 未找到 conda 的初始化脚本，未激活 ${env_name}。"
     return 0
   fi
   set +u
@@ -303,7 +338,7 @@ activate_linux_conda() {
   # shellcheck disable=SC1090
   if ! source "${base}/etc/profile.d/conda.sh"; then
     set -u
-    echo "[环境] 无法加载 conda，未激活 ${env_name}，继续使用当前 Python。"
+    echo "[环境] 无法加载 conda，未激活 ${env_name}。"
     return 0
   fi
   if conda activate "${env_name}"; then
@@ -312,7 +347,7 @@ activate_linux_conda() {
     return 0
   fi
   set -u
-  echo "[环境] 无法激活 conda 环境 ${env_name}，继续使用当前 Python。"
+  echo "[环境] 无法激活 conda 环境 ${env_name}。"
   return 0
 }
 
@@ -381,8 +416,12 @@ cmd_start() {
   echo "[启动] 正在后台启动 python -m rsi …"
   {
     echo "===== $(date '+%Y-%m-%d %H:%M:%S') start port=${PORT} ====="
+    echo "[环境] 启动解释器：${PY}"
   } >> "${LOG_FILE}"
   cd "${ROOT}"
+  if [[ "${PY_FROM_TRAIN}" == "1" ]]; then
+    unset VIRTUAL_ENV
+  fi
   PYTHONPATH="${ROOT}${PYTHONPATH:+:${PYTHONPATH}}" \
     PYTHONUNBUFFERED=1 \
     WEBUI_PORT="${PORT}" \

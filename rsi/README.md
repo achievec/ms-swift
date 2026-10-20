@@ -37,7 +37,7 @@ pip install -r rsi/requirements.txt
 ./run.sh
 ```
 
-`./run.sh` with no arguments restarts the UI. On Linux it first runs `conda activate` for `conda_env` in `rsi/configs/fetch.yaml` (`model-train`). `RSI_CONDA_ENV` overrides that name; an empty value skips activation. macOS does not activate. `./run.sh start`, `./run.sh stop`, and `./run.sh restart` do what they say. The process id is `rsi/.rsi.pid` and the process log is `rsi/.rsi.log` (deleted and recreated on each successful `start`; it holds startup and hope clone). Each experiment writes its own training and eval log at `RSI_HOME/runs/<run_id>/round_<n>/<stage>/swift.log` (eval uses `eval_output/swift.log` under that stage; deploy uses `serve/deploy.log`). The process log only gets one line pointing at that file. `python -m rsi` still works if you want the server in the foreground.
+`./run.sh` with no arguments restarts the UI. On Linux it activates `conda_env` from `rsi/configs/fetch.yaml` (`model-train`) and starts RSI with `train_python` when that file exists, so Gradio comes from the conda env rather than `rsi/.venv`. `RSI_CONDA_ENV` overrides the env name; an empty value skips activation. `RSI_TRAIN_PYTHON` overrides the interpreter. macOS keeps using `rsi/.venv`. `./run.sh start`, `./run.sh stop`, and `./run.sh restart` do what they say. The process id is `rsi/.rsi.pid` and the process log is `rsi/.rsi.log` (deleted and recreated on each successful `start`; it holds startup and hope clone). Each experiment writes its own training and eval log at `RSI_HOME/runs/<run_id>/round_<n>/<stage>/swift.log` (eval uses `eval_output/swift.log` under that stage; deploy uses `serve/deploy.log`). The process log only gets one line pointing at that file. `python -m rsi` still works if you want the server in the foreground.
 
 The server listens on `0.0.0.0:8418`. On this machine open http://127.0.0.1:8418
 
@@ -125,9 +125,9 @@ rsi_home: /opt/meituan/dolphinfs_liubo108/ms-swift/workspace
 
 内置训练集是仓库里的 `rsi/examples/itops_mix.jsonl`（6 条 IT 工单）。训练命令里的绝对路径是当前机器上这份检出的路径，不是另一台电脑的家目录。例如 GPU 上会写成 `/home/hadoop-sailorqa-ai/ms-swift/rsi/examples/itops_mix.jsonl`，文件就在该仓库的 `rsi/examples/` 下。
 
-在 Linux 上，`./run.sh` 启动前会 `conda activate model-train`（`fetch.yaml` 的 `conda_env`）。找不到 conda 或这个环境时打印警告，仍按原来的方式继续。`RSI_CONDA_ENV` 换环境名；设为空字符串则不激活。macOS 不执行这一步。
+在 Linux 上，`./run.sh` 用 `fetch.yaml` 的 `train_python`（`/usr/local/conda/envs/model-train/bin/python`）启动 RSI 本身，并先 `conda activate model-train`。这个文件存在时不会改用 `rsi/.venv`。文件不存在时日志会写明路径，再退回 `.venv`。`RSI_TRAIN_PYTHON` 覆盖解释器。`RSI_CONDA_ENV` 换环境名；设为空字符串则不激活。macOS 仍用 `rsi/.venv`。
 
-SFT、评测和 RL 不用界面那个精简 `rsi/.venv`。`fetch.yaml` 的 `train_python` 指向 GPU 上的 conda 环境 `/usr/local/conda/envs/model-train/bin/python`。这个文件存在且可执行时，swift 用它启动。当前机器没有这个路径时会跳过，仍用启动界面的那个 Python。`RSI_TRAIN_PYTHON` 覆盖配置。`RSI_SWIFT_BIN` 换掉整个启动命令。
+SFT、评测和 RL 也不用界面那个精简 `rsi/.venv`。同一个 `train_python` 存在且可执行时，swift 用它启动。当前机器没有这个路径时会跳过，仍用启动界面的那个 Python。`RSI_SWIFT_BIN` 换掉整个启动命令。
 
 仓库里的 `fetch.yaml` 已写 `hope_username: liyuhao03`。这个 misid 会传给 `hope login`，也会作为 `hope clone` 的 `--username=`。换 misid 改这一行，或用 `RSI_HOPE_USERNAME` 覆盖。token 仍只走 `RSI_HOPE_TOKEN`，只给 `hope clone` 当 git 凭据，不能代替平台登录。
 

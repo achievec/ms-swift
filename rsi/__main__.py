@@ -22,16 +22,32 @@ def _trim_error(text: str) -> str:
     return trimmed
 
 
+def swift_ui_python() -> str:
+    """Interpreter that should own Gradio. Linux prefers fetch.yaml train_python."""
+    if sys.platform != 'linux':
+        return sys.executable
+    explicit = os.environ.get('RSI_TRAIN_PYTHON', '').strip()
+    if explicit and os.path.isfile(explicit) and os.access(explicit, os.X_OK):
+        return explicit
+    try:
+        from rsi.model_fetch import configured_train_python
+        found = configured_train_python()
+    except Exception:
+        found = ''
+    return found or sys.executable
+
+
 def swift_ui_fallback_page(error: str) -> str:
     """Explain why /swift-ui/ did not mount. The traceback is escaped."""
     detail = html.escape(_trim_error(error))
     executable = html.escape(sys.executable)
+    pip_python = html.escape(swift_ui_python())
     lowered = (error or '').lower()
     hint = ''
     if 'gradio' in lowered or 'no module named' in lowered:
         hint = (
-            '<p>在当前解释器里装上 Web-UI 依赖，然后重新执行 <code>./run.sh</code>：</p>'
-            f'<pre>{executable} -m pip install &quot;gradio&lt;5.33&quot;</pre>'
+            '<p>在 train_python 这个解释器里装上 Web-UI 依赖，然后重新执行 <code>./run.sh</code>：</p>'
+            f'<pre>{pip_python} -m pip install &quot;gradio&lt;5.33&quot;</pre>'
         )
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
