@@ -15,6 +15,7 @@ from pathlib import Path
 import yaml
 
 from rsi.backends import BackendError, swift_launch
+from rsi.eval_report import inside_directory, merge_eval_report
 from rsi.commands import STAGE_COMMAND, build_argv, format_shell
 from rsi.dataset_validate import MAX_BYTES, validate_file, validate_public_id
 from rsi.flow import ACTION_LABELS, assemble_flow, blocked_message, decision_actions, stage_unlocked
@@ -730,6 +731,7 @@ class Pipeline:
         else:
             values = defaults
         result = _loads(step['result_json']) if step and step.get('result_json') else None
+        result = self._with_eval_report(run['id'], stage, result, values)
         return {
             'status': self._status_for(stage, active, rnd),
             'values': values,
@@ -742,6 +744,40 @@ class Pipeline:
             'step_id': step['id'] if step else None,
             'backend': step['backend'] if step else None,
         }
+
+    def _with_eval_report(self, run_id: str, stage: str, result, params):
+        if stage not in {'sft_eval', 'rl_eval'} or not isinstance(result, dict):
+            return result
+        metrics = merge_eval_report(
+            result.get('metrics') or {}, (params or {}).get('eval_output_dir'), self.home / 'runs' / run_id)
+        if metrics == (result.get('metrics') or {}):
+            return result
+        updated = dict(result)
+        updated['metrics'] = metrics
+        if metrics.get('report_html'):
+            updated['report_path'] = metrics['report_html']
+        return updated
+
+    def eval_report_file(self, run_id: str, stage: str, round_index=None) -> Path:
+        """HTML report for this stage, only if it sits inside the run directory."""
+        if stage not in {'sft_eval', 'rl_eval'}:
+            raise PipelineError('这一阶段没有评测报告', 404)
+        run = self._require_run(run_id)
+        if round_index is None:
+            round_index = run['round_index']
+        else:
+            round_index = int(round_index)
+        step = self.store.latest_active_steps(run_id, round_index).get(stage)
+        if not step:
+            raise PipelineError('还没有评测报告', 404)
+        root = self.home / 'runs' / run_id
+        result = _loads(step.get('result_json'))
+        params = _loads(step.get('params_json'))
+        shown = self._with_eval_report(run_id, stage, result, params) or {}
+        path = inside_directory(root, shown.get('report_path') or (shown.get('metrics') or {}).get('report_html'))
+        if path is None or path.suffix.lower() not in {'.html', '.htm'}:
+            raise PipelineError('还没有评测报告', 404)
+        return path
 
     def _touch_fetch_progress(self) -> None:
         """Update hope rows from local files. Clone progress is in the process log."""
@@ -780,6 +816,10 @@ class Pipeline:
                 metric = f"loss {metrics['train_loss']}"
             elif 'reward' in metrics:
                 metric = f"reward {metrics['reward']}"
+            elif 'bleu_1' in metrics:
+                metric = f"BLEU-1 {metrics['bleu_1']}"
+            elif 'rouge_l_f' in metrics:
+                metric = f"ROUGE-L {metrics['rouge_l_f']}"
             board.append({'id': stage, 'label': meta['label'], 'summary': meta['summary'], 'status': state['status'],
                           'metric': metric})
         service = self.store.latest_service(run_id)
@@ -794,7 +834,8 @@ class Pipeline:
         for row in self.store.list_steps(run_id):
             item = dict(row)
             item['params'] = _loads(row['params_json'])
-            item['result'] = _loads(row['result_json']) if row.get('result_json') else None
+            item['result'] = self._with_eval_report(
+                run_id, row.get('stage'), _loads(row['result_json']) if row.get('result_json') else None, item['params'])
             steps.append(item)
         return {
             'run': run,
@@ -1066,12 +1107,16 @@ class Pipeline:
                 'scenario': run['scenario'],
             }
             produced = self.backend.execute(stage, params, context)
+            metrics = merge_eval_report(
+                produced.get('metrics') or {}, params.get('eval_output_dir'), self.home / 'runs' / run['id'])
             result = {
                 'backend': self.backend.name,
                 'mock': produced.get('mock', self.backend.name == 'mock'),
-                'metrics': produced.get('metrics') or {},
+                'metrics': metrics,
                 'checkpoint': produced.get('checkpoint'),
             }
+            if metrics.get('report_html'):
+                result['report_path'] = metrics['report_html']
             outcome = {
                 'command': produced.get('command') or '',
                 'logs': produced.get('logs') or '',

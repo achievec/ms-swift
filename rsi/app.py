@@ -415,6 +415,10 @@ def create_app(home: Path | None = None) -> FastAPI:
                   limit: int | None = None):
         return pipeline.stage_log(run_id, stage, round, offset, limit)
 
+    @app.get('/api/runs/{run_id}/stages/{stage}/report')
+    def stage_report(run_id: str, stage: str, round: int | None = None):
+        return FileResponse(pipeline.eval_report_file(run_id, stage, round), media_type='text/html')
+
     @app.post('/api/datasets/validate')
     async def validate_dataset(request: Request):
         body = await read_json(request)

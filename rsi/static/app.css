@@ -89,6 +89,7 @@ aside {
 .primary:disabled, .ghost:disabled { opacity: 0.45; cursor: not-allowed; }
 .danger { background: var(--red); color: #ffffff; border-color: var(--red); }
 .ghost { background: #ffffff; color: var(--ink); }
+a.ghost { display: inline-block; text-decoration: none; }
 .ghost:hover { background: #f3f4f6; }
 .block { width: 100%; }
 #new-run { margin-bottom: 14px; }
@@ -359,7 +360,9 @@ tr.expand td { background: #f9fafb; }
   max-height: none;
   min-height: 0;
 }
-body.log-lock { overflow: hidden; }
+html.log-lock, body.log-lock { overflow: hidden; }
+.score-table { width: auto; margin: 8px 0 12px; }
+.score-table td { padding: 4px 12px 4px 0; }
 .empty { padding: 48px 12px; max-width: 640px; }
 .chat-log { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
 .bubble { padding: 8px 10px; border-radius: 8px; max-width: 80%; }

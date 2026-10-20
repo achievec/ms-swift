@@ -12,6 +12,31 @@ const state = {
   liveBusy: false,
 };
 
+function evalReportLink(stage, result, roundIndex) {
+  if (stage !== 'sft_eval' && stage !== 'rl_eval') return '';
+  const metrics = (result && result.metrics) || {};
+  const path = (result && result.report_path) || metrics.report_html || '';
+  if (!path || !state.view) return '';
+  const round = roundIndex || state.view.round.round_index;
+  const href = `/api/runs/${encodeURIComponent(state.view.run.id)}/stages/${encodeURIComponent(stage)}/report?round=${round}`;
+  return `<a class="ghost" href="${href}" target="_blank" rel="noopener">查看完整报告</a>`;
+}
+
+function scoreHeadline(metrics) {
+  if (!metrics) return '';
+  const bits = [];
+  if (metrics.bleu_1 != null && metrics.bleu_1 !== '') bits.push(`BLEU-1 ${metrics.bleu_1}`);
+  if (metrics.rouge_l_f != null && metrics.rouge_l_f !== '') bits.push(`ROUGE-L F1 ${metrics.rouge_l_f}`);
+  return bits.length ? `<p>${escapeHtml(bits.join(' · '))}</p>` : '';
+}
+
+function scoreTable(metrics) {
+  const scores = metrics && metrics.scores;
+  if (!scores || typeof scores !== 'object') return '';
+  const rows = Object.keys(scores).map((key) => `<tr><td>${escapeHtml(key)}</td><td>${escapeHtml(scores[key])}</td></tr>`).join('');
+  return rows ? `<table class="score-table"><tbody>${rows}</tbody></table>` : '';
+}
+
 function visibleResult(result) {
   if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
   const copy = { ...result };
@@ -351,11 +376,19 @@ function logPanel(text, liveAttrs) {
   </div>`;
 }
 
+function syncLogScrollLock() {
+  const locked = Boolean(document.querySelector('.log-panel.log-fullscreen'));
+  document.body.classList.toggle('log-lock', locked);
+  document.documentElement.classList.toggle('log-lock', locked);
+}
+
 function setLogFullscreen(panel, on) {
-  panel.classList.toggle('log-fullscreen', on);
-  const button = panel.querySelector('[data-log-fullscreen]');
-  if (button) button.textContent = on ? '退出全屏' : '全屏';
-  document.body.classList.toggle('log-lock', Boolean(document.querySelector('.log-panel.log-fullscreen')));
+  if (panel && panel.isConnected) {
+    panel.classList.toggle('log-fullscreen', Boolean(on));
+    const button = panel.querySelector('[data-log-fullscreen]');
+    if (button) button.textContent = on ? '退出全屏' : '全屏';
+  }
+  syncLogScrollLock();
 }
 
 function renderStage(stage) {
@@ -378,7 +411,8 @@ function renderStage(stage) {
       <input id="file-input" type="file" accept=".jsonl,.json,.txt" />
     </div>` : '';
   const validate = stage === 'data' ? '<button type="button" class="ghost" data-action="validate">校验格式</button>' : '';
-  const result = form.result ? `<h3>结果</h3><pre class="log">${escapeHtml(JSON.stringify(visibleResult(form.result), null, 2))}</pre>` : '';
+  const reportLink = form.result ? evalReportLink(stage, form.result) : '';
+  const result = form.result ? `<h3>结果</h3>${scoreHeadline(form.result.metrics)}${scoreTable(form.result.metrics)}${reportLink ? `<p class="row-actions">${reportLink}</p>` : ''}<pre class="log">${escapeHtml(JSON.stringify(visibleResult(form.result), null, 2))}</pre>` : '';
   const live = form.status === 'running';
   const liveAttrs = live ? ` data-live-log="1" data-live-stage="${escapeHtml(stage)}" data-live-round="${view.round.round_index}"` : '';
   const logs = (form.logs || live) ? logPanel(form.logs || '', liveAttrs) : '';
@@ -514,7 +548,7 @@ function renderAudit() {
     const detail = open ? `<tr class="expand"><td colspan="6">
       <p><b>开始</b> ${escapeHtml(formatShanghai(step.started_at))} · <b>结束</b> ${escapeHtml(formatShanghai(step.ended_at || ''))}</p>
       <h3>参数</h3><pre class="log">${escapeHtml(JSON.stringify(step.params, null, 2))}</pre>
-      <h3>结果</h3><pre class="log">${escapeHtml(JSON.stringify(visibleResult(step.result), null, 2))}</pre>
+      <h3>结果</h3>${scoreHeadline((step.result || {}).metrics)}${scoreTable((step.result || {}).metrics)}${evalReportLink(step.stage, step.result, step.round_index) ? `<p class="row-actions">${evalReportLink(step.stage, step.result, step.round_index)}</p>` : ''}<pre class="log">${escapeHtml(JSON.stringify(visibleResult(step.result), null, 2))}</pre>
       ${logPanel(step.logs || '', step.status === 'running' ? ` data-live-log="1" data-live-stage="${escapeHtml(step.stage)}" data-live-round="${step.round_index}"` : '')}
       ${step.command ? `<h3>命令</h3><pre class="command">${escapeHtml(step.command)}</pre>` : ''}
     </td></tr>` : '';
@@ -569,12 +603,14 @@ function renderServe() {
 }
 
 function render() {
+  syncLogScrollLock();
   renderRuns();
   const main = document.getElementById('main');
   if (!state.view) {
     main.innerHTML = `<div class="empty"><h1>从一轮可点击的后训练闭环开始</h1>
       <p>从左边新建实验开始。</p></div>`;
     syncLive();
+    syncLogScrollLock();
     return;
   }
   const view = state.view;
@@ -595,6 +631,7 @@ function render() {
     ${body}`;
   syncSource();
   syncLive();
+  syncLogScrollLock();
 }
 
 async function runCurrent() {
@@ -1186,6 +1223,14 @@ document.addEventListener('click', (event) => {
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
   document.querySelectorAll('.log-panel.log-fullscreen').forEach((panel) => setLogFullscreen(panel, false));
+  syncLogScrollLock();
+});
+
+new MutationObserver(() => syncLogScrollLock()).observe(document.documentElement, {
+  subtree: true,
+  childList: true,
+  attributes: true,
+  attributeFilter: ['class'],
 });
 
 async function boot() {
