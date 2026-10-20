@@ -350,7 +350,7 @@ def test_sync_status_comes_from_local_files_not_hope_list(tmp_path, hope_env):
     page = Path(__file__).resolve().parents[1].joinpath('static', 'app.js').read_text(encoding='utf-8')
     assert 'data-fetch-note' in page
     assert '重新拉取' in page
-    assert '进度见进程日志' in page
+    assert '进度见 rsi/.rsi.log' in page
     assert 'hope list' not in page
 
 
@@ -825,7 +825,7 @@ def test_run_sh_does_not_install_hope():
     assert '模型来源：' not in page
     assert '模型来源' not in html
     assert '重新拉取' in page
-    assert '同步中，进度见进程日志' in page
+    assert '同步中，进度见 rsi/.rsi.log' in page
 
 
 PASSWORD_PROMPT = 'Warning: Password input may be echoed. mis密码(非jumper密码):'
@@ -1335,7 +1335,7 @@ def test_kick_hope_login_is_nonblocking(tmp_path, hope_env, monkeypatch):
 
 def test_clone_chunks_are_in_the_process_log_before_hope_returns(tmp_path, hope_env, monkeypatch):
     log = tmp_path / '.rsi.log'
-    monkeypatch.setattr('rsi.app.server_log_path', lambda: log)
+    monkeypatch.setattr(model_fetch, 'process_log_path', lambda: log)
     seen = {}
 
     def runner(argv, **kwargs):
@@ -1360,7 +1360,7 @@ def test_clone_chunks_are_in_the_process_log_before_hope_returns(tmp_path, hope_
 def test_stream_subprocess_writes_before_the_child_exits(tmp_path, monkeypatch):
     log = tmp_path / '.rsi.log'
     flag = tmp_path / 'go'
-    monkeypatch.setattr('rsi.app.server_log_path', lambda: log)
+    monkeypatch.setattr(model_fetch, 'process_log_path', lambda: log)
     script = (
         'import sys, time\n'
         'from pathlib import Path\n'

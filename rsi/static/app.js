@@ -14,6 +14,8 @@ const state = {
   serveDraftRun: null,
   inferLogVisible: false,
   inferLog: '',
+  inferLogTimer: null,
+  inferRuntimeOpen: false,
   mediaTab: 'image',
   mediaFiles: { image: null, video: null, audio: null },
 };
@@ -647,7 +649,7 @@ function renderInferControl(item, values, running) {
     const min = item.minimum == null ? 0 : item.minimum;
     const max = item.maximum == null ? 1 : item.maximum;
     const step = item.step == null ? 'any' : item.step;
-    return `<label class="field infer-slider" data-key="${item.id}"><span>${escapeHtml(item.label)}</span>${info}<div class="slider-line"><input type="range" data-field="${item.id}" min="${min}" max="${max}" step="${step}" value="${escapeHtml(value)}" /><output>${escapeHtml(value)}</output><button type="button" class="ghost icon" data-action="slider-reset" data-reset="${item.id}" title="恢复初始值">↺</button></div></label>`;
+    return `<div class="field infer-slider" data-key="${item.id}"><div class="slider-head"><span>${escapeHtml(item.label)}</span><input type="number" class="slider-num" data-slider-num="${item.id}" min="${min}" max="${max}" step="${step}" value="${escapeHtml(value)}" /><button type="button" class="ghost icon" data-action="slider-reset" data-reset="${item.id}" title="恢复初始值">↺</button></div>${info}<input type="range" data-field="${item.id}" min="${min}" max="${max}" step="${step}" value="${escapeHtml(value)}" /><div class="slider-ends"><span>${escapeHtml(min)}</span><span>${escapeHtml(max)}</span></div></div>`;
   }
   if (item.widget === 'Dropdown') {
     const choice = inferChoices(item, value);
@@ -684,12 +686,21 @@ function renderInferControl(item, values, running) {
 }
 
 function renderInferRow(row, values, running, fill) {
-  const cells = row.map((item) => {
-    const control = renderInferControl(item, values, running);
-    if (item.id !== 'adapters' || !fill.checkpoint) return control;
-    return `${control}<button type="button" class="ghost" data-action="fill-serve">填入本轮晋级 checkpoint</button>`;
-  }).join('');
-  return `<div class="infer-row n${row.length}">${cells}</div>`;
+  if (row.length === 1 && row[0].id === 'log' && !state.inferLogVisible) return '';
+  const fields = [];
+  const sides = [];
+  row.forEach((item) => {
+    let control = renderInferControl(item, values, running);
+    if (item.id === 'adapters' && fill.checkpoint) {
+      control += '<button type="button" class="ghost fill-serve" data-action="fill-serve">填入本轮晋级 checkpoint</button>';
+    }
+    if (item.widget === 'Button') sides.push(control);
+    else fields.push(control);
+  });
+  const group = fields.length ? `<div class="infer-group">${fields.join('')}</div>` : '';
+  const side = sides.length ? `<div class="infer-sides">${sides.join('')}</div>` : '';
+  const onlyButtons = fields.length === 0 ? ' actions' : '';
+  return `<div class="infer-row${onlyButtons}${sides.length ? ' has-side' : ''}">${group}${side}</div>`;
 }
 
 function renderMediaTabs() {
@@ -708,7 +719,7 @@ function renderMediaTabs() {
 
 function renderChatbot(label) {
   const bubbles = state.chat.map((item) => `<div class="bubble ${item.role}">${escapeHtml(item.content)}</div>`).join('');
-  return `<div class="infer-chat-wrap"><span class="chat-label">${escapeHtml(label || 'Chatbot')}</span><div class="infer-chat">${bubbles}</div></div>`;
+  return `<div class="infer-group infer-chat-wrap"><span class="chat-label">${escapeHtml(label || 'Chatbot')}</span><div class="infer-chat">${bubbles}</div></div>`;
 }
 
 function renderServe() {
@@ -726,14 +737,15 @@ function renderServe() {
     }
     if (section.kind === 'accordion') {
       const body = (section.rows || []).map((row) => renderInferRow(row, values, running, fill)).join('');
-      return `<details class="infer-runtime"><summary>${escapeHtml(section.label || '运行时')}</summary><div class="body">${body}</div></details>`;
+      const open = state.inferRuntimeOpen || state.inferLogVisible ? ' open' : '';
+      return `<details class="infer-runtime"${open}><summary>${escapeHtml(section.label || '运行时')}</summary><div class="body">${body}</div></details>`;
     }
     if (section.kind === 'chatbot') {
       return renderChatbot(section.item && section.item.label);
     }
     if (section.kind === 'prompt') {
       const prompt = section.prompt || { label: '请输入：' };
-      return `<div class="infer-row prompt-row"><label class="field"><span>${escapeHtml(prompt.label)}</span><textarea id="chat-input" rows="4"></textarea></label>${renderMediaTabs()}</div>`;
+      return `<div class="infer-row prompt-row"><div class="infer-group"><label class="field"><span>${escapeHtml(prompt.label)}</span><textarea id="chat-input" rows="4"></textarea></label></div>${renderMediaTabs()}</div>`;
     }
     if (section.kind === 'actions') {
       return `<div class="infer-row actions">${(section.items || []).map((item) => renderInferControl(item, values, running)).join('')}</div>`;
@@ -773,6 +785,8 @@ function render() {
   syncSource();
   syncLive();
   syncLogScrollLock();
+  if (state.tab === 'serve' && state.inferLogVisible) ensureInferLogPoll();
+  else if (state.tab !== 'serve') stopInferLogPoll();
 }
 
 async function runCurrent() {
@@ -847,6 +861,31 @@ async function uploadFile(file) {
   const slot = document.getElementById('live-command');
   if (slot) slot.innerHTML = `<h3>上传校验</h3><pre class="log">${escapeHtml(JSON.stringify(data.validation, null, 2))}</pre>`;
   toast(data.validation.ok ? '上传通过校验' : '上传文件格式未通过');
+}
+
+function stopInferLogPoll() {
+  if (!state.inferLogTimer) return;
+  clearInterval(state.inferLogTimer);
+  state.inferLogTimer = null;
+}
+
+async function refreshInferLog() {
+  if (!state.inferLogVisible || !state.view) return;
+  const payload = await api(`/api/runs/${state.view.run.id}/serve/log`);
+  state.inferLog = payload.log || '';
+  const box = document.querySelector('[data-key="log"] textarea');
+  if (box && box.value !== state.inferLog) {
+    const follow = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    box.value = state.inferLog;
+    if (follow) box.scrollTop = box.scrollHeight;
+  }
+}
+
+function ensureInferLogPoll() {
+  if (state.inferLogTimer || !state.inferLogVisible) return;
+  state.inferLogTimer = setInterval(() => {
+    refreshInferLog().catch(() => {});
+  }, 1000);
 }
 
 async function startServe() {
@@ -1096,10 +1135,10 @@ document.addEventListener('click', async (event) => {
       const key = target.dataset.reset;
       const item = state.schema.llm_infer && state.schema.llm_infer.by_id[key];
       const input = document.querySelector(`[data-field="${key}"]`);
+      const num = document.querySelector(`[data-slider-num="${key}"]`);
       if (input && item) {
         input.value = item.default;
-        const out = input.parentElement.querySelector('output');
-        if (out) out.textContent = item.default;
+        if (num) num.value = item.default;
         rememberServeDraft({ target: input });
       }
       return;
@@ -1126,11 +1165,14 @@ document.addEventListener('click', async (event) => {
       const payload = await api(`/api/runs/${state.view.run.id}/serve/log`);
       state.inferLog = payload.log || '';
       state.inferLogVisible = true;
+      state.inferRuntimeOpen = true;
       render();
+      ensureInferLogPoll();
       return;
     }
     if (target.dataset.action === 'serve-log-stop') {
       state.inferLogVisible = false;
+      stopInferLogPoll();
       render();
       return;
     }
@@ -1162,6 +1204,12 @@ document.addEventListener('click', (event) => {
   render();
 });
 
+document.addEventListener('toggle', (event) => {
+  const node = event.target;
+  if (!node || !node.classList || !node.classList.contains('infer-runtime')) return;
+  state.inferRuntimeOpen = Boolean(node.open);
+}, true);
+
 function rememberServeDraft(event) {
   if (state.tab !== 'serve' || !state.view) return;
   const field = event.target && event.target.dataset && event.target.dataset.field;
@@ -1171,9 +1219,18 @@ function rememberServeDraft(event) {
 }
 
 document.addEventListener('input', (event) => {
-  if (event.target && event.target.type === 'range') {
-    const out = event.target.parentElement && event.target.parentElement.querySelector('output');
-    if (out) out.textContent = event.target.value;
+  const target = event.target;
+  if (target && target.type === 'range') {
+    const num = document.querySelector(`[data-slider-num="${target.dataset.field}"]`);
+    if (num) num.value = target.value;
+  }
+  if (target && target.dataset && target.dataset.sliderNum) {
+    const range = document.querySelector(`[data-field="${target.dataset.sliderNum}"]`);
+    if (range) {
+      range.value = target.value;
+      rememberServeDraft({ target: range });
+      return;
+    }
   }
   rememberServeDraft(event);
 });
@@ -1235,7 +1292,7 @@ function fetchNotice() {
   const syncing = rows.find((row) => row.state === '同步中');
   if (syncing) {
     if (syncing.message && syncing.message !== '同步中') return `${syncing.repo_id} ${syncing.message}`;
-    return `${syncing.repo_id} 同步中，进度见进程日志`;
+    return `${syncing.repo_id} 同步中，进度见 rsi/.rsi.log`;
   }
   const failed = rows.find((row) => row.state === '失败');
   if (failed) return failed.message || '失败';
@@ -1247,7 +1304,7 @@ function fetchProgressText() {
   const parts = [];
   fetchRows().forEach((row) => {
     if (row.state === '同步中') {
-      const detail = row.message && row.message !== '同步中' ? row.message : '同步中，进度见进程日志';
+      const detail = row.message && row.message !== '同步中' ? row.message : '同步中，进度见 rsi/.rsi.log';
       parts.push(`${row.repo_id} ${detail}`);
     } else if (row.state === '失败') {
       parts.push(`${row.repo_id} ${row.message || '失败'}`);

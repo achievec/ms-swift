@@ -119,7 +119,7 @@ train_python: /usr/local/conda/envs/model-train/bin/python
 rsi_home: /opt/meituan/dolphinfs_liubo108/ms-swift/workspace
 ```
 
-仓库里的 `fetch.yaml` 就是这样写的：模型落在 `/opt/meituan/dolphinfs_liubo108/ms-swift/models`，数据集落在 `/opt/meituan/dolphinfs_liubo108/ms-swift/datasets`（目录不存在时会自动创建，需要当前用户有写权限）。也可以改成 `~/models` 这类路径，`~` 会展开成当前用户的家目录。拉取模型时先进入 `model_root`，再执行 `hope clone https://huggingface.co/<org>/<name>`。hope 3.6.6 把文件放在 `<model_root>/huggingface.co/<org>/<name>`（进程日志里的「数据存储在」就是这个目录）。旧布局 `<model_root>/<org>/<name>` 也算就绪。两边都看 `config.json`，页面上的本地路径和训练的 `--model` 用实际有文件的那一个。数据集同样：`<data_root>/huggingface.co/datasets/<org>/<name>` 或 `<data_root>/<org>/<name>`。这些目录里已经有文件时，打开页面或进入阶段不会再执行 `hope clone`。只有点「重新拉取」才会再拉一次。
+仓库里的 `fetch.yaml` 就是这样写的：模型落在 `/opt/meituan/dolphinfs_liubo108/ms-swift/models`，数据集落在 `/opt/meituan/dolphinfs_liubo108/ms-swift/datasets`（目录不存在时会自动创建，需要当前用户有写权限）。也可以改成 `~/models` 这类路径，`~` 会展开成当前用户的家目录。拉取模型时先进入 `model_root`，再执行 `hope clone https://huggingface.co/<org>/<name>`。hope 3.6.6 把文件放在 `<model_root>/huggingface.co/<org>/<name>`（`rsi/.rsi.log` 里的「数据存储在」就是这个目录）。旧布局 `<model_root>/<org>/<name>` 也算就绪。两边都看 `config.json`，页面上的本地路径和训练的 `--model` 用实际有文件的那一个。数据集同样：`<data_root>/huggingface.co/datasets/<org>/<name>` 或 `<data_root>/<org>/<name>`。这些目录里已经有文件时，打开页面或进入阶段不会再执行 `hope clone`。只有点「重新拉取」才会再拉一次。
 
 实验目录（`rsi.sqlite`、每次运行的日志和检查点、上传文件）默认用 `fetch.yaml` 的 `rsi_home`：`/opt/meituan/dolphinfs_liubo108/ms-swift/workspace`。环境变量 `RSI_HOME` 优先。这个目录不存在、并且上一级也不存在或不可写时（Mac 上没有 dolphinfs），改用仓库里的 `rsi/workspace`，不会去创建 `/opt/meituan/...`。审计库写失败时，接口返回的中文错误里带数据库绝对路径，这时把 `RSI_HOME` 指到别的可写目录即可。
 
@@ -141,11 +141,11 @@ hope 本身要事先装好（`./run.sh` 不会安装它）。来源是 hope 但�
 pip3 install hope==3.6.6 --no-cache-dir -i https://pypi.sankuai.com/simple
 ```
 
-进程日志是 `rsi/.rsi.log`（每次 `./run.sh start` 成功启动前会删掉重建），只放服务启动和 hope 拉取。纯文本是 `http://<主机>:8418/api/server-log`（没有这个文件时是 404）。自动跟上新日志的页面是 `/server-log`。它先用 SSE `/api/server-log/events`；几秒内没有推送就改为定时拉取 `/api/server-log/stream`。`hope login` 会把命令、目录、退出码和输出写进这份日志。`hope clone` 一开始就写命令和目录，随后把 stdout/stderr 原样追加进同一个文件（不等进程结束，用户名和 token 会抹掉），结束时再写退出码。hope 的标准输入是关闭的，不会停在密码提示上。
+`./run.sh` 把本进程的标准输出写进 `rsi/.rsi.log`（每次 `start` 成功启动前会删掉重建）。页面上没有「进程日志」。`hope login` 会把命令、目录、退出码和输出追加进这个文件。`hope clone` 一开始就写命令和目录，随后把 stdout/stderr 原样追加（不等进程结束，用户名和 token 会抹掉），结束时再写退出码。hope 的标准输入是关闭的，不会停在密码提示上。
 
-训练、评测的完整输出按实验分开，不进进程日志。路径是 `runs/<实验 id>/round_<轮次>/<阶段>/swift.log`（评测在该阶段下的 `eval_output/swift.log`，推理是 `serve/deploy.log`）。进程日志里最多一行，例如 `[sft <实验 id>] 实验日志：<上面的路径>`。页面上的阶段日志读的就是这个文件。
+训练、评测的完整输出按实验分开，不进 `rsi/.rsi.log`。路径是 `runs/<实验 id>/round_<轮次>/<阶段>/swift.log`（评测在该阶段下的 `eval_output/swift.log`）。这个文件里最多一行，例如 `[sft <实验 id>] 实验日志：<上面的路径>`。页面上该阶段的「日志」读的就是这个文件，可以全屏。推理部署的输出是 `serve/deploy.log`，在「推理服务」的「运行时」里点「展示部署状态」看「日志输出」。
 
-`hope --version` 应为 3.6.6。同步是异步的。页面上的拉取状态只看本地文件：目录里出现 `config.json` 后才是「就绪」，在这之前是「同步中，进度见进程日志」。不会调用 `hope list`。训练命令的 `--model` 改为本地路径，并带上 `--model_type` 和 `--template`。子进程会设置 `HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`、`HF_DATASETS_OFFLINE=1`。
+`hope --version` 应为 3.6.6。同步是异步的。页面上的拉取状态只看本地文件：目录里出现 `config.json` 后才是「就绪」，在这之前是「同步中，进度见 rsi/.rsi.log」。不会调用 `hope list`。训练命令的 `--model` 改为本地路径，并带上 `--model_type` 和 `--template`。子进程会设置 `HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`、`HF_DATASETS_OFFLINE=1`。
 
 公开数据集请用 Hugging Face 的 `org/name`，或直接上传本地文件。`modelscope/...` 会提示不能在当前网络下载。内置评测 jsonl 仍走本地 `general_qa`。其它评测集放到 `$RSI_DATA_ROOT/benchmarks/<名字>`，或在 `eval_dataset_args` 里写 `local_path`。
 

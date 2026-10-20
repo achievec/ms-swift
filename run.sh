@@ -411,7 +411,7 @@ cmd_start() {
     exit 1
   done
   ensure_deps
-  # Fresh log each start so /server-log and /api/server-log only show this run.
+  # Fresh file each start. run.sh still redirects this process into rsi/.rsi.log.
   rm -rf "${LOG_FILE}"
   echo "[启动] 正在后台启动 python -m rsi …"
   {

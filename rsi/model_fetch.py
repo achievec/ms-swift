@@ -849,9 +849,8 @@ _LOG_APPEND = threading.Lock()
 
 
 def process_log_path() -> Path:
-    """Same file ``/server-log`` tails. ``run.sh`` also redirects this process there."""
-    from rsi.app import server_log_path
-    return server_log_path()
+    """``rsi/.rsi.log``. ``run.sh`` redirects this process here; hope clone appends too."""
+    return Path(__file__).resolve().parent / '.rsi.log'
 
 
 def append_process_log(text: str) -> None:
