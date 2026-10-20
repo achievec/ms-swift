@@ -162,3 +162,5 @@ def test_send_button_tracks_prompt_and_media():
     assert "target.id === 'chat-input'" in page
     assert 'button.disabled = !ready' in page
     assert '.infer-row.actions button.primary { background: #2563eb;' in css
+    assert "item.id === 'show_log' ? !showing : showing" in page
+    assert "item.id === 'show_log' || item.id === 'stop_show_log'" in page

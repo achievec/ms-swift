@@ -467,7 +467,8 @@ dialog label input, dialog label textarea { font-weight: 400; color: var(--ink);
   box-shadow: none;
 }
 .infer-sides button.ghost { background: #e5e7eb; border-color: #e5e7eb; color: #111827; }
-.infer-sides button.ghost:hover { background: #d1d5db; }
+.infer-sides button.ghost:hover:not(:disabled) { background: #d1d5db; }
+.infer-sides button:disabled { opacity: 0.45; cursor: not-allowed; }
 .infer-sides button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
 .infer-sides button.primary:hover { background: #1d4ed8; border-color: #1d4ed8; }
 .infer-sides button.danger { background: #ef4444; border-color: #ef4444; color: #fff; }

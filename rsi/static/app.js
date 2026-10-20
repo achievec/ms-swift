@@ -653,6 +653,12 @@ function renderInferControl(item, values, running) {
     if (item.id === 'submit' && !chatCanSend()) disabled = 'disabled';
     let klass = item.primary ? 'primary' : (item.id === 'kill_task' ? 'danger' : 'ghost');
     if (item.id === 'submit') klass = chatCanSend() ? 'primary' : 'ghost';
+    if (item.id === 'show_log' || item.id === 'stop_show_log') {
+      const showing = Boolean(state.inferLogVisible);
+      const active = item.id === 'show_log' ? !showing : showing;
+      disabled = active ? '' : 'disabled';
+      klass = active ? 'primary' : 'ghost';
+    }
     return `<div class="infer-action"><button type="button" class="${klass}" data-action="${action}" ${disabled}>${escapeHtml(item.label)}</button></div>`;
   }
   if (item.widget === 'Checkbox') {
