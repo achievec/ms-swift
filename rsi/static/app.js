@@ -344,6 +344,20 @@ function renderPromote(values) {
   return `<div class="candidates">${cards}</div>`;
 }
 
+function logPanel(text, liveAttrs) {
+  return `<div class="log-panel">
+    <div class="log-head"><h3>日志</h3><button type="button" class="ghost" data-log-fullscreen>全屏</button></div>
+    <pre class="log live-log" data-pinned="1"${liveAttrs || ''}>${escapeHtml(text || '')}</pre>
+  </div>`;
+}
+
+function setLogFullscreen(panel, on) {
+  panel.classList.toggle('log-fullscreen', on);
+  const button = panel.querySelector('[data-log-fullscreen]');
+  if (button) button.textContent = on ? '退出全屏' : '全屏';
+  document.body.classList.toggle('log-lock', Boolean(document.querySelector('.log-panel.log-fullscreen')));
+}
+
 function renderStage(stage) {
   const view = state.view;
   const form = view.forms[stage];
@@ -366,7 +380,8 @@ function renderStage(stage) {
   const validate = stage === 'data' ? '<button type="button" class="ghost" data-action="validate">校验格式</button>' : '';
   const result = form.result ? `<h3>结果</h3><pre class="log">${escapeHtml(JSON.stringify(visibleResult(form.result), null, 2))}</pre>` : '';
   const live = form.status === 'running';
-  const logs = (form.logs || live) ? `<h3>日志</h3><pre class="log live-log" data-pinned="1"${live ? ` data-live-log="1" data-live-stage="${escapeHtml(stage)}" data-live-round="${view.round.round_index}"` : ''}>${escapeHtml(form.logs || '')}</pre>` : '';
+  const liveAttrs = live ? ` data-live-log="1" data-live-stage="${escapeHtml(stage)}" data-live-round="${view.round.round_index}"` : '';
+  const logs = (form.logs || live) ? logPanel(form.logs || '', liveAttrs) : '';
   const command = form.command ? `<h3>命令</h3><pre class="command">${escapeHtml(form.command)}</pre>` : '';
   const kicker = live
     ? `${escapeHtml(meta.label)} · ${runningMarkup(form.started_at)}`
@@ -499,7 +514,7 @@ function renderAudit() {
       <p><b>开始</b> ${escapeHtml(formatShanghai(step.started_at))} · <b>结束</b> ${escapeHtml(formatShanghai(step.ended_at || ''))}</p>
       <h3>参数</h3><pre class="log">${escapeHtml(JSON.stringify(step.params, null, 2))}</pre>
       <h3>结果</h3><pre class="log">${escapeHtml(JSON.stringify(visibleResult(step.result), null, 2))}</pre>
-      <h3>日志</h3><pre class="log live-log" data-pinned="1"${step.status === 'running' ? ` data-live-log="1" data-live-stage="${escapeHtml(step.stage)}" data-live-round="${step.round_index}"` : ''}>${escapeHtml(step.logs || '')}</pre>
+      ${logPanel(step.logs || '', step.status === 'running' ? ` data-live-log="1" data-live-stage="${escapeHtml(step.stage)}" data-live-round="${step.round_index}"` : '')}
       ${step.command ? `<h3>命令</h3><pre class="command">${escapeHtml(step.command)}</pre>` : ''}
     </td></tr>` : '';
     return `<tr data-step="${step.id}">
@@ -1152,6 +1167,20 @@ document.addEventListener('scroll', (event) => {
   const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
   el.dataset.pinned = gap < 28 ? '1' : '0';
 }, true);
+
+document.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-log-fullscreen]');
+  if (!button) return;
+  const panel = button.closest('.log-panel');
+  if (!panel) return;
+  event.preventDefault();
+  setLogFullscreen(panel, !panel.classList.contains('log-fullscreen'));
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  document.querySelectorAll('.log-panel.log-fullscreen').forEach((panel) => setLogFullscreen(panel, false));
+});
 
 async function boot() {
   state.schema = await api('/api/schema');
