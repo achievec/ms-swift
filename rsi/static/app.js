@@ -398,9 +398,10 @@ function renderStage(stage) {
         <summary>高级参数 YAML</summary>
         <textarea id="extra-yaml">${escapeHtml((form.values && form.values.extra_yaml) || '')}</textarea>
       </details>
-      ${fetchBar()}
+      ${fetchNote()}
       <div class="row-actions">
         <button type="button" class="primary" data-action="run" ${mutable ? '' : 'disabled'}>${buttonLabel}</button>
+        ${refetchButton()}
         ${validate}
         <button type="button" class="ghost" data-action="preview" ${view.mutable ? '' : 'disabled'}>预览命令</button>
         <button type="button" class="ghost" data-action="preset" ${view.mutable ? '' : 'disabled'}>恢复预设</button>
@@ -548,9 +549,10 @@ function renderServe() {
     <h2>OpenAI 兼容推理</h2>
     ${promoted ? '' : '<p>还没有晋级检查点。</p>'}
     ${renderGroups(fields, values)}
-    ${fetchBar()}
+    ${fetchNote()}
     <div class="row-actions">
       <button type="button" class="primary" data-action="serve" ${promoted ? '' : 'disabled'}>${running ? '重新启动服务' : '启动推理 API'}</button>
+      ${refetchButton()}
       <button type="button" class="danger" data-action="serve-stop" ${running ? '' : 'disabled'}>停止</button>
     </div>
     ${running ? `<p>服务中：<code>${escapeHtml(endpoint)}</code> · 模型名 <code>${escapeHtml(service.served_model_name)}</code> · 检查点 <span class="mono">${escapeHtml(service.checkpoint)}</span></p>
@@ -904,11 +906,15 @@ function fetchProgressText() {
   return parts.join(' · ');
 }
 
-function fetchBar() {
+function fetchNote() {
   if (!state.schema || state.schema.model_source !== 'hope') return '';
   const text = fetchProgressText();
-  const badge = `<span class="badge fetch-progress" data-fetch-note${text ? '' : ' hidden'}>${escapeHtml(text)}</span>`;
-  return `<div class="row-actions">${badge}<button type="button" class="ghost" data-action="refetch">重新拉取</button></div>`;
+  return `<span class="badge fetch-progress" data-fetch-note${text ? '' : ' hidden'}>${escapeHtml(text)}</span>`;
+}
+
+function refetchButton() {
+  if (!state.schema || state.schema.model_source !== 'hope') return '';
+  return '<button type="button" class="ghost" data-action="refetch">重新拉取</button>';
 }
 
 function paintFetchNotes() {
