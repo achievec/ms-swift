@@ -3,7 +3,7 @@
 model_source: hope
 # hope clone uses these directories as cwd (~ and $HOME are expanded).
 # The repo lands at <root>/<org>/<name>. RSI_MODEL_ROOT and RSI_DATA_ROOT still win.
-model_root: ~/models
+model_root: /opt/custom/models
 data_root: ~/datasets
 # misid for `hope login` and `hope clone --username`. RSI_HOPE_USERNAME overrides this.
 # Do not put a token in this file; use RSI_HOPE_TOKEN.

@@ -274,7 +274,7 @@ def test_bundled_fetch_yaml_defaults_to_hope(monkeypatch):
     text = bundled.read_text(encoding='utf-8')
     assert 'model_source: hope' in text
     assert 'hope_username: liyuhao03' in text
-    assert 'model_root: ~/models' in text
+    assert 'model_root: /opt/custom/models' in text
     assert 'data_root: ~/datasets' in text
     assert 'hope_token' not in text
     assert model_source() == 'hope'
