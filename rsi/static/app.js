@@ -10,6 +10,8 @@ const state = {
   busy: false,
   liveTimer: null,
   liveBusy: false,
+  serveDraft: null,
+  serveDraftRun: null,
 };
 
 function evalReportLink(stage, result, roundIndex) {
@@ -221,6 +223,8 @@ async function deleteRun(id) {
 async function openRun(id, round, keepStage) {
   const query = round ? `?round=${round}` : '';
   state.view = await api(`/api/runs/${id}${query}`);
+  state.serveDraft = null;
+  state.serveDraftRun = null;
   state.round = state.view.round.round_index;
   if (!keepStage) {
     const current = state.view.run.current_stage;
@@ -531,7 +535,9 @@ function renderGraph() {
 
 function renderTerminal() {
   const completed = state.view.run.status === 'completed';
-  return `<section class="panel"><h2>${completed ? '实验已完成' : '实验已结束'}</h2><p>本轮到此结束。已有检查点仍留在记录里。</p></section>`;
+  return `<section class="panel"><h2>${completed ? '实验已完成' : '实验已结束'}</h2><p>本轮到此结束。已有检查点仍留在记录里。</p>
+    <div class="row-actions"><button type="button" class="primary" data-action="open-serve">去部署推理服务</button></div>
+  </section>`;
 }
 
 function renderFlow() {
@@ -570,22 +576,29 @@ function renderAudit() {
   </section>`;
 }
 
+function serveFormValues(view) {
+  if (state.serveDraft && state.serveDraftRun === view.run.id) return state.serveDraft;
+  return view.serve_form || {};
+}
+
 function renderServe() {
   const view = state.view;
   const fields = state.schema.fields.serve;
-  const values = view.serve_form || {};
+  const values = serveFormValues(view);
+  const fill = view.serve_fill || {};
   const service = view.service;
-  const promoted = (view.rounds || []).some((round) => round.promoted_checkpoint);
   const running = service && service.status === 'running';
+  const canFill = Boolean(fill.checkpoint);
   const bubbles = state.chat.map((item) => `<div class="bubble ${item.role}">${escapeHtml(item.content)}</div>`).join('');
   const endpoint = running ? `http://${service.host === '0.0.0.0' ? '127.0.0.1' : service.host}:${service.port}/v1` : '';
   return `<section class="panel">
-    <h2>OpenAI 兼容推理</h2>
-    ${promoted ? '' : '<p>还没有晋级检查点。</p>'}
+    <h2>推理服务</h2>
+    <p class="muted">基座走 --model，LoRA 走 --adapters。不勾选合并 LoRA 时，服务加载基座加适配器。</p>
     ${renderGroups(fields, values)}
     ${fetchNote()}
     <div class="row-actions">
-      <button type="button" class="primary" data-action="serve" ${promoted ? '' : 'disabled'}>${running ? '重新启动服务' : '启动推理 API'}</button>
+      <button type="button" class="primary" data-action="serve" ${values.model || values.adapters ? '' : 'disabled'}>${running ? '重新部署' : '部署推理服务'}</button>
+      ${canFill ? '<button type="button" class="ghost" data-action="fill-serve">填入本轮晋级 checkpoint</button>' : ''}
       ${refetchButton()}
       <button type="button" class="danger" data-action="serve-stop" ${running ? '' : 'disabled'}>停止</button>
     </div>
@@ -715,6 +728,8 @@ async function startServe() {
     body: JSON.stringify({ params }),
   });
   state.view = payload.view;
+  state.serveDraft = null;
+  state.serveDraftRun = null;
   toast('推理服务已启动');
   render();
 }
@@ -845,6 +860,26 @@ document.addEventListener('click', async (event) => {
       render();
       return;
     }
+    if (target.dataset.action === 'open-serve') {
+      state.tab = 'serve';
+      render();
+      return;
+    }
+    if (target.dataset.action === 'fill-serve') {
+      const fill = (state.view && state.view.serve_fill) || {};
+      const current = collectParams();
+      state.serveDraft = {
+        ...current,
+        model: fill.model || current.model || '',
+        adapters: fill.adapters || '',
+        model_type: fill.model_type || current.model_type || '',
+        template: fill.template || current.template || '',
+      };
+      state.serveDraftRun = state.view.run.id;
+      render();
+      toast('已填入本轮 checkpoint');
+      return;
+    }
     if (target.dataset.action === 'serve') {
       state.busy = true;
       await startServe();
@@ -873,7 +908,18 @@ document.addEventListener('click', (event) => {
   render();
 });
 
+function rememberServeDraft(event) {
+  if (state.tab !== 'serve' || !state.view) return;
+  const field = event.target && event.target.dataset && event.target.dataset.field;
+  if (!field || !event.target.closest('#main')) return;
+  state.serveDraft = collectParams();
+  state.serveDraftRun = state.view.run.id;
+}
+
+document.addEventListener('input', rememberServeDraft);
+
 document.addEventListener('change', async (event) => {
+  rememberServeDraft(event);
   if (event.target.dataset && event.target.dataset.field === 'source') syncSource();
   if (event.target.dataset && event.target.dataset.field === 'eval_backend') {
     const scope = event.target.closest('section, form') || document;

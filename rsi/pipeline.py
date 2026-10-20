@@ -16,7 +16,7 @@ import yaml
 
 from rsi.backends import BackendError, swift_launch
 from rsi.eval_report import inside_directory, merge_eval_report
-from rsi.commands import STAGE_COMMAND, build_argv, format_shell
+from rsi.commands import STAGE_COMMAND, apply_more_params, build_argv, format_shell
 from rsi.dataset_validate import MAX_BYTES, validate_file, validate_public_id
 from rsi.flow import ACTION_LABELS, assemble_flow, blocked_message, decision_actions, stage_unlocked
 from rsi.logtail import announce_log, read_log_window, slice_bytes
@@ -380,8 +380,29 @@ class Pipeline:
         adapter. The base ``--model`` comes from that checkpoint's ``args.json``.
         When args.json has no model, the run's base model is used. A full
         checkpoint (``config.json`` and no adapter file) stays ``--model``.
+        An ``adapters`` value already chosen by the form is kept.
         """
+        chosen = str(merged.get('adapters') or '').strip()
         raw = str(merged.get('model') or '').strip()
+        if chosen:
+            path = Path(chosen).expanduser()
+            try:
+                adapter = path.is_dir() and _is_adapter_checkpoint(path)
+            except OSError:
+                adapter = False
+            model_path = Path(raw).expanduser() if raw else None
+            model_is_adapter = False
+            if model_path is not None:
+                try:
+                    model_is_adapter = model_path.is_dir() and _is_adapter_checkpoint(model_path)
+                except OSError:
+                    model_is_adapter = False
+            if model_is_adapter or not raw:
+                base = _adapter_base_model(path if adapter else model_path, (run or {}).get('base_model') or '')
+                if base:
+                    merged['model'] = base
+            self._pin_identity(merged, run)
+            return
         if not raw:
             return
         path = Path(raw).expanduser()
@@ -545,13 +566,52 @@ class Pipeline:
             return preset
 
         if stage == 'serve':
-            promo = self.store.latest_promotion(run['id'])
-            if promo:
-                preset['model'] = promo['promoted_checkpoint']
-                preset['served_model_name'] = _slug(run['name'], promo['round_index'], promo['promoted_kind'])
+            preset.update(self._serve_targets(run, rnd))
             self._apply_model_meta(preset, run)
             return preset
         return preset
+
+    def _serve_checkpoint_path(self, run: dict, rnd: dict) -> tuple:
+        """Promoted checkpoint, else this round's RL checkpoint, else SFT."""
+        promo = self.store.latest_promotion(run['id'])
+        if promo and promo.get('promoted_checkpoint'):
+            return promo['promoted_checkpoint'], promo.get('promoted_kind') or 'ckpt', promo.get('round_index') or rnd.get(
+                'round_index')
+        round_index = (rnd or {}).get('round_index') or run.get('round_index')
+        for kind in ('rl', 'sft'):
+            row = self.store.active_checkpoint(run['id'], round_index, kind)
+            if row and row.get('path'):
+                return row['path'], kind, round_index
+        return '', '', round_index
+
+    def _serve_targets(self, run: dict, rnd: dict) -> dict:
+        """Base ``--model`` plus LoRA ``--adapters`` for this round.
+
+        An adapter directory keeps the run base (or the base recorded in
+        ``args.json``) as ``--model``. A full checkpoint stays ``--model``.
+        """
+        path, kind, round_index = self._serve_checkpoint_path(run, rnd)
+        base = str((run or {}).get('base_model') or '').strip()
+        name = _slug(run.get('name') or '', round_index or 1, kind or 'model')
+        if not path:
+            return {'model': base, 'adapters': '', 'served_model_name': name, 'checkpoint': ''}
+        checkpoint = Path(path).expanduser()
+        try:
+            is_adapter = checkpoint.is_dir() and _is_adapter_checkpoint(checkpoint)
+            is_full = checkpoint.is_dir() and (checkpoint / 'config.json').is_file() and not (
+                checkpoint / 'adapter_config.json').is_file()
+        except OSError:
+            is_adapter = False
+            is_full = False
+        if is_full:
+            return {'model': str(path), 'adapters': '', 'served_model_name': name, 'checkpoint': str(path)}
+        model = _adapter_base_model(checkpoint, base) if is_adapter else base
+        return {
+            'model': model or base,
+            'adapters': str(path),
+            'served_model_name': name,
+            'checkpoint': str(path),
+        }
 
     def candidates(self, run: dict, rnd: dict):
         active = self.store.latest_active_steps(run['id'], rnd['round_index'])
@@ -823,7 +883,8 @@ class Pipeline:
             board.append({'id': stage, 'label': meta['label'], 'summary': meta['summary'], 'status': state['status'],
                           'metric': metric})
         service = self.store.latest_service(run_id)
-        serve_values = self._defaults_for(run, rnd, 'serve')
+        serve_fill = self._defaults_for(run, rnd, 'serve')
+        serve_values = serve_fill
         if service and service.get('status') == 'running' and service.get('params_json'):
             serve_values = _loads(service['params_json'])
         if service and service.get('api_key'):
@@ -848,6 +909,13 @@ class Pipeline:
             'candidates': candidates,
             'recommendation': recommendation,
             'serve_form': serve_values,
+            'serve_fill': {
+                'model': serve_fill.get('model') or '',
+                'model_type': serve_fill.get('model_type') or '',
+                'template': serve_fill.get('template') or '',
+                'adapters': serve_fill.get('adapters') or '',
+                'checkpoint': serve_fill.get('checkpoint') or '',
+            },
             'steps': steps,
             'checkpoints': self.store.list_checkpoints(run_id),
             'service': service,
@@ -1194,11 +1262,20 @@ class Pipeline:
                 self.store.set_current_stage(conn, run_id, focus)
 
     def _prepare_serve(self, run: dict, user: dict, strict: bool) -> dict:
-        merged = _merge(self._defaults_for(run, {'round_index': run['round_index'], 'base_model': run['base_model']},
-                                           'serve'), user)
-        # _defaults_for serve uses latest promotion and ignores the dummy round except for signature.
-        if strict and not merged.get('model'):
-            raise PipelineError('完成至少一次晋级后才能部署')
+        rnd = self.store.get_round(run['id'], run['round_index']) or {
+            'round_index': run['round_index'],
+            'base_model': run['base_model'],
+        }
+        user = user or {}
+        merged = _merge(self._defaults_for(run, rnd, 'serve'), user)
+        if 'adapters' in user:
+            merged['adapters'] = user.get('adapters') or ''
+        try:
+            merged = apply_more_params(merged)
+        except ValueError as exc:
+            raise PipelineError(str(exc)) from exc
+        if strict and not merged.get('model') and not merged.get('adapters'):
+            raise PipelineError('还没有可部署的模型')
         if not merged.get('served_model_name'):
             merged['served_model_name'] = _slug(run['name'], run['round_index'], 'model')
         try:
@@ -1222,9 +1299,6 @@ class Pipeline:
 
     def start_serve(self, run_id: str, params: dict) -> dict:
         run = self._require_run(run_id)
-        promo = self.store.latest_promotion(run_id)
-        if not promo:
-            raise PipelineError('完成至少一次晋级后才能部署')
         merged = self._prepare_serve(run, params or {}, strict=True)
         host = merged['host']
         port = int(merged['port'])

@@ -23,6 +23,8 @@ INTERNAL_KEYS = {
     'served_from',
     'passed',
     'pass_threshold',
+    'more_params',
+    'checkpoint',
 }
 
 STAGE_COMMAND = {
@@ -74,6 +76,46 @@ def build_argv(stage: str, params: dict) -> list:
             continue
         argv.extend([flag, str(value)])
     return argv
+
+
+def apply_more_params(params: dict) -> dict:
+    """Merge the Web-UI 「更多参数」 box into deploy params.
+
+    JSON object keys are copied. A ``--key value`` string is parsed the same way.
+    ``more_params`` itself is not a swift flag.
+    """
+    merged = dict(params or {})
+    raw = merged.pop('more_params', None)
+    if raw is None or str(raw).strip() == '':
+        return merged
+    text = str(raw).strip()
+    if text[0] in '{[':
+        try:
+            loaded = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f'更多参数 JSON 无法解析：{exc}') from exc
+        if not isinstance(loaded, dict):
+            raise ValueError('更多参数的 JSON 必须是对象')
+        for key, value in loaded.items():
+            if value is not None:
+                merged[str(key).replace('-', '_')] = value
+        return merged
+    tokens = shlex.split(text)
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if not token.startswith('--') or token == '--':
+            raise ValueError('更多参数请用 JSON，或 --key value')
+        key = token[2:].replace('-', '_')
+        if not key:
+            raise ValueError('更多参数请用 JSON，或 --key value')
+        if index + 1 < len(tokens) and not tokens[index + 1].startswith('--'):
+            merged[key] = tokens[index + 1]
+            index += 2
+        else:
+            merged[key] = True
+            index += 1
+    return merged
 
 
 def format_shell(argv: list, env_prefix: str = 'CUDA_VISIBLE_DEVICES=0') -> str:

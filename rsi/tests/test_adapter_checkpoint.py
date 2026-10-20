@@ -143,3 +143,74 @@ def test_full_checkpoint_stays_on_model(client):
     assert not rl['params'].get('adapters')
     assert f'--model {checkpoint}' in rl['command']
     assert '--adapters' not in rl['command']
+
+
+def test_more_params_merge_json_and_flags():
+    from rsi.commands import apply_more_params
+    merged = apply_more_params({'model': 'base', 'more_params': '{"top_k": 7, "merge_lora": true}'})
+    assert merged['model'] == 'base'
+    assert merged['top_k'] == 7
+    assert merged['merge_lora'] is True
+    assert 'more_params' not in merged
+    flagged = apply_more_params({'more_params': '--repetition_penalty 1.2 --verbose'})
+    assert flagged['repetition_penalty'] == '1.2'
+    assert flagged['verbose'] is True
+
+
+def test_finished_sft_deploys_base_plus_lora(client):
+    import socket
+    api = client
+    run_id = _create(api)
+    checkpoint = _train_sft(api, run_id)
+    assert _run(api, run_id, 'sft_eval', {}).status_code == 200
+    finished = api.post(f'/api/runs/{run_id}/decide', json={'action': 'finish'})
+    assert finished.status_code == 200, finished.text
+    view = api.get(f'/api/runs/{run_id}').json()
+    assert view['run']['status'] == 'completed'
+    fill = view['serve_fill']
+    assert fill['adapters'] == str(checkpoint)
+    assert fill['model'] == ARGS_BASE
+    assert fill['checkpoint'] == str(checkpoint)
+    assert view['serve_form']['adapters'] == str(checkpoint)
+    assert view['serve_form']['model'] == ARGS_BASE
+    assert view['serve_form']['top_p'] == 0.7
+
+    preview = _preview(api, run_id, 'serve', {})
+    assert preview['params']['adapters'] == str(checkpoint)
+    assert preview['params']['model'] == ARGS_BASE
+    assert f'--adapters {checkpoint}' in preview['command']
+    assert f'--model {ARGS_BASE}' in preview['command']
+    assert f'--model {checkpoint}' not in preview['command']
+    assert '--merge_lora false' in preview['command']
+    assert '--top_k 20' in preview['command']
+    assert 'more_params' not in preview['command']
+
+    overridden = _preview(api, run_id, 'serve', {'more_params': '{"max_new_tokens": 32}'})
+    assert overridden['params']['max_new_tokens'] == 32
+    assert '--max_new_tokens 32' in overridden['command']
+    cleared = _preview(api, run_id, 'serve', {'model': BASE, 'adapters': ''})
+    assert not cleared['params'].get('adapters')
+    assert '--adapters' not in cleared['command']
+    assert f'--model {BASE}' in cleared['command']
+    bad = api.post(f'/api/runs/{run_id}/stages/serve/preview', json={'params': {'more_params': '['}})
+    assert bad.status_code == 400
+
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+    served = api.post(f'/api/runs/{run_id}/serve', json={'params': {'port': port}})
+    assert served.status_code == 200, served.text
+    body = served.json()
+    assert f'--adapters {checkpoint}' in body['command']
+    assert body['result']['checkpoint'] == str(checkpoint)
+
+    (checkpoint / 'adapter_config.json').unlink()
+    (checkpoint / 'config.json').write_text('{"model_type": "qwen2"}', encoding='utf-8')
+    full = api.get(f'/api/runs/{run_id}').json()['serve_fill']
+    assert full['model'] == str(checkpoint)
+    assert full['adapters'] == ''
+
+    page = Path(__file__).resolve().parents[1].joinpath('static', 'app.js').read_text(encoding='utf-8')
+    assert '去部署推理服务' in page
+    assert '填入本轮晋级 checkpoint' in page
+    assert '部署推理服务' in page

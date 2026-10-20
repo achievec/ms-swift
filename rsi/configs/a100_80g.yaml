@@ -156,8 +156,15 @@ serve:
   api_key: ""
   template: qwen2_5
   torch_dtype: bfloat16
+  adapters: ""
+  merge_lora: false
+  system: ""
   max_new_tokens: 512
   temperature: 0.3
+  top_k: 20
+  top_p: 0.7
+  repetition_penalty: 1.05
+  more_params: ""
   vllm_gpu_memory_utilization: 0.9
   vllm_max_model_len: 8192
 
