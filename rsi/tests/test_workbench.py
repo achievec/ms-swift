@@ -3,7 +3,7 @@ import json
 
 from fastapi.testclient import TestClient
 
-from rsi.workbench import export_argv, probe_service, score_row
+from rsi.workbench import export_argv, latest_dataset, probe_service, score_row
 
 
 def _client(tmp_path, monkeypatch):
@@ -86,6 +86,47 @@ def test_load_dataset_recorded_by_the_data_step(tmp_path, monkeypatch):
     assert body['path'].endswith('itops_mix.jsonl')
     assert 'VPN' in body['text'] or body['inspect']['coverage']['num_rows'] == 6
     assert '服务器本地路径' in body['how_to']
+
+
+def test_dataset_notice_when_eval_still_uses_itops(tmp_path):
+    data = tmp_path / 'train.jsonl'
+    data.write_text(SAMPLE, encoding='utf-8')
+    view = {
+        'steps': [{
+            'stage': 'data',
+            'status': 'succeeded',
+            'round_index': 1,
+            'params': {'dataset': str(data)},
+            'result': {},
+        }],
+        'forms': {'sft_eval': {'values': {'custom_eval_config': 'rsi/examples/itops_eval.jsonl'}}},
+        'checkpoints': [],
+    }
+    body = latest_dataset(view)
+    assert 'IT 留出集' in body['notice']
+
+
+def test_complete_reads_only_workbench_files(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    created = client.post('/api/runs', json={
+        'name': '补全文件',
+        'scenario': '只读工具页生成的待补全文件',
+        'base_model': 'Qwen/Qwen2.5-7B-Instruct',
+    })
+    run_id = created.json()['run']['id']
+    packed = client.post('/api/workbench/next-pack', json={'text': SAMPLE})
+    assert packed.status_code == 200, packed.text
+    retry_path = packed.json()['retry_path']
+
+    def fake_chat(_run_id, messages, **_kwargs):
+        return {'choices': [{'message': {'content': '先看证书缓存，再收日志。'}}]}
+
+    client.app.state.pipeline.chat = fake_chat
+    done = client.post(f'/api/runs/{run_id}/workbench/complete', json={'path': retry_path})
+    assert done.status_code == 200, done.text
+    assert done.json()['answered'] == 1
+    outside = client.post(f'/api/runs/{run_id}/workbench/complete', json={'path': '/etc/passwd'})
+    assert outside.status_code == 400
 
 
 def test_report_and_idle_export(tmp_path, monkeypatch):

@@ -172,15 +172,22 @@ def pack_next_round(home: Path, text: str, filename: str = 'data.jsonl', min_sco
 
 def latest_dataset(view: dict) -> dict:
     """Local dataset recorded by the latest succeeded SFT step. Read-only."""
-    found = None
+    current_round = (view.get('run') or {}).get('round_index')
+    current = None
+    latest = None
     for step in view.get('steps') or []:
         if step.get('stage') != 'sft' or step.get('status') != 'succeeded':
             continue
         params = step.get('params') or {}
         result = step.get('result') or {}
         raw = result.get('dataset') or params.get('dataset') or ''
-        if raw:
-            found = {'round_index': step.get('round_index'), 'path': str(raw)}
+        if not raw:
+            continue
+        item = {'round_index': step.get('round_index'), 'path': str(raw)}
+        latest = item
+        if current_round is not None and step.get('round_index') == current_round:
+            current = item
+    found = current or latest
     if not found:
         raise PipelineError('这一轮还没有成功的 SFT，没有可打开的数据集')
     path = Path(found['path'])
@@ -207,7 +214,36 @@ def latest_dataset(view: dict) -> dict:
         'inspect': report,
         'checkpoints': checkpoints,
         'how_to': '文本已填入上方输入框，可以直接检查、拆分或筛选。拆分结果用「服务器本地路径」填回 SFT 的数据集设置。',
+        'notice': _eval_mismatch(path, view),
     }
+
+
+def _eval_mismatch(dataset: Path, view: dict) -> str:
+    forms = view.get('forms') or {}
+    values = ((forms.get('sft_eval') or {}).get('values') or {})
+    configured = str(values.get('custom_eval_config') or '')
+    if not configured or dataset.name == 'itops_mix.jsonl':
+        return ''
+    if 'itops_eval' in configured and dataset.name not in configured:
+        return '当前评测仍指向内置 IT 留出集，和这份训练数据不是同一套。拆分后把留出路径填到评测的自定义配置。'
+    return ''
+
+
+def read_owned_file(home: Path, raw: str) -> tuple:
+    """Read a jsonl this workbench wrote. Other paths are refused."""
+    root = (Path(home) / 'workbench').resolve()
+    path = Path(raw or '').expanduser()
+    try:
+        path = path.resolve()
+    except OSError as exc:
+        raise PipelineError('文件不存在') from exc
+    if path != root and root not in path.parents:
+        raise PipelineError('只能读取数据与运维页生成的文件')
+    if not path.is_file():
+        raise PipelineError('文件不存在')
+    if path.stat().st_size > MAX_BYTES:
+        raise PipelineError('文件超过 20MB')
+    return path.read_text(encoding='utf-8'), path.name
 
 
 def render_report(view: dict) -> str:

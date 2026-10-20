@@ -79,6 +79,7 @@ document.getElementById('pick-file').addEventListener('click', () => {
 document.getElementById('file').addEventListener('change', async (event) => {
   const file = event.target.files && event.target.files[0];
   if (!file) return;
+  retryPath = '';
   document.getElementById('data-text').value = await file.text();
 });
 
@@ -117,7 +118,8 @@ document.getElementById('pack').addEventListener('click', async () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(dataBody()),
     });
-    showPaths('data-out', `可继续用 ${saved.kept_rows} 条，待补全 ${saved.retry_rows} 条。${saved.how_to}`, [
+    retryPath = saved.retry_path || '';
+    showPaths('data-out', `可继续用 ${saved.kept_rows} 条，待补全 ${saved.retry_rows} 条。点「用当前推理补全」会直接读待补全文件。${saved.how_to}`, [
       ['可继续用', saved.kept_path],
       ['待补全', saved.retry_path],
     ]);
@@ -129,11 +131,13 @@ document.getElementById('pack').addEventListener('click', async () => {
 document.getElementById('complete').addEventListener('click', async () => {
   try {
     const id = selectedRun();
+    const payload = retryPath ? { path: retryPath } : dataBody();
     const saved = await api(`/api/runs/${id}/workbench/complete`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(dataBody()),
+      body: JSON.stringify(payload),
     });
+    retryPath = saved.waiting_path || '';
     const note = `本次补了 ${saved.answered} 条，还剩 ${saved.pending_rows} 条。${saved.how_to}`;
     showPaths('data-out', note, [
       ['下一轮数据', saved.next_path],
@@ -143,6 +147,8 @@ document.getElementById('complete').addEventListener('click', async () => {
     show('data-out', err.message);
   }
 });
+
+let retryPath = '';
 
 async function loadRuns() {
   const select = document.getElementById('run');
@@ -166,17 +172,15 @@ document.getElementById('load-data').addEventListener('click', async () => {
   try {
     const id = selectedRun();
     const saved = await api(`/api/runs/${id}/workbench/dataset`);
+    retryPath = '';
     document.getElementById('data-text').value = saved.text || '';
     const coverage = saved.inspect && saved.inspect.coverage ? saved.inspect.coverage : {};
     const pairs = [['本轮数据', saved.path]];
     (saved.checkpoints || []).forEach((row) => {
       pairs.push([`第${row.round_index}轮 ${row.kind}`, row.path]);
     });
-    showPaths(
-      'data-out',
-      `第 ${saved.round_index} 轮，${coverage.num_rows || 0} 条，关键词全中 ${coverage.full_hit || 0} 条。${saved.how_to}`,
-      pairs,
-    );
+    const note = `第 ${saved.round_index} 轮，${coverage.num_rows || 0} 条，关键词全中 ${coverage.full_hit || 0} 条。${saved.notice ? saved.notice + ' ' : ''}${saved.how_to}`;
+    showPaths('data-out', note, pairs);
   } catch (err) {
     show('data-out', err.message);
   }

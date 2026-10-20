@@ -261,7 +261,10 @@ def create_app(home: Path | None = None) -> FastAPI:
     async def workbench_complete(run_id: str, request: Request):
         pipeline._require_run(run_id)
         body = await read_json(request)
-        text, filename = _workbench_text(body)
+        if body.get('path'):
+            text, filename = workbench.read_owned_file(home, body.get('path') or '')
+        else:
+            text, filename = _workbench_text(body)
         rows, _report = workbench.load_rows(text, filename)
 
         def answer(messages):
