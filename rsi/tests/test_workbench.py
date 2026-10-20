@@ -3,7 +3,7 @@ import json
 
 from fastapi.testclient import TestClient
 
-from rsi.workbench import export_argv, latest_dataset, probe_service, score_row
+from rsi.workbench import export_argv, export_checkpoint, latest_dataset, probe_service, score_row
 
 
 def _client(tmp_path, monkeypatch):
@@ -160,6 +160,21 @@ def test_score_and_probe_do_not_require_training():
     assert scored['missing'] == ['证书']
     down = probe_service({'status': 'running', 'host': '127.0.0.1', 'port': 1})
     assert down['ready'] is False
+
+
+def test_export_uses_sft_checkpoint_before_promotion():
+    view = {
+        'run': {'round_index': 1, 'base_model': 'Qwen/Qwen2.5-7B-Instruct'},
+        'rounds': [{'round_index': 1, 'promoted_checkpoint': ''}],
+        'checkpoints': [
+            {'round_index': 1, 'kind': 'sft', 'path': '/models/sft', 'active': 1},
+            {'round_index': 1, 'kind': 'rl', 'path': '/models/rl', 'active': 1},
+            {'round_index': 2, 'kind': 'sft', 'path': '/models/other', 'active': 1},
+        ],
+    }
+    assert export_checkpoint(view) == '/models/rl'
+    view['rounds'] = [{'promoted_checkpoint': '/models/promo'}]
+    assert export_checkpoint(view) == '/models/promo'
 
 
 def test_export_lora_includes_base_model(tmp_path):

@@ -255,7 +255,7 @@ def create_app(home: Path | None = None) -> FastAPI:
     def start_export(run_id: str):
         view = pipeline.view(run_id)
         return workbench.start_export(
-            home, run_id, workbench.promoted_checkpoint(view), (view.get('run') or {}).get('base_model') or '')
+            home, run_id, workbench.export_checkpoint(view), (view.get('run') or {}).get('base_model') or '')
 
     @app.post('/api/runs/{run_id}/workbench/complete')
     async def workbench_complete(run_id: str, request: Request):

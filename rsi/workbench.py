@@ -281,6 +281,12 @@ def render_report(view: dict) -> str:
         extra = '，'.join(bits)
         lines.append(f"- 第 {step.get('round_index')} 轮 {step.get('stage')} {step.get('status')}"
                      + (f"：{extra}" if extra else ''))
+    try:
+        loaded = latest_dataset(view)
+    except PipelineError:
+        loaded = None
+    if loaded and loaded.get('notice'):
+        lines.extend(['', '## 数据', '', f"- {loaded['notice']}"])
     service = view.get('service') or {}
     if service.get('status') == 'running':
         host = loopback(service.get('host') or '127.0.0.1')
@@ -400,6 +406,26 @@ def promoted_checkpoint(view: dict) -> str:
         if rnd.get('promoted_checkpoint'):
             return rnd['promoted_checkpoint']
     return ''
+
+
+def export_checkpoint(view: dict) -> str:
+    """Promoted checkpoint when there is one, otherwise this round's RL or SFT checkpoint."""
+    promoted = promoted_checkpoint(view)
+    if promoted:
+        return promoted
+    current = (view.get('run') or {}).get('round_index')
+    chosen = ''
+    rank = -1
+    for row in view.get('checkpoints') or []:
+        if row.get('active', 1) in (0, False) or not row.get('path'):
+            continue
+        if current is not None and row.get('round_index') not in (None, current):
+            continue
+        score = {'sft': 1, 'rl': 2}.get(row.get('kind'), 0)
+        if score > rank:
+            rank = score
+            chosen = row['path']
+    return chosen
 
 
 def export_status(run_id: str) -> dict:
