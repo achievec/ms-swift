@@ -58,7 +58,7 @@ def test_operational_error_names_the_database(tmp_path, monkeypatch):
         store.list_runs()
     text = str(caught.value)
     assert str(store.db_path) in text
-    assert '审计库无法写入' in text
+    assert '实验记录库无法写入' in text
     assert '目录不可写' in text
     assert '磁盘满' in text
     assert '可设置 RSI_HOME' in text
@@ -83,7 +83,7 @@ def test_api_returns_store_error_as_json(tmp_path, monkeypatch):
     assert response.status_code == 500, response.text
     assert response.headers['content-type'].startswith('application/json')
     detail = response.json()['detail']
-    assert '审计库无法写入' in detail
+    assert '实验记录库无法写入' in detail
     assert str((home / 'rsi.sqlite').resolve()) in detail
     assert 'dolphinfs' in detail
     assert 'Traceback' not in response.text

@@ -70,7 +70,7 @@ def test_report_and_idle_export(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     created = client.post('/api/runs', json={
         'name': '报表',
-        'scenario': '只读审计',
+        'scenario': '只读实验记录',
         'base_model': 'Qwen/Qwen2.5-7B-Instruct',
     })
     assert created.status_code == 200, created.text

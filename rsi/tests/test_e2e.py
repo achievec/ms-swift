@@ -344,7 +344,7 @@ def test_delete_run_removes_audit_and_only_its_directory(client):
     api, home = client
     created = api.post('/api/runs', json={
         'name': '要删除的实验',
-        'scenario': '删除后审计和实验目录都应消失',
+        'scenario': '删除后实验记录和实验目录都应消失',
         'base_model': 'Qwen/Qwen2.5-7B-Instruct',
     })
     assert created.status_code == 200, created.text

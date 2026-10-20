@@ -121,7 +121,7 @@ rsi_home: /opt/meituan/dolphinfs_liubo108/ms-swift/workspace
 
 仓库里的 `fetch.yaml` 就是这样写的：模型落在 `/opt/meituan/dolphinfs_liubo108/ms-swift/models`，数据集落在 `/opt/meituan/dolphinfs_liubo108/ms-swift/datasets`（目录不存在时会自动创建，需要当前用户有写权限）。也可以改成 `~/models` 这类路径，`~` 会展开成当前用户的家目录。拉取模型时先进入 `model_root`，再执行 `hope clone https://huggingface.co/<org>/<name>`。hope 3.6.6 把文件放在 `<model_root>/huggingface.co/<org>/<name>`（`rsi/.rsi.log` 里的「数据存储在」就是这个目录）。旧布局 `<model_root>/<org>/<name>` 也算就绪。两边都看 `config.json`，页面上的本地路径和训练的 `--model` 用实际有文件的那一个。数据集同样：`<data_root>/huggingface.co/datasets/<org>/<name>` 或 `<data_root>/<org>/<name>`。这些目录里已经有文件时，打开页面或进入阶段不会再执行 `hope clone`。只有点「重新拉取」才会再拉一次。
 
-实验目录（`rsi.sqlite`、每次运行的日志和检查点、上传文件）默认用 `fetch.yaml` 的 `rsi_home`：`/opt/meituan/dolphinfs_liubo108/ms-swift/workspace`。环境变量 `RSI_HOME` 优先。这个目录不存在、并且上一级也不存在或不可写时（Mac 上没有 dolphinfs），改用仓库里的 `rsi/workspace`，不会去创建 `/opt/meituan/...`。审计库写失败时，接口返回的中文错误里带数据库绝对路径，这时把 `RSI_HOME` 指到别的可写目录即可。
+实验目录（`rsi.sqlite`、每次运行的日志和检查点、上传文件）默认用 `fetch.yaml` 的 `rsi_home`：`/opt/meituan/dolphinfs_liubo108/ms-swift/workspace`。环境变量 `RSI_HOME` 优先。这个目录不存在、并且上一级也不存在或不可写时（Mac 上没有 dolphinfs），改用仓库里的 `rsi/workspace`，不会去创建 `/opt/meituan/...`。实验记录库写失败时，接口返回的中文错误里带数据库绝对路径，这时把 `RSI_HOME` 指到别的可写目录即可。
 
 内置训练集是仓库里的 `rsi/examples/itops_mix.jsonl`（6 条 IT 工单）。训练命令里的绝对路径是当前机器上这份检出的路径，不是另一台电脑的家目录。例如 GPU 上会写成 `/home/hadoop-sailorqa-ai/ms-swift/rsi/examples/itops_mix.jsonl`，文件就在该仓库的 `rsi/examples/` 下。
 
@@ -175,7 +175,7 @@ Any other swift flag can be added in the YAML box on each stage. Those keys are 
 
 ## Audit
 
-SQLite tables `runs`, `rounds`, `steps`, `checkpoints`, and `services` record each run and each step: status, params, result, logs, the swift command, `started_at`, and `ended_at`. The 审计 tab shows them, including superseded attempts. The database file is `$RSI_HOME/rsi.sqlite` (default `rsi/workspace/rsi.sqlite`). That directory has to be local and writable. A dolphinfs or NFS home cannot create the SQLite journal, and a later write then fails even if reads still work.
+SQLite tables `runs`, `rounds`, `steps`, `checkpoints`, and `services` record each run and each step: status, params, result, logs, the swift command, `started_at`, and `ended_at`. The 实验记录 tab shows them, including superseded attempts. The database file is `$RSI_HOME/rsi.sqlite` (default `rsi/workspace/rsi.sqlite`). That directory has to be local and writable. A dolphinfs or NFS home cannot create the SQLite journal, and a later write then fails even if reads still work.
 
 ## Layout
 

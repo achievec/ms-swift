@@ -203,7 +203,7 @@ async function deleteRun(id) {
   const confirmed = await askConfirm({
     title: '删除实验',
     name,
-    body: '审计里的轮次、阶段和检查点记录会去掉，该实验目录下的阶段产物也会清理。上传的数据文件会保留。',
+    body: '实验记录里的轮次、阶段和检查点会去掉，该实验目录下的阶段产物也会清理。上传的数据文件会保留。',
     okLabel: '删除',
     danger: true,
   });
@@ -564,7 +564,7 @@ function renderAudit() {
     </tr>${detail}`;
   }).join('');
   return `<section class="panel">
-    <h2>审计</h2>
+    <h2>实验记录</h2>
     <table>
       <thead><tr><th>ID</th><th>轮</th><th>阶段</th><th>状态</th><th>开始</th><th>结束</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="6">还没有步骤。</td></tr>'}</tbody>
@@ -798,7 +798,7 @@ function render() {
     <div class="rounds">${rounds}</div>
     <div class="tabs">
       <button type="button" data-tab="flow" class="${state.tab === 'flow' ? 'active' : ''}">流程</button>
-      <button type="button" data-tab="audit" class="${state.tab === 'audit' ? 'active' : ''}">审计</button>
+      <button type="button" data-tab="audit" class="${state.tab === 'audit' ? 'active' : ''}">实验记录</button>
       <button type="button" data-tab="serve" class="${state.tab === 'serve' ? 'active' : ''}">推理服务</button>
     </div>
     ${body}`;

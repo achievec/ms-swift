@@ -56,7 +56,7 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.exception_handler(StoreError)
     async def _store_error(_request: Request, exc: StoreError):
-        logger.error('审计库写入失败：%s', exc)
+        logger.error('实验记录库写入失败：%s', exc)
         return JSONResponse({'detail': str(exc)}, status_code=500)
 
     @app.exception_handler(Exception)
