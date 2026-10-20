@@ -274,8 +274,8 @@ def test_bundled_fetch_yaml_defaults_to_hope(monkeypatch):
     text = bundled.read_text(encoding='utf-8')
     assert 'model_source: hope' in text
     assert 'hope_username: liyuhao03' in text
-    assert 'model_root: /opt/custom/ms-swift/models' in text
-    assert 'data_root: /opt/custom/ms-swift/datasets' in text
+    assert 'model_root: /opt/meituan/dolphinfs_liubo108/ms-swift/models' in text
+    assert 'data_root: /opt/meituan/dolphinfs_liubo108/ms-swift/datasets' in text
     assert 'hope_token' not in text
     assert model_source() == 'hope'
     startup = describe_startup()

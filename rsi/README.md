@@ -108,11 +108,11 @@ hope 模式下可以不装 modelscope 这个 pip 包：`swift/utils/logger.py` �
 ```yaml
 model_source: hope
 hope_username: liyuhao03
-model_root: /opt/custom/ms-swift/models
-data_root: /opt/custom/ms-swift/datasets
+model_root: /opt/meituan/dolphinfs_liubo108/ms-swift/models
+data_root: /opt/meituan/dolphinfs_liubo108/ms-swift/datasets
 ```
 
-仓库里的 `fetch.yaml` 就是这样写的：模型落在 `/opt/custom/ms-swift/models`，数据集落在 `/opt/custom/ms-swift/datasets`（目录不存在时会自动创建，需要当前用户有写权限）。也可以改成 `~/models` 这类路径，`~` 会展开成当前用户的家目录。拉取模型时先进入 `model_root`，再执行 `hope clone https://huggingface.co/<org>/<name>`。本地就绪路径是 `<model_root>/<org>/<name>`，里面有 `config.json` 才算就绪。数据集同样落在 `<data_root>/<org>/<name>`。
+仓库里的 `fetch.yaml` 就是这样写的：模型落在 `/opt/meituan/dolphinfs_liubo108/ms-swift/models`，数据集落在 `/opt/meituan/dolphinfs_liubo108/ms-swift/datasets`（目录不存在时会自动创建，需要当前用户有写权限）。也可以改成 `~/models` 这类路径，`~` 会展开成当前用户的家目录。拉取模型时先进入 `model_root`，再执行 `hope clone https://huggingface.co/<org>/<name>`。本地就绪路径是 `<model_root>/<org>/<name>`，里面有 `config.json` 才算就绪。数据集同样落在 `<data_root>/<org>/<name>`。
 
 仓库里的 `fetch.yaml` 已写 `hope_username: liyuhao03`。这个 misid 会传给 `hope login`，也会作为 `hope clone` 的 `--username=`。换 misid 改这一行，或用 `RSI_HOPE_USERNAME` 覆盖。token 仍只走 `RSI_HOPE_TOKEN`，只给 `hope clone` 当 git 凭据，不能代替平台登录。
 
