@@ -9,7 +9,7 @@ from pathlib import Path
 
 from rsi.commands import build_argv, format_shell
 from rsi.logtail import announce_log, normalize_log, run_and_tee
-from rsi.model_fetch import apply_runtime_env
+from rsi.model_fetch import apply_runtime_env, configured_train_python
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -47,11 +47,23 @@ def detect_gpu() -> dict:
     return {'available': bool(devices), 'devices': devices}
 
 
+def training_python() -> str:
+    """Interpreter for ``python -m swift.cli.main``.
+
+    ``RSI_TRAIN_PYTHON`` wins. Otherwise ``train_python`` in fetch.yaml when that
+    file exists and is executable. Otherwise the current interpreter.
+    """
+    explicit = os.environ.get('RSI_TRAIN_PYTHON', '').strip()
+    if explicit:
+        return explicit
+    return configured_train_python() or sys.executable
+
+
 def swift_launch(argv: list) -> tuple:
     """Turn a logical `swift <cmd> ...` argv into a process that runs this checkout on GPU 0.
 
     `RSI_SWIFT_BIN` replaces the launcher (used by tests). Otherwise the command is
-    `python -m swift.cli.main`, which is the same entry point as the `swift` script.
+    ``<training python> -m swift.cli.main``.
     """
     if not argv:
         return [], os.environ.copy()
@@ -59,7 +71,7 @@ def swift_launch(argv: list) -> tuple:
     if override:
         command = [override, *argv[1:]]
     else:
-        command = [sys.executable, '-m', 'swift.cli.main', *argv[1:]]
+        command = [training_python(), '-m', 'swift.cli.main', *argv[1:]]
     env = os.environ.copy()
     env.setdefault('CUDA_VISIBLE_DEVICES', '0')
     root = str(REPO_ROOT)

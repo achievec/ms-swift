@@ -81,11 +81,12 @@ A `solution` or `answer` field is kept for GRPO, including rows that only have a
 | `RSI_BACKEND` | `swift` | `mock` |
 | `RSI_SERVE_BACKEND` | same as `RSI_BACKEND` | `mock` to keep the in-process API |
 | `RSI_SWIFT_BIN` | `python -m swift.cli.main` in this repo | a stub executable for tests |
+| `RSI_TRAIN_PYTHON` | `train_python` in `fetch.yaml` when that file exists, else this Python | overrides the yaml path |
 | `CUDA_VISIBLE_DEVICES` | `0` | unused in mock mode |
 
 `MsSwiftBackend` runs the recorded command with `subprocess` and marks the step failed if swift exits non-zero. Training steps return immediately in the UI and finish when the process exits; refresh the audit while a job is running. Serving with `RSI_SERVE_BACKEND=swift` launches `swift deploy` in the background. Mock serving is an in-process OpenAI-compatible server, which is what `pytest` talks to.
 
-Install ms-swift and a GPU stack on the training machine the usual way (`pip install -e .` from this repo, plus the CUDA extras you need). This RSI app does not import `swift`, so the UI keeps working on a box that only has the packages in `rsi/requirements.txt`.
+Install ms-swift and a GPU stack on the training machine the usual way (`pip install -e .` from this repo, plus the CUDA extras you need). This RSI app does not import `swift`, so the UI keeps working on a box that only has the packages in `rsi/requirements.txt`. On the GPU box, `fetch.yaml` `train_python` is `/usr/local/conda/envs/model-train/bin/python`; SFT, eval, and RL use it when that file exists.
 
 ## 内网部署
 
@@ -102,6 +103,7 @@ hope 模式下可以不装 modelscope 这个 pip 包：`swift/utils/logger.py` �
 | `RSI_DATA_ROOT` | 数据集目录，对应 `data_root`，同样展开 `~` / `$HOME`。`hope clone` 的工作目录是这一层 |
 | `RSI_HOPE_USERNAME` / `RSI_HOPE_TOKEN` | 用户名同时用于 `hope login <misid>` 和 `hope clone --username=`。token 只作为 `hope clone` 的 git token（`--token=`），不是平台登录。token 不要写进 yaml |
 | `RSI_FETCH_CONFIG` | 另选一份 yaml，键与 `fetch.yaml` 相同 |
+| `RSI_TRAIN_PYTHON` | 覆盖 `fetch.yaml` 的 `train_python`。`RSI_SWIFT_BIN` 则换掉整个启动命令 |
 
 `fetch.yaml` 示例：
 
@@ -110,11 +112,14 @@ model_source: hope
 hope_username: liyuhao03
 model_root: /opt/meituan/dolphinfs_liubo108/ms-swift/models
 data_root: /opt/meituan/dolphinfs_liubo108/ms-swift/datasets
+train_python: /usr/local/conda/envs/model-train/bin/python
 ```
 
 仓库里的 `fetch.yaml` 就是这样写的：模型落在 `/opt/meituan/dolphinfs_liubo108/ms-swift/models`，数据集落在 `/opt/meituan/dolphinfs_liubo108/ms-swift/datasets`（目录不存在时会自动创建，需要当前用户有写权限）。也可以改成 `~/models` 这类路径，`~` 会展开成当前用户的家目录。拉取模型时先进入 `model_root`，再执行 `hope clone https://huggingface.co/<org>/<name>`。hope 3.6.6 把文件放在 `<model_root>/huggingface.co/<org>/<name>`（进程日志里的「数据存储在」就是这个目录）。旧布局 `<model_root>/<org>/<name>` 也算就绪。两边都看 `config.json`，页面上的本地路径和训练的 `--model` 用实际有文件的那一个。数据集同样：`<data_root>/huggingface.co/datasets/<org>/<name>` 或 `<data_root>/<org>/<name>`。这些目录里已经有文件时，打开页面或进入阶段不会再执行 `hope clone`。只有点「重新拉取」才会再拉一次。
 
 `RSI_HOME`（默认 `rsi/workspace`，里面是 `rsi.sqlite` 和每次实验的目录）必须放在本机可写磁盘。`model_root` 和 `data_root` 可以在 dolphinfs。不要把 `RSI_HOME` 指到 dolphinfs：共享盘上建不了 SQLite 日志文件时，读实验还能成功，一点「运行本阶段」就会报审计库无法写入。
+
+SFT、评测和 RL 不用界面那个精简 `rsi/.venv`。`fetch.yaml` 的 `train_python` 指向 GPU 上的 conda 环境 `/usr/local/conda/envs/model-train/bin/python`。这个文件存在且可执行时，swift 用它启动。当前机器没有这个路径时会跳过，仍用启动界面的那个 Python。`RSI_TRAIN_PYTHON` 覆盖配置。`RSI_SWIFT_BIN` 换掉整个启动命令。
 
 仓库里的 `fetch.yaml` 已写 `hope_username: liyuhao03`。这个 misid 会传给 `hope login`，也会作为 `hope clone` 的 `--username=`。换 misid 改这一行，或用 `RSI_HOPE_USERNAME` 覆盖。token 仍只走 `RSI_HOPE_TOKEN`，只给 `hope clone` 当 git 凭据，不能代替平台登录。
 

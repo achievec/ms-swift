@@ -111,6 +111,21 @@ def _root(env_name: str, file_key: str, home: Path, folder: str) -> Path:
     return Path(home) / folder
 
 
+def configured_train_python() -> str:
+    """Executable from fetch.yaml ``train_python``, or '' when unset or not on disk.
+
+    ``RSI_TRAIN_PYTHON`` is applied by the launcher and wins over this path.
+    A missing file is ignored so other machines keep using the current Python.
+    """
+    raw = str(_file_settings().get('train_python') or '').strip()
+    if not raw:
+        return ''
+    path = _expand_path(raw)
+    if path.is_file() and os.access(path, os.X_OK):
+        return str(path)
+    return ''
+
+
 def hope_username() -> str:
     """misid for hope. The environment wins over ``hope_username`` in fetch.yaml."""
     env = os.environ.get('RSI_HOPE_USERNAME', '').strip()
