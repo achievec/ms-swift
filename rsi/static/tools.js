@@ -85,11 +85,18 @@ document.getElementById('file').addEventListener('change', async (event) => {
 
 document.getElementById('inspect').addEventListener('click', async () => {
   try {
-    show('data-out', await api('/api/workbench/inspect', {
+    const saved = await api('/api/workbench/inspect', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(dataBody()),
-    }));
+    });
+    const coverage = saved.coverage || {};
+    const lines = (saved.preview || []).map((row) => {
+      const score = row.score === null || row.score === undefined ? '无关键词' : row.score;
+      const missing = (row.missing || []).length ? '，缺 ' + row.missing.join('、') : '';
+      return `第 ${row.row} 行 得分 ${score}${missing}：${row.answer || ''}`;
+    });
+    show('data-out', `共 ${coverage.num_rows || 0} 条，其中 ${coverage.with_solution || 0} 条有关键词，全部命中 ${coverage.full_hit || 0} 条。\n` + lines.join('\n'));
   } catch (err) {
     show('data-out', err.message);
   }
