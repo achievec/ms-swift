@@ -303,8 +303,19 @@ def test_default_backend_calls_real_swift(tmp_path, monkeypatch):
     assert str(Path(__file__).resolve().parents[2]) in env['PYTHONPATH'].split(':')
 
 
+def test_swift_ui_fallback_escapes_the_error():
+    from rsi.__main__ import swift_ui_fallback_page
+    page = swift_ui_fallback_page('No module named gradio\n<script>alert(1)</script>')
+    assert '暂时打不开' in page
+    assert '当前解释器' in page
+    assert 'gradio&lt;5.33' in page
+    assert '&lt;script&gt;' in page
+    assert '<script>' not in page
+
+
 def test_swift_ui_fallback_on_same_port(tmp_path, monkeypatch):
     monkeypatch.setenv('RSI_BACKEND', 'mock')
+    import sys
     from rsi.app import create_app
     from rsi.__main__ import mount_swift_ui
     app = create_app(tmp_path / 'home')
@@ -315,9 +326,13 @@ def test_swift_ui_fallback_on_same_port(tmp_path, monkeypatch):
         assert 'SWIFT Web-UI' in page.text
         assert '返回大模型训练平台' in page.text
         if not mounted:
+            import html
             assert app.state.swift_ui is False
-            assert 'swift web-ui' not in page.text
-            assert 'torch' not in page.text
+            assert '暂时打不开' in page.text
+            assert '当前解释器' in page.text
+            assert sys.executable in page.text
+            assert html.escape(app.state.swift_ui_error.splitlines()[-1]) in page.text
+            assert '<script>' not in page.text
 
 
 def test_reward_plugin_parses():

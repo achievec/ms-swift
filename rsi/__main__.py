@@ -1,6 +1,9 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
+import html
 import logging
 import os
+import sys
+import traceback
 
 import uvicorn
 from fastapi.responses import HTMLResponse
@@ -8,22 +11,48 @@ from fastapi.responses import HTMLResponse
 from rsi.app import create_app
 from rsi.model_fetch import describe_startup, kick_hope_login
 
-_SWIFT_UI_FALLBACK = """<!DOCTYPE html>
+
+def _trim_error(text: str) -> str:
+    lines = (text or '').strip().splitlines() or ['未知错误']
+    if len(lines) > 40:
+        lines = lines[:8] + ['...'] + lines[-30:]
+    trimmed = '\n'.join(lines)
+    if len(trimmed) > 4000:
+        trimmed = trimmed[:4000] + '\n...'
+    return trimmed
+
+
+def swift_ui_fallback_page(error: str) -> str:
+    """Explain why /swift-ui/ did not mount. The traceback is escaped."""
+    detail = html.escape(_trim_error(error))
+    executable = html.escape(sys.executable)
+    lowered = (error or '').lower()
+    hint = ''
+    if 'gradio' in lowered or 'no module named' in lowered:
+        hint = (
+            '<p>在当前解释器里装上 Web-UI 依赖，然后重新执行 <code>./run.sh</code>：</p>'
+            f'<pre>{executable} -m pip install &quot;gradio&lt;5.33&quot;</pre>'
+        )
+    return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <title>SWIFT Web-UI</title>
   <style>
-    body { margin: 0; font-family: "Noto Sans SC", "PingFang SC", sans-serif; background: #efe7da; color: #241c15; }
-    main { max-width: 720px; margin: 48px auto; padding: 0 20px; }
-    a { color: #0e6b60; }
-    code { background: #fffdf8; padding: 2px 6px; border-radius: 6px; }
+    body {{ margin: 0; font-family: "Noto Sans SC", "PingFang SC", sans-serif; background: #efe7da; color: #241c15; }}
+    main {{ max-width: 720px; margin: 48px auto; padding: 0 20px; }}
+    a {{ color: #0e6b60; }}
+    pre {{ white-space: pre-wrap; background: #fffdf8; padding: 12px 14px; border-radius: 8px; overflow: auto; }}
   </style>
 </head>
 <body>
   <main>
     <h1>SWIFT Web-UI</h1>
     <p>这个页面暂时打不开。</p>
+    <p>当前解释器：<code>{executable}</code></p>
+    {hint}
+    <p>启动时的错误（也写在 rsi/.rsi.log）：</p>
+    <pre>{detail}</pre>
     <p><a href="/">返回大模型训练平台</a></p>
   </main>
 </body>
@@ -31,30 +60,43 @@ _SWIFT_UI_FALLBACK = """<!DOCTYPE html>
 """
 
 
+def _mount_gradio(gr, app, blocks):
+    """Mount at /swift-ui. root_path keeps Gradio's assets on that prefix when the argument exists."""
+    import inspect
+    kwargs = {'path': '/swift-ui'}
+    parameters = inspect.signature(gr.mount_gradio_app).parameters
+    if 'root_path' in parameters:
+        kwargs['root_path'] = '/swift-ui'
+    mounted = gr.mount_gradio_app(app, blocks, **kwargs)
+    return mounted or app
+
+
 def mount_swift_ui(app) -> bool:
     """Mount the original Gradio pages at /swift-ui when swift can be imported.
 
-    The RSI page stays at /. If the import fails, /swift-ui/ explains how to
-    open `swift web-ui` on this same port after stopping RSI.
+    The RSI page stays at /. If the import fails, /swift-ui/ shows the
+    exception and the interpreter ./run.sh selected.
     """
     try:
         import gradio as gr
         from swift.ui.app import build_blocks
         lang = os.environ.get('SWIFT_UI_LANG') or 'zh'
         blocks = build_blocks(lang)
-        gr.mount_gradio_app(app, blocks, path='/swift-ui')
+        _mount_gradio(gr, app, blocks)
     except Exception as exc:
         app.state.swift_ui = False
-        app.state.swift_ui_error = str(exc)
+        detail = _trim_error(''.join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+        app.state.swift_ui_error = detail
 
         @app.get('/swift-ui', response_class=HTMLResponse)
         @app.get('/swift-ui/', response_class=HTMLResponse)
         def swift_ui_unavailable():
-            return _SWIFT_UI_FALLBACK
+            return swift_ui_fallback_page(app.state.swift_ui_error)
 
-        print(f'swift web-ui 未挂载（{exc}）。入口仍是 /swift-ui/ ；装好 swift 依赖后这里会换成原生表单。')
+        print(f'swift web-ui 未挂载。解释器 {sys.executable}\n{detail}')
         return False
     app.state.swift_ui = True
+    app.state.swift_ui_error = ''
     print('SWIFT Web-UI 已挂在 /swift-ui ，RSI 闭环仍是默认页面。')
     return True
 
