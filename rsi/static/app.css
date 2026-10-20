@@ -343,7 +343,8 @@ tr.expand td { background: #f9fafb; }
   margin: 16px 0 8px;
 }
 .log-head h3 { margin: 0; }
-.log-head .ghost { padding: 4px 10px; font-size: 12px; }
+.log-tools { display: flex; gap: 6px; flex: 0 0 auto; }
+.log-head .ghost { padding: 4px 10px; font-size: 12px; box-shadow: none; }
 .log-panel.log-fullscreen {
   position: fixed;
   inset: 0;
@@ -355,10 +356,13 @@ tr.expand td { background: #f9fafb; }
   flex-direction: column;
 }
 .log-panel.log-fullscreen .log-head { margin-top: 0; }
-.log-panel.log-fullscreen .log {
+.log-panel.log-fullscreen .log,
+.log-panel.log-fullscreen .command,
+.log-panel.log-fullscreen textarea.log {
   flex: 1 1 auto;
   max-height: none;
   min-height: 0;
+  width: 100%;
 }
 html.log-lock, body.log-lock { overflow: hidden; }
 .score-table { width: auto; margin: 8px 0 12px; }
@@ -513,7 +517,18 @@ dialog label input, dialog label textarea { font-weight: 400; color: var(--ink);
 .infer-runtime summary::before { content: "▶"; margin-right: 8px; color: #2563eb; font-size: 12px; }
 .infer-runtime[open] summary::before { content: "▼"; }
 .infer-runtime .body { padding: 0 12px 12px; display: flex; flex-direction: column; gap: 8px; }
-.infer-runtime .infer-log textarea { min-height: 160px; }
+.infer-group > .log-panel { flex: 1; min-width: 0; }
+.infer-log .log-head { margin: 0 0 6px; align-items: flex-start; }
+.infer-log .log-title span { display: block; font-size: 14px; font-weight: 600; color: #111827; line-height: 1.35; }
+.infer-log .log-title small { display: block; color: #6b7280; font-size: 12px; font-weight: 400; }
+.infer-log textarea.log {
+  width: 100%;
+  min-height: 160px;
+  background: #f3f4f6;
+  border: 0;
+  box-shadow: none;
+}
+.log-panel.log-fullscreen textarea.log { width: 100%; background: #f9fafb; }
 .infer-chat-wrap { flex-direction: column; }
 .chat-label { display: block; margin-bottom: 4px; }
 .infer-chat { min-height: 220px; max-height: 360px; overflow: auto; border-radius: 6px; background: #f3f4f6; padding: 12px; }

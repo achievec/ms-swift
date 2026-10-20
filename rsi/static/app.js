@@ -379,26 +379,16 @@ function renderPromote(values) {
   return `<div class="candidates">${cards}</div>`;
 }
 
-function logPanel(text, liveAttrs) {
+function logPanel(text, liveAttrs, title) {
   return `<div class="log-panel">
-    <div class="log-head"><h3>日志</h3><button type="button" class="ghost" data-log-fullscreen>全屏</button></div>
+    <div class="log-head"><h3>${escapeHtml(title || '日志')}</h3>${logTools()}</div>
     <pre class="log live-log" data-pinned="1"${liveAttrs || ''}>${escapeHtml(text || '')}</pre>
   </div>`;
 }
 
-function syncLogScrollLock() {
-  const locked = Boolean(document.querySelector('.log-panel.log-fullscreen'));
-  document.body.classList.toggle('log-lock', locked);
-  document.documentElement.classList.toggle('log-lock', locked);
-}
-
-function setLogFullscreen(panel, on) {
-  if (panel && panel.isConnected) {
-    panel.classList.toggle('log-fullscreen', Boolean(on));
-    const button = panel.querySelector('[data-log-fullscreen]');
-    if (button) button.textContent = on ? '退出全屏' : '全屏';
-  }
-  syncLogScrollLock();
+function outputPanel(title, text, kind) {
+  const cls = kind === 'command' ? 'command' : 'log';
+  return `<div class="log-panel"><div class="log-head"><h3>${escapeHtml(title)}</h3>${logTools()}</div><pre class="${cls}">${escapeHtml(text || '')}</pre></div>`;
 }
 
 function renderStage(stage) {
@@ -422,11 +412,11 @@ function renderStage(stage) {
     </div>` : '';
   const validate = stage === 'data' ? '<button type="button" class="ghost" data-action="validate">校验格式</button>' : '';
   const reportLink = form.result ? evalReportLink(stage, form.result) : '';
-  const result = form.result ? `<h3>结果</h3>${scoreHeadline(form.result.metrics)}${scoreTable(form.result.metrics)}${reportLink ? `<p class="row-actions">${reportLink}</p>` : ''}<pre class="log">${escapeHtml(JSON.stringify(visibleResult(form.result), null, 2))}</pre>` : '';
+  const result = form.result ? `${scoreHeadline(form.result.metrics)}${scoreTable(form.result.metrics)}${reportLink ? `<p class="row-actions">${reportLink}</p>` : ''}${outputPanel('结果', JSON.stringify(visibleResult(form.result), null, 2))}` : '';
   const live = form.status === 'running';
   const liveAttrs = live ? ` data-live-log="1" data-live-stage="${escapeHtml(stage)}" data-live-round="${view.round.round_index}"` : '';
   const logs = (form.logs || live) ? logPanel(form.logs || '', liveAttrs) : '';
-  const command = form.command ? `<h3>命令</h3><pre class="command">${escapeHtml(form.command)}</pre>` : '';
+  const command = form.command ? outputPanel('命令', form.command, 'command') : '';
   const kicker = live
     ? `${escapeHtml(meta.label)} · ${runningMarkup(form.started_at)}`
     : `${escapeHtml(meta.label)} · ${escapeHtml(statusText(form.status))}`;
@@ -559,10 +549,10 @@ function renderAudit() {
     const open = state.expanded === step.id;
     const detail = open ? `<tr class="expand"><td colspan="6">
       <p><b>开始</b> ${escapeHtml(formatShanghai(step.started_at))} · <b>结束</b> ${escapeHtml(formatShanghai(step.ended_at || ''))}</p>
-      <h3>参数</h3><pre class="log">${escapeHtml(JSON.stringify(step.params, null, 2))}</pre>
-      <h3>结果</h3>${scoreHeadline((step.result || {}).metrics)}${scoreTable((step.result || {}).metrics)}${evalReportLink(step.stage, step.result, step.round_index) ? `<p class="row-actions">${evalReportLink(step.stage, step.result, step.round_index)}</p>` : ''}<pre class="log">${escapeHtml(JSON.stringify(visibleResult(step.result), null, 2))}</pre>
+      ${outputPanel('参数', JSON.stringify(step.params, null, 2))}
+      ${scoreHeadline((step.result || {}).metrics)}${scoreTable((step.result || {}).metrics)}${evalReportLink(step.stage, step.result, step.round_index) ? `<p class="row-actions">${evalReportLink(step.stage, step.result, step.round_index)}</p>` : ''}${outputPanel('结果', JSON.stringify(visibleResult(step.result), null, 2))}
       ${logPanel(step.logs || '', step.status === 'running' ? ` data-live-log="1" data-live-stage="${escapeHtml(step.stage)}" data-live-round="${step.round_index}"` : '')}
-      ${step.command ? `<h3>命令</h3><pre class="command">${escapeHtml(step.command)}</pre>` : ''}
+      ${step.command ? outputPanel('命令', step.command, 'command') : ''}
     </td></tr>` : '';
     return `<tr data-step="${step.id}">
       <td>${step.id}</td>
@@ -666,8 +656,7 @@ function renderInferControl(item, values, running) {
     return `<label class="field" data-key="${item.id}"${lockTitle}><span>${escapeHtml(item.label)}</span>${info}<select data-field="${item.id}" ${multi} ${locked}>${options}</select></label>`;
   }
   if (item.id === 'log') {
-    const hidden = state.inferLogVisible ? '' : 'hidden';
-    return `<label class="field infer-log" data-key="log" ${hidden}><span>${escapeHtml(item.label)}</span>${info}<textarea readonly rows="8">${escapeHtml(state.inferLog || '')}</textarea></label>`;
+    return `<div class="log-panel infer-log" data-key="log"><div class="log-head"><div class="log-title"><span>${escapeHtml(item.label)}</span>${info}</div>${logTools()}</div><textarea class="log" readonly rows="8">${escapeHtml(state.inferLog || '')}</textarea></div>`;
   }
   if (item.id === 'running_tasks') {
     const services = (state.view && state.view.services) || [];
@@ -818,7 +807,7 @@ async function previewCurrent() {
     body: JSON.stringify({ params }),
   });
   const slot = document.getElementById('live-command');
-  slot.innerHTML = `<h3>命令预览</h3><pre class="command">${escapeHtml(payload.command || '这一阶段没有可预览的命令。')}</pre>`;
+  slot.innerHTML = outputPanel('命令预览', payload.command || '这一阶段没有可预览的命令。', 'command');
 }
 
 async function validateCurrent() {
@@ -828,7 +817,7 @@ async function validateCurrent() {
     body: JSON.stringify({ params }),
   });
   const slot = document.getElementById('live-command');
-  slot.innerHTML = `<h3>校验结果</h3><pre class="log">${escapeHtml(JSON.stringify(report, null, 2))}</pre>`;
+  slot.innerHTML = outputPanel('校验结果', JSON.stringify(report, null, 2));
   toast(report.ok ? `格式通过，${report.num_rows ?? '公开'} 条` : '格式未通过');
 }
 
@@ -859,7 +848,7 @@ async function uploadFile(file) {
   if (source) source.value = 'upload';
   syncSource();
   const slot = document.getElementById('live-command');
-  if (slot) slot.innerHTML = `<h3>上传校验</h3><pre class="log">${escapeHtml(JSON.stringify(data.validation, null, 2))}</pre>`;
+  if (slot) slot.innerHTML = outputPanel('上传校验', JSON.stringify(data.validation, null, 2));
   toast(data.validation.ok ? '上传通过校验' : '上传文件格式未通过');
 }
 
@@ -1580,28 +1569,6 @@ document.addEventListener('scroll', (event) => {
   const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
   el.dataset.pinned = gap < 28 ? '1' : '0';
 }, true);
-
-document.addEventListener('click', (event) => {
-  const button = event.target.closest('[data-log-fullscreen]');
-  if (!button) return;
-  const panel = button.closest('.log-panel');
-  if (!panel) return;
-  event.preventDefault();
-  setLogFullscreen(panel, !panel.classList.contains('log-fullscreen'));
-});
-
-document.addEventListener('keydown', (event) => {
-  if (event.key !== 'Escape') return;
-  document.querySelectorAll('.log-panel.log-fullscreen').forEach((panel) => setLogFullscreen(panel, false));
-  syncLogScrollLock();
-});
-
-new MutationObserver(() => syncLogScrollLock()).observe(document.documentElement, {
-  subtree: true,
-  childList: true,
-  attributes: true,
-  attributeFilter: ['class'],
-});
 
 async function boot() {
   state.schema = await api('/api/schema');

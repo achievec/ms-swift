@@ -126,9 +126,17 @@ def test_stage_view_shows_report_scores_and_serves_html(tmp_path, monkeypatch):
 def test_fullscreen_exit_clears_scroll_lock():
     root = Path(__file__).resolve().parents[1] / 'static'
     script = (root / 'app.js').read_text(encoding='utf-8')
+    tools = (root / 'log-tools.js').read_text(encoding='utf-8')
+    combined = script + tools
     css = (root / 'app.css').read_text(encoding='utf-8')
-    assert 'function syncLogScrollLock()' in script
-    assert script.count('syncLogScrollLock()') >= 4
-    assert 'new MutationObserver' in script
-    assert "document.documentElement.classList.toggle('log-lock', locked)" in script
+    assert 'function syncLogScrollLock()' in tools
+    assert combined.count('syncLogScrollLock()') >= 4
+    assert 'new MutationObserver' in tools
+    assert "document.documentElement.classList.toggle('log-lock', locked)" in tools
     assert 'html.log-lock, body.log-lock { overflow: hidden; }' in css
+    assert 'data-log-copy' in tools
+    assert 'data-log-fullscreen' in tools
+    assert '已复制' in tools
+    assert 'navigator.clipboard' in tools
+    assert 'execCommand' in tools
+    assert 'class="log-panel infer-log"' in script
