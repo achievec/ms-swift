@@ -8,7 +8,7 @@ cpm_kernels
 dacite
 datasets>=4.0,<4.8.5
 einops
-evalscope>=1.0.0
+evalscope>=1.0.0,<2
 fastapi
 importlib_metadata
 json_repair
