@@ -216,6 +216,10 @@ def create_app(home: Path | None = None) -> FastAPI:
         return workbench.pack_next_round(
             home, text, filename, 1 if minimum is None or minimum == '' else minimum)
 
+    @app.get('/api/runs/{run_id}/workbench/dataset')
+    def workbench_dataset(run_id: str):
+        return workbench.latest_dataset(pipeline.view(run_id))
+
     @app.get('/api/runs/{run_id}/report')
     def run_report(run_id: str):
         return PlainTextResponse(workbench.render_report(pipeline.view(run_id)))

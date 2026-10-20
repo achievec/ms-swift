@@ -170,6 +170,46 @@ def pack_next_round(home: Path, text: str, filename: str = 'data.jsonl', min_sco
     }
 
 
+def latest_dataset(view: dict) -> dict:
+    """Local dataset recorded by the latest succeeded data step. Read-only."""
+    found = None
+    for step in view.get('steps') or []:
+        if step.get('stage') != 'data' or step.get('status') != 'succeeded':
+            continue
+        params = step.get('params') or {}
+        result = step.get('result') or {}
+        raw = params.get('dataset') or result.get('dataset') or ''
+        if raw:
+            found = {'round_index': step.get('round_index'), 'path': str(raw)}
+    if not found:
+        raise PipelineError('这一轮还没有成功的数据阶段')
+    path = Path(found['path'])
+    if not path.is_file():
+        raise PipelineError(f'数据不是本地文件，无法在这里打开：{found["path"]}')
+    if path.stat().st_size > MAX_BYTES:
+        raise PipelineError('数据文件超过 20MB')
+    text = path.read_text(encoding='utf-8')
+    report = inspect_text(text, path.name)
+    checkpoints = []
+    for row in view.get('checkpoints') or []:
+        if not row.get('active', 1):
+            continue
+        checkpoints.append({
+            'round_index': row.get('round_index'),
+            'kind': row.get('kind'),
+            'path': row.get('path') or '',
+        })
+    return {
+        'round_index': found['round_index'],
+        'path': str(path.resolve()),
+        'filename': path.name,
+        'text': text,
+        'inspect': report,
+        'checkpoints': checkpoints,
+        'how_to': '文本已填入上方输入框，可以直接检查、拆分或筛选。拆分结果用「服务器本地路径」填回数据阶段。',
+    }
+
+
 def render_report(view: dict) -> str:
     run = view.get('run') or {}
     lines = [
@@ -190,6 +230,11 @@ def render_report(view: dict) -> str:
             f"- 第 {rnd.get('round_index')} 轮 {rnd.get('status')}，基座 {rnd.get('base_model')}，"
             f"晋级 {rnd.get('promoted_kind') or '无'}（{score_text}）"
         )
+    checkpoints = [row for row in (view.get('checkpoints') or []) if row.get('active', 1) and row.get('path')]
+    if checkpoints:
+        lines.extend(['', '## 检查点', ''])
+        for row in checkpoints:
+            lines.append(f"- 第 {row.get('round_index')} 轮 {row.get('kind')}：{row.get('path')}")
     lines.extend(['', '## 步骤', ''])
     for step in view.get('steps') or []:
         metrics = ((step.get('result') or {}).get('metrics') or {})

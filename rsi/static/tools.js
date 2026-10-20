@@ -162,6 +162,26 @@ function selectedRun() {
   return id;
 }
 
+document.getElementById('load-data').addEventListener('click', async () => {
+  try {
+    const id = selectedRun();
+    const saved = await api(`/api/runs/${id}/workbench/dataset`);
+    document.getElementById('data-text').value = saved.text || '';
+    const coverage = saved.inspect && saved.inspect.coverage ? saved.inspect.coverage : {};
+    const pairs = [['本轮数据', saved.path]];
+    (saved.checkpoints || []).forEach((row) => {
+      pairs.push([`第${row.round_index}轮 ${row.kind}`, row.path]);
+    });
+    showPaths(
+      'data-out',
+      `第 ${saved.round_index} 轮，${coverage.num_rows || 0} 条，关键词全中 ${coverage.full_hit || 0} 条。${saved.how_to}`,
+      pairs,
+    );
+  } catch (err) {
+    show('data-out', err.message);
+  }
+});
+
 document.getElementById('report').addEventListener('click', async () => {
   try {
     const id = selectedRun();

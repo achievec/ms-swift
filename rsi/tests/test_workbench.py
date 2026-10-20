@@ -66,6 +66,28 @@ def test_inspect_split_and_next_pack(tmp_path, monkeypatch):
     assert '工单 B' in retry
 
 
+def test_load_dataset_recorded_by_the_data_step(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    created = client.post('/api/runs', json={
+        'name': '已有数据',
+        'scenario': '读取本轮训练文件',
+        'base_model': 'Qwen/Qwen2.5-7B-Instruct',
+    })
+    run_id = created.json()['run']['id']
+    missing = client.get(f'/api/runs/{run_id}/workbench/dataset')
+    assert missing.status_code == 400
+    loaded = client.post(f'/api/runs/{run_id}/stages/data/run', json={
+        'params': {'source': 'bundled', 'bundled': 'itops_mix'},
+    })
+    assert loaded.status_code == 200, loaded.text
+    found = client.get(f'/api/runs/{run_id}/workbench/dataset')
+    assert found.status_code == 200, found.text
+    body = found.json()
+    assert body['path'].endswith('itops_mix.jsonl')
+    assert 'VPN' in body['text'] or body['inspect']['coverage']['num_rows'] == 6
+    assert '服务器本地路径' in body['how_to']
+
+
 def test_report_and_idle_export(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     created = client.post('/api/runs', json={
