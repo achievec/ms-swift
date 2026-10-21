@@ -3,17 +3,26 @@
 model_source: hope
 # hope clone uses these directories as cwd (~ and $HOME are expanded).
 # The repo lands at <root>/<org>/<name>. RSI_MODEL_ROOT and RSI_DATA_ROOT still win.
-model_root: /opt/meituan/dolphinfs_liubo108/ms-swift/models
-data_root: /opt/meituan/dolphinfs_liubo108/ms-swift/datasets
+
+#model_root: /opt/meituan/dolphinfs_liubo108/ms-swift/models
+model_root: /home/hadoop-sailorqa-ai/model_train
+
+#data_root: /opt/meituan/dolphinfs_liubo108/ms-swift/datasets
+data_root: /home/hadoop-sailorqa-ai/model_train/datasets
+
 # misid for `hope login` and `hope clone --username`. RSI_HOPE_USERNAME overrides this.
 # Do not put a token in this file; use RSI_HOPE_TOKEN.
 hope_username: liyuhao03
+
 # Linux 上 ./run.sh 先 conda activate 这个环境。RSI_CONDA_ENV 优先；设为空则不激活。macOS 不激活。
 conda_env: model-train
+
 # GPU conda env for swift sft / eval / rlhf. Ignored when this file is absent.
 # RSI_TRAIN_PYTHON overrides it. RSI_SWIFT_BIN replaces the whole launcher.
 train_python: /usr/local/conda/envs/model-train/bin/python
+
 # Runs, swift logs, uploads, and rsi.sqlite. RSI_HOME overrides this.
 # Used when the directory exists, or its parent exists and is writable.
 # Otherwise the app uses rsi/workspace (a Mac without this dolphinfs path).
-rsi_home: /opt/meituan/dolphinfs_liubo108/ms-swift/workspace
+#rsi_home: /opt/meituan/dolphinfs_liubo108/ms-swift/workspace
+rsi_home: /home/hadoop-sailorqa-ai/model_train/ms-swift-workspace
