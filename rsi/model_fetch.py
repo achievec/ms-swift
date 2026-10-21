@@ -408,7 +408,7 @@ def login_unconfirmed_message() -> str:
 
 def _is_failure_note(note: str) -> bool:
     text = note or ''
-    return (text == _TOOL_FAILURE or text.startswith('无法创建目录')
+    return (text == _TOOL_FAILURE or text.startswith('无法创建目录') or text.startswith('拉取失败')
             or text.startswith('hope 未登录：') or text.startswith(_LOGIN_FAIL_PREFIX))
 
 
@@ -572,7 +572,8 @@ def _dataset_ready(path: Path) -> bool:
     if not path.is_dir():
         return False
     for child in path.iterdir():
-        if child.name in DATASET_READY_NAMES or child.suffix in {'.jsonl', '.parquet', '.arrow', '.csv', '.md'}:
+        if child.name in DATASET_READY_NAMES or child.suffix in {
+                '.json', '.jsonl', '.parquet', '.arrow', '.csv', '.md', '.txt'}:
             return True
         if child.is_dir() and child.name not in {'.git'}:
             return True
@@ -586,9 +587,10 @@ def _ready(kind: str, path: Path) -> bool:
 
 
 class ModelFetcher:
-    def __init__(self, home: Path, runner=None):
+    def __init__(self, home: Path, runner=None, on_settled=None):
         self.home = Path(home)
         self.runner = runner or subprocess.run
+        self.on_settled = on_settled
         self._notes = {}
         self._progress = {}
 
@@ -681,6 +683,10 @@ class ModelFetcher:
                 logger.info('hope 跳过 %s %s 已在进行', kind, repo_id)
                 return
             _INFLIGHT.add(key)
+        # Mark the stage log before the thread runs. A second click in that window
+        # must not truncate lines this clone is about to append.
+        if stage_log is not None:
+            activate_stage_log(stage_log)
         root = self.model_root() if kind == 'model' else self.data_root()
         try:
             root.mkdir(parents=True, exist_ok=True)
@@ -688,6 +694,7 @@ class ModelFetcher:
             with _LOCK:
                 _INFLIGHT.discard(key)
                 self._notes[key] = f'无法创建目录 {root}'
+            deactivate_stage_log(stage_log)
             logger.info('hope 无法创建目录 %s %s', root, exc.strerror or exc)
             return
 
@@ -716,8 +723,15 @@ class ModelFetcher:
                     elif hope_needs_login(_result_text(result)):
                         self._note_login_failure(key)
                     else:
-                        with _LOCK:
-                            self._notes.pop(key, None)
+                        code = getattr(result, 'returncode', 0)
+                        text = _result_text(result)
+                        pending = any(marker in text for marker in WAITING_MARKERS)
+                        if code not in (0, None) and not pending:
+                            with _LOCK:
+                                self._notes[key] = f'拉取失败，hope 退出码 {code}'
+                        else:
+                            with _LOCK:
+                                self._notes.pop(key, None)
                 finally:
                     with _LOCK:
                         _INFLIGHT.discard(key)
@@ -733,6 +747,12 @@ class ModelFetcher:
                     logger.info('hope 就绪 %s %s %s', kind, repo_id, ready_path)
             finally:
                 _stage_log.reset(token)
+                try:
+                    if self.on_settled is not None:
+                        self.on_settled()
+                except Exception:
+                    logger.exception('拉取结束后继续阶段')
+                deactivate_stage_log(stage_log)
 
         if background:
             threading.Thread(target=job, daemon=True).start()
@@ -865,7 +885,11 @@ class ModelFetcher:
             argv, cwd, target, repo_key=repo_key, force_login=False, allow_login_retry=False)
 
     def _execute_clone(self, argv: list, cwd: Path, target: Path | None = None):
-        """Stream hope clone into the process log as bytes arrive."""
+        """Stream hope clone into the process log as bytes arrive.
+
+        The child stdout is a pipe. Hope must not be given the stage log file:
+        a redirect that reopens that path with ``>`` would truncate it.
+        """
         command = public_hope_command(argv)
         where = f'cwd={cwd}'
         if target is not None:
@@ -964,10 +988,45 @@ def _as_bytes(text) -> bytes:
 
 
 def _write_unlocked(path: Path, data: bytes) -> None:
+    """Append. Seek to the end so a filesystem that ignores O_APPEND cannot rewrite offset 0."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open('ab', buffering=0) as handle:
-        handle.write(data)
-        handle.flush()
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    try:
+        os.lseek(fd, 0, os.SEEK_END)
+        view = data
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                break
+            view = view[written:]
+    finally:
+        os.close(fd)
+
+
+def _separate_cr(path: Path, data: bytes) -> bytes:
+    """Keep a carriage-return progress redraw from eating the previous record.
+
+    Hope clone redraws a download line with ``\\r``. The stage panel collapses
+    that inside one line. A chunk that starts with ``\\r`` and follows text that
+    has no trailing newline would wipe the login lines already on that line.
+    """
+    if not data.startswith(b'\r'):
+        return data
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return data
+    if size <= 0:
+        return data
+    try:
+        with path.open('rb') as handle:
+            handle.seek(-1, os.SEEK_END)
+            last = handle.read(1)
+    except OSError:
+        return data
+    if last == b'\n':
+        return data
+    return b'\n' + data
 
 
 def append_process_log(text: str) -> None:
@@ -995,7 +1054,8 @@ def fanout_log(text: str) -> None:
     with _LOG_APPEND:
         _write_unlocked(process_log_path(), data)
         if stage is not None:
-            _write_unlocked(Path(stage), data)
+            stage_path = Path(stage)
+            _write_unlocked(stage_path, _separate_cr(stage_path, data))
 
 
 def _emit_captured(stdout: str, stderr: str) -> None:
@@ -1019,17 +1079,57 @@ def use_stage_log(path):
         _stage_log.reset(token)
 
 
+_ACTIVE_STAGE_LOGS: dict = {}
+
+
+def _log_key(path) -> str:
+    return str(Path(path))
+
+
+def activate_stage_log(path) -> None:
+    """Count one in-flight hope writer. ``reset_stage_log`` will not truncate it."""
+    if not path:
+        return
+    key = _log_key(path)
+    with _LOG_APPEND:
+        _ACTIVE_STAGE_LOGS[key] = _ACTIVE_STAGE_LOGS.get(key, 0) + 1
+
+
+def deactivate_stage_log(path) -> None:
+    if not path:
+        return
+    key = _log_key(path)
+    with _LOG_APPEND:
+        left = _ACTIVE_STAGE_LOGS.get(key, 0) - 1
+        if left <= 0:
+            _ACTIVE_STAGE_LOGS.pop(key, None)
+        else:
+            _ACTIVE_STAGE_LOGS[key] = left
+
+
 def reset_stage_log(path) -> None:
-    """Truncate a stage log before a fresh run. A syncing continuation does not call this."""
+    """Truncate a stage log before a fresh run. A syncing continuation does not call this.
+
+    A clone that is still writing also keeps the file. Hope's own redirect must
+    not be handed this path; opening it with truncation would drop the lines
+    already appended for login and earlier datasets.
+    """
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     with _LOG_APPEND:
+        if _ACTIVE_STAGE_LOGS.get(_log_key(target), 0) > 0:
+            return
         with target.open('wb') as handle:
             handle.flush()
 
 
 def stream_subprocess(argv, cwd: Path, on_chunk) -> int:
-    """Read a process in 4KB chunks and hand each chunk off before the next read."""
+    """Read a process in 4KB chunks and hand each chunk off before the next read.
+
+    stdout is a pipe, not the stage log. If hope reopens its stdout with ``>``,
+    that truncates whatever path it was given. The pipe is not that file, so the
+    experiment log stays intact and we append each chunk ourselves.
+    """
     proc = subprocess.Popen(
         list(argv),
         cwd=str(cwd),
@@ -1037,6 +1137,7 @@ def stream_subprocess(argv, cwd: Path, on_chunk) -> int:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         bufsize=0,
+        close_fds=True,
     )
     try:
         stream = proc.stdout

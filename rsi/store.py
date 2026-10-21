@@ -256,6 +256,11 @@ class Store:
                                     (run_id, round_index)).fetchall()
         return [dict(row) for row in rows]
 
+    def list_steps_with_status(self, status: str) -> list:
+        with self.transaction() as conn:
+            rows = conn.execute('SELECT * FROM steps WHERE status=? ORDER BY id', (status, )).fetchall()
+        return [dict(row) for row in rows]
+
     def latest_active_steps(self, run_id, round_index) -> dict:
         active = {}
         for row in self.list_steps(run_id, round_index):
