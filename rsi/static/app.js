@@ -717,12 +717,18 @@ function renderFlow() {
   return graph + renderStage(state.stage);
 }
 
+function durationCell(step) {
+  const text = formatDurationZh(step.started_at, step.ended_at);
+  if (!step.started_at || step.ended_at) return escapeHtml(text);
+  return `<span data-duration-start="${escapeHtml(step.started_at)}">${escapeHtml(text)}</span>`;
+}
+
 function renderAudit() {
   const steps = state.view.steps || [];
   const rows = steps.map((step) => {
     const open = state.expanded === step.id;
-    const detail = open ? `<tr class="expand"><td colspan="6">
-      <p><b>开始</b> ${escapeHtml(formatShanghai(step.started_at))} · <b>结束</b> ${escapeHtml(formatShanghai(step.ended_at || ''))}</p>
+    const detail = open ? `<tr class="expand"><td colspan="7">
+      <p><b>开始</b> ${escapeHtml(formatShanghai(step.started_at))} · <b>结束</b> ${escapeHtml(formatShanghai(step.ended_at || ''))} · <b>耗时</b> ${escapeHtml(formatDurationZh(step.started_at, step.ended_at))}</p>
       ${outputPanel('参数', JSON.stringify(step.params, null, 2))}
       ${scoreHeadline((step.result || {}).metrics)}${scoreTable((step.result || {}).metrics)}${evalReportLink(step.stage, step.result, step.round_index) ? `<p class="row-actions">${evalReportLink(step.stage, step.result, step.round_index)}</p>` : ''}${outputPanel('结果', JSON.stringify(visibleResult(step.result), null, 2))}
       ${logPanel(
@@ -737,13 +743,14 @@ function renderAudit() {
       <td><span class="badge ${step.status}">${escapeHtml(statusText(step.status))}</span></td>
       <td>${escapeHtml(formatShanghai(step.started_at || ''))}</td>
       <td>${escapeHtml(formatShanghai(step.ended_at || ''))}</td>
+      <td>${durationCell(step)}</td>
     </tr>${detail}`;
   }).join('');
   return `<section class="panel">
     <h2>实验记录</h2>
     <table>
-      <thead><tr><th>ID</th><th>轮</th><th>阶段</th><th>状态</th><th>开始</th><th>结束</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="6">还没有步骤。</td></tr>'}</tbody>
+      <thead><tr><th>ID</th><th>轮</th><th>阶段</th><th>状态</th><th>开始</th><th>结束</th><th>耗时</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="7">还没有步骤。</td></tr>'}</tbody>
     </table>
   </section>`;
 }
@@ -2231,7 +2238,7 @@ document.addEventListener('focusout', (event) => {
 });
 
 function syncLive() {
-  const needs = document.querySelector('[data-started], [data-live-log]') || needsFetchPoll();
+  const needs = document.querySelector('[data-started], [data-duration-start], [data-live-log]') || needsFetchPoll();
   if (!needs) {
     if (state.liveTimer) {
       clearInterval(state.liveTimer);
@@ -2246,6 +2253,10 @@ function syncLive() {
 function paintElapsed() {
   document.querySelectorAll('[data-started]').forEach((el) => {
     const label = elapsedLabel(el.dataset.started);
+    if (el.textContent !== label) el.textContent = label;
+  });
+  document.querySelectorAll('[data-duration-start]').forEach((el) => {
+    const label = formatDurationZh(el.dataset.durationStart, '');
     if (el.textContent !== label) el.textContent = label;
   });
 }

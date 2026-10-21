@@ -348,3 +348,36 @@ def test_displayed_times_use_shanghai():
     assert lines[0] == '2026-10-19 11:17:04'
     assert lines[1] == '2026-10-20 00:00:00'
     assert lines[2] == ''
+
+
+def test_duration_column_uses_chinese_units():
+    source = Path(__file__).resolve().parents[1].joinpath('static', 'time.js').read_text(encoding='utf-8')
+    page = Path(__file__).resolve().parents[1].joinpath('static', 'app.js').read_text(encoding='utf-8')
+    assert '<th>耗时</th>' in page
+    assert 'formatDurationZh(' in page
+    assert 'data-duration-start' in page
+    script = source + """
+    const start = '2026-10-19T03:00:00Z';
+    console.log(formatDurationZh(start, '2026-10-19T06:05:04Z'));
+    console.log(formatDurationZh(start, '2026-10-19T03:05:04Z'));
+    console.log(formatDurationZh(start, '2026-10-19T03:00:12Z'));
+    console.log(formatDurationZh(start, '2026-10-19T06:00:04Z'));
+    console.log(formatDurationZh(start, '2026-10-19T04:05:00Z'));
+    console.log(formatDurationZh(start, start));
+    console.log(formatDurationZh('', '2026-10-19T03:00:12Z'));
+    console.log(formatDurationZh(null, null));
+    console.log(formatDurationZh(start, '', Date.parse('2026-10-19T03:00:12Z')));
+    """
+    completed = subprocess.run(['node', '-e', script], check=True, capture_output=True, text=True)
+    lines = completed.stdout.splitlines()
+    assert lines == [
+        '3 小时 5 分 4 秒',
+        '5 分 4 秒',
+        '12 秒',
+        '3 小时 4 秒',
+        '1 小时 5 分',
+        '0 秒',
+        '—',
+        '—',
+        '12 秒',
+    ]

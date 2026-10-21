@@ -1,3 +1,30 @@
+function parseInstant(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const text = String(value).trim();
+  if (!text) return null;
+  const zoned = /(?:Z|[+-]\d{2}:?\d{2})$/.test(text) ? text : `${text.replace(' ', 'T')}Z`;
+  const date = new Date(zoned);
+  return Number.isNaN(date.getTime()) ? null : date.getTime();
+}
+
+function formatDurationZh(startedAt, endedAt, now) {
+  const start = parseInstant(startedAt);
+  if (start === null) return '—';
+  const endedText = endedAt === null || endedAt === undefined ? '' : String(endedAt).trim();
+  const end = endedText ? parseInstant(endedText) : (now == null ? Date.now() : now);
+  if (end === null) return '—';
+  let secs = Math.max(0, Math.floor((end - start) / 1000));
+  const hours = Math.floor(secs / 3600);
+  secs -= hours * 3600;
+  const mins = Math.floor(secs / 60);
+  const rem = secs - mins * 60;
+  const parts = [];
+  if (hours) parts.push(`${hours} 小时`);
+  if (mins) parts.push(`${mins} 分`);
+  if (rem || !parts.length) parts.push(`${rem} 秒`);
+  return parts.join(' ');
+}
+
 function formatShanghai(value) {
   if (value === null || value === undefined || value === '') return '';
   const text = String(value).trim();
