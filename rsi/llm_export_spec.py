@@ -21,13 +21,38 @@ QUANT_N_SAMPLES = 256
 # Methods that need a calibration ``--dataset`` (see ExportArguments / QuantEngine).
 CALIB_QUANT_METHODS = frozenset({'awq', 'gptq', 'gptq_v2'})
 
+# Form / draft / sticky keys for export-time quant. Empty method = merge-only.
+EXPORT_QUANT_KEYS = frozenset(('quant_method', 'quant_bits', 'quant_n_samples'))
+
 QUANT_METHOD_INFO = (
-    '留空表示不量化（仅合并 LoRA）。选 AWQ/GPTQ 时必须填写下方校准数据集。'
+    '不选量化 = 只合并 LoRA。选 AWQ 需要校准数据集，且环境已安装 autoawq（pip install autoawq）。'
 )
 QUANT_BITS_INFO = '不量化时请留空；AWQ/GPTQ 通常填 4。'
 DATASET_INFO = (
     'AWQ/GPTQ 量化的校准数据，可多选或填本地路径。仅合并 LoRA 时可不填。'
 )
+
+
+def export_quant_available(method: str) -> str | None:
+    """Return a Chinese error if the chosen export quant package is missing."""
+    name = str(method or '').strip().lower()
+    if name == 'awq':
+        import importlib.util
+        if importlib.util.find_spec('awq') is None:
+            return (
+                '当前环境未安装 autoawq（import awq 失败）。'
+                '请先执行 pip install autoawq，或将「量化方法」留空仅合并 LoRA。'
+            )
+        return None
+    if name in {'gptq', 'gptq_v2'}:
+        import importlib.util
+        if importlib.util.find_spec('optimum') is None:
+            return (
+                '当前环境未安装 optimum（GPTQ 导出需要）。'
+                '请先安装 optimum，或将「量化方法」留空仅合并 LoRA。'
+            )
+        return None
+    return None
 
 
 def _widget(**kwargs):

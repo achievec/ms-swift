@@ -47,7 +47,9 @@ def test_layout_matches_the_webui_llm_export_tab():
     assert by_id['quant_method']['choices'][0] == ''
     assert by_id['quant_method']['default'] == ''
     assert by_id['quant_method']['choices'][1:] == ['awq', 'gptq', 'bnb', 'fp8', 'gptq_v2']
-    assert '留空表示不量化' in by_id['quant_method']['info']
+    assert '不选量化' in by_id['quant_method']['info']
+    assert '只合并 LoRA' in by_id['quant_method']['info']
+    assert 'autoawq' in by_id['quant_method']['info']
     assert '校准数据集' in by_id['quant_method']['info']
     assert by_id['quant_n_samples']['label'] == '量化集采样数(--quant_n_samples)'
     assert by_id['quant_n_samples']['default'] == 256
@@ -275,12 +277,13 @@ def test_awq_without_dataset_is_blocked(client):
     assert '校准数据集' in preview.json()['detail']
 
 
-def test_awq_with_dataset_builds_quant_command(client):
+def test_awq_with_dataset_builds_quant_command(client, monkeypatch):
     api = client
     run_id = _create(api)
     trained = _run(api, run_id, 'sft', {'source': 'bundled', 'bundled': 'itops_mix'})
     checkpoint = Path(trained['result']['checkpoint'])
     (checkpoint / 'adapter_config.json').write_text('{"peft_type": "LORA"}', encoding='utf-8')
+    monkeypatch.setattr('rsi.pipeline.export_quant_available', lambda _method: None)
 
     preview = api.post(f'/api/runs/{run_id}/export/preview', json={'params': {
         'quant_method': 'awq',
@@ -295,6 +298,86 @@ def test_awq_with_dataset_builds_quant_command(client):
     assert '--quant_n_samples 128' in command
     assert '--dataset modelscope/gsm8k' in command
     assert '--merge_lora true' in command
+
+
+def test_awq_without_autoawq_is_blocked(client, monkeypatch):
+    api = client
+    run_id = _create(api)
+    trained = _run(api, run_id, 'sft', {'source': 'bundled', 'bundled': 'itops_mix'})
+    checkpoint = Path(trained['result']['checkpoint'])
+    (checkpoint / 'adapter_config.json').write_text('{"peft_type": "LORA"}', encoding='utf-8')
+    monkeypatch.setattr(
+        'rsi.pipeline.export_quant_available',
+        lambda method: (
+            '当前环境未安装 autoawq（import awq 失败）。'
+            '请先执行 pip install autoawq，或将「量化方法」留空仅合并 LoRA。'
+            if str(method) == 'awq' else None))
+
+    blocked = api.post(f'/api/runs/{run_id}/export/run', json={'params': {
+        'quant_method': 'awq',
+        'quant_bits': 4,
+        'dataset': 'AI-ModelScope/alpaca-gpt4-data-zh',
+    }})
+    assert blocked.status_code == 400, blocked.text
+    detail = blocked.json()['detail']
+    assert 'autoawq' in detail
+    assert '仅合并 LoRA' in detail
+
+
+def test_failed_export_does_not_sticky_awq(client, monkeypatch):
+    """Blocked AWQ must not leave quant sticky on the form or in drafts."""
+    api = client
+    run_id = _create(api)
+    trained = _run(api, run_id, 'sft', {'source': 'bundled', 'bundled': 'itops_mix'})
+    checkpoint = Path(trained['result']['checkpoint'])
+    (checkpoint / 'adapter_config.json').write_text('{"peft_type": "LORA"}', encoding='utf-8')
+    monkeypatch.setattr(
+        'rsi.pipeline.export_quant_available',
+        lambda method: '当前环境未安装 autoawq' if method == 'awq' else None)
+
+    failed = api.post(f'/api/runs/{run_id}/export/run', json={'params': {
+        'quant_method': 'awq',
+        'quant_bits': 4,
+        'dataset': 'modelscope/gsm8k',
+    }})
+    assert failed.status_code == 400
+
+    # Empty-method draft must drop orphan bits (HTML select sticky).
+    saved = api.post(f'/api/runs/{run_id}/drafts', json={
+        'stage': 'export',
+        'params': {
+            'quant_method': '',
+            'quant_bits': 4,
+            'quant_n_samples': 256,
+            'adapters': str(checkpoint),
+            'merge_lora': True,
+        },
+    })
+    assert saved.status_code == 200, saved.text
+    stored = saved.json().get('params') or {}
+    assert 'quant_method' not in stored
+    assert 'quant_bits' not in stored
+    assert 'quant_n_samples' not in stored
+
+    view = api.get(f'/api/runs/{run_id}').json()
+    assert view['export_form']['quant_method'] in ('', None)
+    assert view['export_form']['quant_bits'] in ('', None)
+    preview = api.post(f'/api/runs/{run_id}/export/preview', json={'params': {}})
+    assert preview.status_code == 200, preview.text
+    command = preview.json()['command']
+    assert '--quant_method' not in command
+    assert '--quant_bits' not in command
+    assert '--quant_n_samples' not in command
+
+
+def test_export_quant_available_detects_missing_awq(monkeypatch):
+    from rsi.llm_export_spec import export_quant_available
+
+    monkeypatch.setattr('importlib.util.find_spec', lambda name: None if name == 'awq' else object())
+    msg = export_quant_available('awq')
+    assert msg and 'autoawq' in msg
+    assert export_quant_available('') is None
+    assert export_quant_available('bnb') is None
 
 
 def test_export_prefills_hope_local_base_path(tmp_path, monkeypatch):

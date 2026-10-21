@@ -38,7 +38,7 @@ from rsi.commands import (
     strip_form_quant,
     strip_rl_slider_midpoints,
 )
-from rsi.llm_export_spec import CALIB_QUANT_METHODS
+from rsi.llm_export_spec import CALIB_QUANT_METHODS, EXPORT_QUANT_KEYS, export_quant_available
 from rsi.llm_infer_spec import chat_request_body, cuda_visible_devices, template_default_system
 from rsi.dataset_validate import MAX_BYTES, validate_file, validate_public_id
 from rsi.flow import ACTION_LABELS, assemble_flow, blocked_message, decision_actions, stage_unlocked
@@ -256,6 +256,12 @@ def _clean_draft(params: dict, stage: str = '') -> dict:
         cleaned[key] = str(value)
     if stage == 'rl':
         cleaned = strip_rl_slider_midpoints(cleaned)
+    if stage == 'export':
+        # Merge-only drafts must not keep awq/bits from an HTML select first-option bug.
+        method = str(cleaned.get('quant_method') or '').strip()
+        if not method or method == 'none':
+            for key in EXPORT_QUANT_KEYS:
+                cleaned.pop(key, None)
     return cleaned
 
 
@@ -1077,21 +1083,42 @@ class Pipeline:
             merged['quant_bits'] = bits
 
     def _validate_export_quant(self, merged: dict) -> None:
-        """AWQ/GPTQ need a calib dataset; block before swift raises the English ValueError."""
+        """Block missing calib data / packages before merge+quant dies mid-run."""
         method = str(merged.get('quant_method') or '').strip()
         if not method or method == 'none':
             return
         if method != 'fp8' and merged.get('quant_bits') in (None, '', 'none'):
             raise PipelineError('已选择量化方法，请填写量化比特数(--quant_bits)，或不量化时将量化方法留空。')
-        if method not in CALIB_QUANT_METHODS:
+        if method in CALIB_QUANT_METHODS:
+            dataset = merged.get('dataset')
+            if isinstance(dataset, list):
+                dataset = ' '.join(str(item).strip() for item in dataset if str(item).strip())
+            if not str(dataset or '').strip():
+                raise PipelineError(
+                    'AWQ/GPTQ 量化需要校准数据集。请填写「校准数据集(--dataset)」，'
+                    '或将「量化方法」留空，仅合并 LoRA。')
+        missing = export_quant_available(method)
+        if missing:
+            raise PipelineError(missing)
+
+    def _validate_export_output_dir(self, merged: dict) -> None:
+        """swift export defaults to exist_ok=False; warn before a long merge/quant run."""
+        if str(merged.get('exist_ok') or '').lower() in {'1', 'true', 'yes'}:
             return
-        dataset = merged.get('dataset')
-        if isinstance(dataset, list):
-            dataset = ' '.join(str(item).strip() for item in dataset if str(item).strip())
-        if not str(dataset or '').strip():
+        if merged.get('exist_ok') in {True, 1}:
+            return
+        out = str(merged.get('output_dir') or '').strip()
+        if not out:
+            return
+        path = Path(out).expanduser()
+        try:
+            exists = path.exists()
+        except OSError:
+            return
+        if exists:
             raise PipelineError(
-                'AWQ/GPTQ 量化需要校准数据集。请填写「校准数据集(--dataset)」，'
-                '或将「量化方法」留空，仅合并 LoRA。')
+                f'输出目录已存在：{path}。请改「输出路径(--output_dir)」，'
+                '或在更多参数里加 --exist_ok true（不会自动删除已有文件）。')
 
     def _export_argv(self, merged: dict) -> list:
         """``swift export`` argv. A full checkpoint is ``--model``; a LoRA stays ``--adapters``."""
@@ -1713,6 +1740,10 @@ class Pipeline:
         for key, value in saved_export.items():
             if key in {'model', 'model_type', 'template', 'adapters', 'checkpoint'}:
                 continue
+            # Do not sticky-restore quant from a previous (often failed) export step;
+            # default form stays merge-only unless the live draft opts in.
+            if key in EXPORT_QUANT_KEYS:
+                continue
             if value in (None, ''):
                 continue
             export_values[key] = value
@@ -1726,11 +1757,12 @@ class Pipeline:
             export_values[key] = value
         for key in ('model', 'model_type', 'template'):
             export_values[key] = export_fill.get(key) if export_fill.get(key) is not None else ''
-        # Empty-meaning quant: do not show a sticky method that was never set.
+        # Empty-meaning / sticky-bug quant: force merge-only display.
         method = str(export_values.get('quant_method') or '').strip()
         if not method or method == 'none':
             export_values['quant_method'] = ''
             export_values['quant_bits'] = ''
+            export_values['quant_n_samples'] = 256
         export_running = self._exports.running(run_id)
         export_status = 'running' if export_running else (export_step['status'] if export_step else 'idle')
         export_job = {
@@ -2683,9 +2715,11 @@ class Pipeline:
         self._normalize_export_quant(merged)
         if strict and not str(merged.get('model') or '').strip() and not str(merged.get('adapters') or '').strip():
             raise PipelineError('还没有可导出的模型')
-        # Always validate calib requirements (preview and run) so AWQ without
-        # --dataset never reaches swift's English ValueError.
+        # Always validate (preview and run) so AWQ without dataset / autoawq
+        # never merges then dies with an English ModuleNotFoundError.
         self._validate_export_quant(merged)
+        if strict:
+            self._validate_export_output_dir(merged)
         try:
             cuda_visible_devices(merged.get('gpu_id'))
         except ValueError as exc:
@@ -2745,8 +2779,9 @@ class Pipeline:
         run = self._require_run(run_id)
         if self._exports.running(run_id):
             raise PipelineError('这个实验已经有一个导出在跑')
-        self._remember_user_draft(run_id, run['round_index'], 'export', params or {})
+        # Validate first so a blocked AWQ attempt does not sticky-save quant into the draft.
         merged = self._prepare_export(run, params or {}, strict=True)
+        self._remember_user_draft(run_id, run['round_index'], 'export', params or {})
         command = self.preview_export_command(merged)
         argv = self._export_argv(merged)
         output_dir = str(merged.get('output_dir') or '')
