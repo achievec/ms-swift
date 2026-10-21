@@ -1,5 +1,15 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
-from rsi.commands import build_argv, env_prefix, selected_gpu_count
+import pytest
+
+from rsi.commands import (
+    build_argv,
+    env_prefix,
+    grpo_generation_batch_issue,
+    rl_empty_slider_midpoints,
+    selected_gpu_count,
+    slider_midpoint,
+    strip_rl_slider_midpoints,
+)
 from rsi.webui_stage_spec import stage_layout
 
 
@@ -182,6 +192,144 @@ def test_default_rl_preset_omits_ref_model_and_splits_weights():
     assert '--ref_model_type' not in flags
     weight_at = argv.index('--reward_weights')
     assert argv[weight_at:weight_at + 3] == ['--reward_weights', '1.0', '0.5']
+    gas_at = argv.index('--gradient_accumulation_steps')
+    assert argv[gas_at + 1] == '8'
+    assert preset.get('num_generations') == 4
+    # 1 * world 1 * accumulation 8 is divisible by num_generations 4.
+    assert grpo_generation_batch_issue(params) is None
+
+
+def test_rl_empty_slider_midpoints_match_gradio_ranges():
+    """Empty range inputs submit the step-snapped midpoint, not the preset."""
+    assert slider_midpoint(1, 256, 2) == 129
+    assert slider_midpoint(0.0, 20.0, 0.5) == 10
+    midpoints = rl_empty_slider_midpoints()
+    rl = stage_layout('rl', 1)
+    eval_slider = rl['by_id']['per_device_eval_batch_size']
+    neftune = rl['by_id']['neftune_noise_alpha']
+    assert (eval_slider['minimum'], eval_slider['maximum'], eval_slider['step']) == (1, 256, 2)
+    assert neftune['minimum'] == 0
+    assert neftune['maximum'] == 20
+    assert neftune['step'] == 0.5
+    assert midpoints['per_device_eval_batch_size'] == 129
+    assert midpoints['neftune_noise_alpha'] == 10
+    # min=1 step=2 cannot represent 8; the form uses step 1 so the preset is not snapped to 9.
+    assert rl['by_id']['gradient_accumulation_steps']['step'] == 1
+
+
+def test_rl_command_drops_slider_midpoints_but_keeps_real_choices():
+    cleaned = strip_rl_slider_midpoints({
+        'per_device_eval_batch_size': 129,
+        'neftune_noise_alpha': 10,
+        'per_device_train_batch_size': 129,
+        'num_generations': 33,
+        'gradient_accumulation_steps': 8,
+    })
+    assert 'per_device_eval_batch_size' not in cleaned
+    assert 'neftune_noise_alpha' not in cleaned
+    assert 'per_device_train_batch_size' not in cleaned
+    assert 'num_generations' not in cleaned
+    assert cleaned['gradient_accumulation_steps'] == 8
+
+    argv = build_argv('rl', {
+        'tuner_type': 'lora',
+        'gpu_id': '0',
+        'num_generations': 4,
+        'per_device_train_batch_size': 1,
+        'gradient_accumulation_steps': 8,
+        'per_device_eval_batch_size': 129,
+        'neftune_noise_alpha': '10',
+        # Chosen values that happen to sit on the slider, not the empty midpoint.
+        'warmup_ratio': 0.05,
+    })
+    flags = _flags(argv)
+    assert '--per_device_eval_batch_size' not in flags
+    assert '--neftune_noise_alpha' not in flags
+    assert '--warmup_ratio' in flags
+
+    kept = build_argv('rl', {
+        'tuner_type': 'lora',
+        'gpu_id': '0',
+        'num_generations': 4,
+        'per_device_train_batch_size': 1,
+        'gradient_accumulation_steps': 8,
+        'per_device_eval_batch_size': 4,
+        'neftune_noise_alpha': 5,
+    })
+    assert kept[kept.index('--per_device_eval_batch_size') + 1] == '4'
+    assert kept[kept.index('--neftune_noise_alpha') + 1] == '5'
+
+
+def test_rl_grpo_rejects_indivisible_generation_batch():
+    """generation_batch_size = 1 * 1 * 9 is not divisible by num_generations 4."""
+    params = {
+        'rlhf_type': 'grpo',
+        'gpu_id': '0',
+        'per_device_train_batch_size': 1,
+        'gradient_accumulation_steps': 9,
+        'num_generations': 4,
+    }
+    message = grpo_generation_batch_issue(params)
+    assert message
+    assert '9' in message and '4' in message
+    assert '[3, 9]' in message
+    with pytest.raises(ValueError, match=r'generation_batch_size（9）'):
+        build_argv('rl', params)
+
+
+def test_sticky_rl_midpoints_use_preset_and_bad_accumulation_fails(tmp_path, monkeypatch):
+    """Saved drafts must not keep eval batch 129 / NEFTune 10, and gas=9 fails before swift."""
+    monkeypatch.setenv('RSI_BACKEND', 'mock')
+    monkeypatch.setenv('RSI_SERVE_BACKEND', 'mock')
+    monkeypatch.setenv('RSI_HOME', str(tmp_path / 'home'))
+    from fastapi.testclient import TestClient
+
+    from rsi.app import create_app
+
+    with TestClient(create_app(tmp_path / 'home')) as api:
+        created = api.post('/api/runs', json={
+            'name': 'grpo-batch',
+            'scenario': 'test',
+            'base_model': 'Qwen/Qwen2.5-7B-Instruct',
+        })
+        assert created.status_code == 200, created.text
+        run_id = created.json()['run']['id']
+        sticky = {
+            'gpu_id': '0',
+            'dataset': 'AI-ModelScope/alpaca-gpt4-data-zh',
+            'per_device_eval_batch_size': 129,
+            'neftune_noise_alpha': 10,
+            'gradient_accumulation_steps': 8,
+            'num_generations': 4,
+            'per_device_train_batch_size': 1,
+        }
+        preview = api.post(f'/api/runs/{run_id}/stages/rl/preview', json={'params': sticky})
+        assert preview.status_code == 200, preview.text
+        command = preview.json().get('command') or ''
+        assert '--per_device_eval_batch_size 1' in command
+        assert '--neftune_noise_alpha 0' in command
+        assert '129' not in command
+        assert '--neftune_noise_alpha 10' not in command
+        assert '--gradient_accumulation_steps 8' in command
+
+        saved = api.post(f'/api/runs/{run_id}/drafts', json={'stage': 'rl', 'params': sticky})
+        assert saved.status_code == 200, saved.text
+        stored = saved.json().get('params') or {}
+        assert 'per_device_eval_batch_size' not in stored
+        assert 'neftune_noise_alpha' not in stored
+        view = api.get(f'/api/runs/{run_id}').json()
+        values = ((view.get('forms') or {}).get('rl') or {}).get('values') or {}
+        assert values.get('per_device_eval_batch_size') == 1
+        assert values.get('neftune_noise_alpha') == 0
+
+        bad = dict(sticky)
+        bad['gradient_accumulation_steps'] = 9
+        rejected = api.post(f'/api/runs/{run_id}/stages/rl/preview', json={'params': bad})
+        assert rejected.status_code == 400, rejected.text
+        detail = rejected.json().get('detail') or ''
+        assert 'generation_batch_size（9）' in detail
+        assert 'num_generations（4）' in detail
+        assert '[3, 9]' in detail
 
 
 def _tabs(blocks):

@@ -1,7 +1,9 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 """Build the swift CLI that a stage would run."""
 import json
+import math
 import shlex
+from functools import lru_cache
 from pathlib import Path
 
 # Passed through as repeated CLI values when they contain whitespace,
@@ -151,6 +153,166 @@ def _whole_number(value):
     return int(number) if number == int(number) else None
 
 
+def _same_number(value, expected) -> bool:
+    if isinstance(value, bool) or value is None:
+        return False
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isclose(number, float(expected), rel_tol=0.0, abs_tol=1e-9)
+
+
+def slider_midpoint(minimum, maximum, step=None):
+    """Value an empty ``<input type="range">`` submits after step snapping.
+
+    HTML's default is ``min + (max - min) / 2``. The browser then rounds to the
+    nearest step (ties toward +infinity). ``min=1, max=256, step=2`` → 129;
+    ``min=0, max=20, step=0.5`` → 10.
+    """
+    low = float(minimum)
+    high = float(maximum)
+    raw = low + (high - low) / 2.0
+    if step is None:
+        return int(raw) if raw == int(raw) else raw
+    stride = float(step)
+    if stride == 0:
+        return int(raw) if raw == int(raw) else raw
+    steps_from_base = (raw - low) / stride
+    lower_n = math.floor(steps_from_base)
+    upper_n = math.ceil(steps_from_base)
+    candidates = []
+    for count in (lower_n, upper_n):
+        snapped = low + count * stride
+        if low - 1e-9 <= snapped <= high + 1e-9:
+            candidates.append(snapped)
+    if not candidates:
+        chosen = raw
+    else:
+        # Nearest; a tie goes toward +infinity (the larger candidate).
+        chosen = min(candidates, key=lambda item: (abs(item - raw), -item))
+    if math.isclose(chosen, round(chosen), rel_tol=0.0, abs_tol=1e-9):
+        return int(round(chosen))
+    return chosen
+
+
+@lru_cache(maxsize=1)
+def rl_empty_slider_midpoints() -> dict:
+    """RL Gradio sliders that have no explicit value, mapped to their empty-range midpoint.
+
+    A filled default (GRPO's gradient accumulation starts at 1) is not an empty
+    slider, so a user-chosen value there is left alone.
+    """
+    from rsi.webui_stage_spec import stage_layout
+
+    layout = stage_layout('rl', 1)
+    found = {}
+    for item in (layout.get('by_id') or {}).values():
+        if item.get('widget') != 'Slider':
+            continue
+        if item.get('default') is not None:
+            continue
+        minimum = item.get('minimum')
+        maximum = item.get('maximum')
+        if minimum is None or maximum is None:
+            continue
+        found[item['id']] = slider_midpoint(minimum, maximum, item.get('step'))
+    return found
+
+
+def is_rl_slider_midpoint(key, value) -> bool:
+    midpoint = rl_empty_slider_midpoints().get(key)
+    if midpoint is None:
+        return False
+    return _same_number(value, midpoint)
+
+
+def strip_rl_slider_midpoints(params: dict) -> dict:
+    """Drop empty-slider midpoints so the RL preset (eval batch 1, NEFTune 0) can apply."""
+    cleaned = dict(params or {})
+    for key in list(cleaned):
+        if is_rl_slider_midpoint(key, cleaned[key]):
+            cleaned.pop(key, None)
+    return cleaned
+
+
+def grpo_generation_batch_issue(params: dict) -> str | None:
+    """Chinese error when GRPO's generation batch is not divisible by ``num_generations``.
+
+    Mirrors ``RolloutTrainerArgumentsMixin._init_generation_batch_params`` for the
+    default path (neither ``generation_batch_size`` nor ``steps_per_generation`` set):
+
+    ``generation_batch_size = per_device_train_batch_size * world_size * gradient_accumulation_steps``.
+
+    Swift's "Valid values" are the divisors of that batch that ``num_generations``
+    may take — not legal values for the batch itself. This does not rewrite
+    ``gradient_accumulation_steps``: bumping it grows the rollout batch.
+    """
+    params = params or {}
+    rlhf = str(params.get('rlhf_type') or 'grpo').strip() or 'grpo'
+    if rlhf not in {'grpo', 'gkd'}:
+        return None
+    if params.get('num_generations') in (None, ''):
+        return None
+    num_generations = _whole_number(params.get('num_generations'))
+    if num_generations is None or num_generations <= 1:
+        return None
+    per_device = _whole_number(params.get('per_device_train_batch_size'))
+    if per_device is None:
+        per_device = 1
+    world_size = selected_gpu_count(params)
+    if world_size <= 0:
+        world_size = 1
+    global_batch = per_device * world_size
+    gas = _whole_number(params.get('gradient_accumulation_steps'))
+    if gas is None:
+        gas = 1
+    generation_batch = _whole_number(params.get('generation_batch_size'))
+    steps = _whole_number(params.get('steps_per_generation'))
+    if generation_batch is None and steps is None:
+        steps = gas
+        generation_batch = global_batch * steps
+    elif generation_batch is not None and steps is None:
+        if global_batch <= 0 or generation_batch % global_batch != 0:
+            return (f'generation_batch_size（{generation_batch}）必须能被'
+                    f'每卡训练 batch（{per_device}）× GPU 数（{world_size}）整除。')
+        steps = generation_batch // global_batch
+    elif generation_batch is None and steps is not None:
+        generation_batch = global_batch * steps
+    else:
+        expected = global_batch * steps
+        if generation_batch != expected:
+            return (f'generation_batch_size（{generation_batch}）必须等于'
+                    f'每卡训练 batch × GPU 数 × steps_per_generation（{expected}）。')
+    if steps is None or steps <= 0 or generation_batch is None:
+        return f'steps_per_generation 必须大于 0，当前是 {steps}。'
+    if generation_batch % num_generations == 0:
+        return None
+    valid = [n for n in range(2, generation_batch + 1) if generation_batch % n == 0]
+    suggestion = _next_accumulation(global_batch, gas, num_generations)
+    hint = f'请把梯度累积调成 {num_generations} 的倍数（例如 {suggestion}），或点「恢复预设」。'
+    return (f'GRPO 的 generation_batch_size（{generation_batch}）必须能被 num_generations（{num_generations}）整除。'
+            f'当前为每卡训练 batch（{per_device}）× GPU 数（{world_size}）× 梯度累积（{gas}）= {generation_batch}。'
+            f'在这个 batch 下，num_generations 只能取：{valid}。{hint}')
+
+
+def _next_accumulation(global_batch: int, gas: int, num_generations: int) -> int:
+    """Smallest accumulation >= the next multiple of ``num_generations`` that divides."""
+    start = max(gas, 1)
+    multiple = ((start + num_generations - 1) // num_generations) * num_generations
+    if multiple == start:
+        multiple += num_generations
+    if global_batch <= 0:
+        return multiple
+    candidate = multiple
+    # global_batch may share factors with num_generations; walk a few multiples.
+    for _ in range(num_generations + 1):
+        if (global_batch * candidate) % num_generations == 0:
+            return candidate
+        candidate += num_generations
+    return multiple
+
+
 def selected_gpu_count(params: dict) -> int:
     """How many CUDA devices this command will see. Missing GPU stays on device 0."""
     gpu = (params or {}).get('gpu_id')
@@ -242,6 +404,8 @@ def _drop_inactive_quant_args(params: dict) -> None:
 
 def _command_params(stage: str, params: dict) -> dict:
     cleaned = dict(params or {})
+    if stage == 'rl':
+        cleaned = strip_rl_slider_midpoints(cleaned)
     _drop_inactive_args(cleaned, stage)
     _drop_single_gpu_args(cleaned)
     _drop_inactive_quant_args(cleaned)
@@ -253,6 +417,10 @@ def build_argv(stage: str, params: dict) -> list:
     if not subcommand:
         return []
     params = _command_params(stage, params)
+    if stage == 'rl':
+        issue = grpo_generation_batch_issue(params)
+        if issue:
+            raise ValueError(issue)
     if stage == 'sft' and str(params.get('train_stage') or '').strip() == 'pt':
         subcommand = 'pt'
     argv = ['swift', subcommand]

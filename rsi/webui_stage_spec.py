@@ -873,6 +873,28 @@ def _prune_rsi_blocks(blocks: list, drop_ids: frozenset) -> list:
     return kept
 
 
+def _allow_even_accumulation(blocks: list) -> None:
+    """Keep gradient accumulation on multiples of ``num_generations``.
+
+    The Gradio slider is ``minimum=1, step=2``, so an even preset such as 8 is
+    not a legal range value and the browser snaps it to 9. GRPO then sees
+    ``generation_batch_size`` 9, which 4 does not divide.
+    """
+    for block in blocks:
+        kind = block.get('kind')
+        if kind == 'row':
+            for item in block.get('widgets') or []:
+                if item.get('id') == 'gradient_accumulation_steps':
+                    item['step'] = 1
+            continue
+        if kind in {'accordion', 'tab'}:
+            _allow_even_accumulation(block.get('blocks') or [])
+            continue
+        if kind == 'tabs':
+            for tab in block.get('tabs') or []:
+                _allow_even_accumulation(tab.get('blocks') or [])
+
+
 def stage_layout(stage: str, device_count: int = 0) -> dict:
     """``sft`` mirrors LLM预训练/微调, ``rl`` mirrors LLM GRPO, ``eval`` mirrors LLM评测."""
     key = {'sft': 'sft', 'sft_eval': 'eval', 'rl': 'rl', 'rl_eval': 'eval'}[stage]
@@ -886,6 +908,7 @@ def stage_layout(stage: str, device_count: int = 0) -> dict:
         blocks = _prune_rsi_blocks(blocks, _SFT_DROP_ACCORDION_IDS)
     elif key == 'rl':
         blocks = _prune_rsi_blocks(blocks, _RL_DROP_ACCORDION_IDS)
+        _allow_even_accumulation(blocks)
     return _layout(blocks)
 
 

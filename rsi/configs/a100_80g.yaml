@@ -99,6 +99,10 @@ rl:
   # Explicit: empty Gradio sliders otherwise submit the HTML range midpoint (≈129 / 10).
   per_device_eval_batch_size: 1
   neftune_noise_alpha: 0
+  # generation_batch_size = per_device_train_batch_size * world_size * gradient_accumulation_steps
+  # must be divisible by num_generations (4). 8 keeps G=4 on one GPU.
+  # Swift's "Valid values" are legal num_generations (divisors of that batch), not a reason to change G.
+  # The RL form uses step=1 here: Gradio's min=1 step=2 slider snaps 8 to 9.
   gradient_accumulation_steps: 8
   gradient_checkpointing: true
   warmup_ratio: 0.05

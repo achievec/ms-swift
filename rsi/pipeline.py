@@ -27,8 +27,11 @@ from rsi.commands import (
     build_argv,
     env_prefix,
     format_shell,
+    grpo_generation_batch_issue,
+    is_rl_slider_midpoint,
     stage_shell,
     strip_form_quant,
+    strip_rl_slider_midpoints,
 )
 from rsi.llm_infer_spec import chat_request_body, cuda_visible_devices, template_default_system
 from rsi.dataset_validate import MAX_BYTES, validate_file, validate_public_id
@@ -244,6 +247,8 @@ def _clean_draft(params: dict, stage: str = '') -> dict:
             cleaned[key] = value
             continue
         cleaned[key] = str(value)
+    if stage == 'rl':
+        cleaned = strip_rl_slider_midpoints(cleaned)
     return cleaned
 
 
@@ -1098,6 +1103,8 @@ class Pipeline:
         defaults = self._defaults_for(run, rnd, stage)
         # SFT form/draft must not reintroduce QLoRA; enable only via extra_yaml / 更多参数.
         incoming = strip_form_quant(user) if stage == 'sft' else dict(user or {})
+        if stage == 'rl':
+            incoming = strip_rl_slider_midpoints(incoming)
         merged = _merge(defaults, incoming)
         self._lock_model_fields(merged, defaults)
         if isinstance(merged.get('dataset'), list):
@@ -1160,6 +1167,10 @@ class Pipeline:
                 merged['dataset'] = '<dataset>'
             self._rewrite_model(merged, run, side, strict, fetch=fetch)
             self._place_trained_checkpoint(merged, run)
+            if stage == 'rl':
+                issue = grpo_generation_batch_issue(merged)
+                if issue:
+                    raise PipelineError(issue)
             return merged, side
 
         if stage in {'sft_eval', 'rl_eval'}:
@@ -1252,12 +1263,16 @@ class Pipeline:
             for key, value in step_params.items():
                 if key in {'model', 'model_type', 'template', 'trained_model'}:
                     continue
+                if stage == 'rl' and is_rl_slider_midpoint(key, value):
+                    continue
                 values[key] = value
         if draft:
             for key, value in draft.items():
                 if key in {'model', 'model_type', 'template'} or isinstance(value, dict):
                     continue
                 if stage == 'sft' and key in QUANT_FORM_KEYS:
+                    continue
+                if stage == 'rl' and is_rl_slider_midpoint(key, value):
                     continue
                 values[key] = value
         if stage == 'sft':
