@@ -261,23 +261,26 @@ function evalPickerCacheKey(runId, round, scope) {
 
 function evalPickerMarkup() {
   const picker = state.evalPicker || {};
-  const scope = picker.scope === 'all' ? 'all' : 'round';
   return `<div class="compare-block eval-picker" data-eval-picker="1">
-    <p class="compare-title">自选对比</p>
-    <p class="muted compare-sub">勾选同实验里已有的评测报告，再点对比。可选本轮或全部轮次（含历史重跑）。</p>
-    <div class="eval-picker-toolbar">
-      <label class="eval-picker-scope"><input type="radio" name="eval-picker-scope" value="round" data-action="eval-picker-scope" ${scope === 'round' ? 'checked' : ''}/> 本轮</label>
-      <label class="eval-picker-scope"><input type="radio" name="eval-picker-scope" value="all" data-action="eval-picker-scope" ${scope === 'all' ? 'checked' : ''}/> 全部轮次</label>
-      <button type="button" class="ghost" data-action="eval-picker-refresh">刷新列表</button>
-      <button type="button" class="primary" data-action="eval-picker-compare">对比</button>
+    <div class="eval-picker-launch">
+      <button type="button" class="primary" data-action="eval-picker-open">对比</button>
+      <span class="muted">挑选同实验评测报告做指标对照</span>
     </div>
-    <div class="eval-picker-list" data-eval-picker-list="1"><p class="muted">加载评测报告…</p></div>
     <div class="eval-picker-result" data-eval-picker-result="1">${picker.tableHtml || ''}</div>
   </div>`;
 }
 
+function syncEvalCompareScopeRadios() {
+  const dialog = document.getElementById('eval-compare-dialog');
+  if (!dialog) return;
+  const scope = (state.evalPicker && state.evalPicker.scope) === 'all' ? 'all' : 'round';
+  dialog.querySelectorAll('input[name="eval-picker-scope"]').forEach((input) => {
+    input.checked = input.value === scope;
+  });
+}
+
 function paintEvalPickerList() {
-  const root = document.querySelector('[data-eval-picker-list]');
+  const root = document.querySelector('#eval-compare-dialog [data-eval-picker-list]');
   if (!root) return;
   const picker = state.evalPicker || {};
   if (picker.loading) {
@@ -301,7 +304,7 @@ function paintEvalPickerList() {
     if (report.metrics && report.metrics.bleu_1 != null) meta.push(`BLEU-1 ${report.metrics.bleu_1}`);
     const hint = meta.length ? `<span class="eval-picker-meta">${escapeHtml(meta.join(' · '))}</span>` : '';
     const link = report.has_report && report.report_url
-      ? `<a class="ghost eval-picker-open" href="${escapeHtml(report.report_url)}" target="_blank" rel="noopener">报告</a>`
+      ? `<a class="ghost eval-picker-report" href="${escapeHtml(report.report_url)}" target="_blank" rel="noopener">报告</a>`
       : '';
     return `<label class="eval-picker-chip"><input type="checkbox" data-eval-report-id="${escapeHtml(id)}"${checked}/> <span class="eval-picker-label">${escapeHtml(report.label)}</span>${hint}${link}</label>`;
   }).join('');
@@ -316,7 +319,8 @@ function paintEvalPickerResult() {
 
 async function loadEvalReports(force) {
   if (!state.view || (state.stage !== 'sft_eval' && state.stage !== 'rl_eval')) return;
-  if (!document.querySelector('[data-eval-picker]')) return;
+  const dialog = document.getElementById('eval-compare-dialog');
+  if (!dialog || !dialog.open) return;
   const runId = state.view.run.id;
   const round = state.view.round.round_index;
   const picker = state.evalPicker;
@@ -324,7 +328,6 @@ async function loadEvalReports(force) {
   const cacheKey = evalPickerCacheKey(runId, round, scope);
   if (!force && picker._cacheKey === cacheKey && picker.reports && picker.reports.length && !picker.error) {
     paintEvalPickerList();
-    paintEvalPickerResult();
     return;
   }
   picker.runId = runId;
@@ -350,8 +353,21 @@ async function loadEvalReports(force) {
   } finally {
     picker.loading = false;
     paintEvalPickerList();
-    paintEvalPickerResult();
   }
+}
+
+function openEvalCompareDialog() {
+  const dialog = document.getElementById('eval-compare-dialog');
+  if (!dialog) return;
+  syncEvalCompareScopeRadios();
+  paintEvalPickerList();
+  if (!dialog.open) dialog.showModal();
+  loadEvalReports(false).catch(() => {});
+}
+
+function closeEvalCompareDialog() {
+  const dialog = document.getElementById('eval-compare-dialog');
+  if (dialog && dialog.open) dialog.close();
 }
 
 function runEvalPickerCompare() {
@@ -381,10 +397,11 @@ function runEvalPickerCompare() {
     ? `<p class="row-actions compare-reports">${links.join(' · ')}</p>`
     : '';
   picker.tableHtml = buildCompareTableHtml(rows, {
-    title: '自选对比结果',
+    title: '对比结果',
     sub: `已选 ${rows.length} 份报告 · 越高越好（浅色标出最优 / 最弱）`,
     linksHtml,
   }) || '<p class="muted">选中的报告没有可对比的数值指标。</p>';
+  closeEvalCompareDialog();
   paintEvalPickerResult();
 }
 
@@ -1705,9 +1722,7 @@ function render() {
   if (state.tab === 'export' && !state.exportLog && state.view.export_job && state.view.export_job.status && state.view.export_job.status !== 'idle') {
     refreshExportLog().catch(() => {});
   }
-  if (state.tab === 'flow' && (state.stage === 'sft_eval' || state.stage === 'rl_eval')) {
-    loadEvalReports(false).catch(() => {});
-  }
+  paintEvalPickerResult();
 }
 
 async function runCurrent() {
@@ -2181,6 +2196,14 @@ document.addEventListener('click', async (event) => {
     }
     if (target.dataset.action === 'preset') {
       applyPreset();
+      return;
+    }
+    if (target.dataset.action === 'eval-picker-open') {
+      openEvalCompareDialog();
+      return;
+    }
+    if (target.dataset.action === 'eval-picker-close') {
+      closeEvalCompareDialog();
       return;
     }
     if (target.dataset.action === 'eval-picker-refresh') {

@@ -460,6 +460,12 @@ html.log-lock, body.log-lock { overflow: hidden; }
 .compare-table td.compare-best { color: #166534; background: #f0fdf4; border-radius: 4px; }
 .compare-table td.compare-worst { color: #9a3412; background: #fff7ed; border-radius: 4px; }
 .compare-block .compare-reports { margin: 10px 0 0; }
+.eval-picker-launch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
 .eval-picker-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -480,6 +486,8 @@ html.log-lock, body.log-lock { overflow: hidden; }
   flex-wrap: wrap;
   gap: 8px;
   margin: 0 0 4px;
+  max-height: min(42vh, 360px);
+  overflow: auto;
 }
 .eval-picker-chip {
   display: inline-flex;
@@ -504,13 +512,26 @@ html.log-lock, body.log-lock { overflow: hidden; }
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.9em;
 }
-.eval-picker-open { margin-left: 2px; }
+.eval-picker-report { margin-left: 2px; }
 .eval-picker-result .compare-block {
   margin: 12px 0 0;
   padding: 0;
   border: none;
   background: transparent;
 }
+#eval-compare-dialog {
+  width: min(720px, calc(100vw - 24px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+}
+#eval-compare-dialog .eval-compare-sub { margin: 6px 0 12px; font-weight: 400; }
+#eval-compare-dialog .eval-picker-scope,
+#eval-compare-dialog .eval-picker-chip {
+  flex-direction: row;
+  margin-bottom: 0;
+  font-weight: 400;
+}
+#eval-compare-dialog .row-actions { justify-content: flex-end; }
 .empty { padding: 48px 12px; max-width: 640px; }
 .chat-log { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
 .bubble { padding: 8px 10px; border-radius: 8px; max-width: 80%; }

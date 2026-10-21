@@ -29,7 +29,7 @@ STAGE_META = [
     {
         'id': 'sft_eval',
         'label': 'SFT 评测',
-        'summary': '评测这一轮的 SFT 检查点，并默认同套配置评测基座以便对比。',
+        'summary': '评测这一轮的 SFT 检查点；可勾选同时评测基座以便对比。',
     },
     {
         'id': 'rl',
@@ -39,7 +39,7 @@ STAGE_META = [
     {
         'id': 'rl_eval',
         'label': 'RL 评测',
-        'summary': '用同一套评测配置检查 RL checkpoint，并默认同套配置评测基座；有 SFT 评测结果时一并对比。',
+        'summary': '用同一套评测配置检查 RL checkpoint；可勾选同时评测基座，有 SFT 评测结果时一并对比。',
     },
     {
         'id': 'promote',

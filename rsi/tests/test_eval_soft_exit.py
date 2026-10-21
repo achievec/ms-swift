@@ -132,7 +132,7 @@ def test_eval_base_continues_after_adapter_soft_exit(client):
         return produced
 
     pipeline.backend.execute = execute
-    evaluated = _run(api, run_id, 'sft_eval', {})
+    evaluated = _run(api, run_id, 'sft_eval', {'eval_base': True})
     assert evaluated.status_code == 200, evaluated.text
     body = evaluated.json()
     assert body['status'] == 'succeeded'
@@ -167,7 +167,7 @@ def test_base_hard_fail_keeps_adapter_success(client):
         raise BackendError('swift 退出码 1', logs='base boom')
 
     pipeline.backend.execute = execute
-    evaluated = _run(api, run_id, 'sft_eval', {})
+    evaluated = _run(api, run_id, 'sft_eval', {'eval_base': True})
     assert evaluated.status_code == 200, evaluated.text
     body = evaluated.json()
     assert body['status'] == 'succeeded'

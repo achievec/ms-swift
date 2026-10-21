@@ -60,7 +60,13 @@ def test_sft_eval_preview_base_has_no_adapters(client):
     api = client
     run_id = _create(api, 'sft-preview')
     assert _run(api, run_id, 'sft', {'source': 'bundled', 'bundled': 'itops_mix'}).status_code == 200
-    body = _preview(api, run_id, 'sft_eval', {})
+    # Default: eval_base off — no second base command in preview.
+    off = _preview(api, run_id, 'sft_eval', {})
+    assert off['params'].get('eval_base') is False
+    assert 'base_params' not in off
+    assert 'base_command' not in off
+
+    body = _preview(api, run_id, 'sft_eval', {'eval_base': True})
     assert body['params'].get('eval_base') is True
     assert body['params'].get('adapters')
     assert '--adapters' in body['command']
@@ -77,7 +83,7 @@ def test_sft_eval_run_stores_base_compare(client):
     api = client
     run_id = _create(api, 'sft-compare')
     assert _run(api, run_id, 'sft', {'source': 'bundled', 'bundled': 'itops_mix'}).status_code == 200
-    evaluated = _run(api, run_id, 'sft_eval', {})
+    evaluated = _run(api, run_id, 'sft_eval', {'eval_base': True})
     assert evaluated.status_code == 200, evaluated.text
     result = evaluated.json()['result']
     compare = result['compare']
@@ -102,7 +108,7 @@ def test_sft_eval_run_stores_base_compare(client):
     sft_report = api.get(f'/api/runs/{run_id}/stages/sft_eval/report?kind=sft')
     assert sft_report.status_code == 200, sft_report.text
 
-    off = _run(api, run_id, 'sft_eval', {'eval_base': False})
+    off = _run(api, run_id, 'sft_eval', {})
     assert off.status_code == 200, off.text
     assert 'base_command' not in (off.json()['result'] or {})
     roles = [row['role'] for row in off.json()['result']['compare']]
@@ -113,14 +119,14 @@ def test_rl_eval_compare_includes_sft_when_available(client):
     api = client
     run_id = _create(api, 'rl-compare')
     assert _run(api, run_id, 'sft', {'source': 'bundled', 'bundled': 'itops_mix'}).status_code == 200
-    assert _run(api, run_id, 'sft_eval', {}).status_code == 200
+    assert _run(api, run_id, 'sft_eval', {'eval_base': True}).status_code == 200
     assert _run(api, run_id, 'rl', {}).status_code == 200
-    preview = _preview(api, run_id, 'rl_eval', {})
+    preview = _preview(api, run_id, 'rl_eval', {'eval_base': True})
     assert preview['base_params']['model'] == BASE
     assert not preview['base_params'].get('adapters')
     assert '--adapters' not in preview['base_command']
 
-    evaluated = _run(api, run_id, 'rl_eval', {})
+    evaluated = _run(api, run_id, 'rl_eval', {'eval_base': True})
     assert evaluated.status_code == 200, evaluated.text
     compare = evaluated.json()['result']['compare']
     assert [row['role'] for row in compare] == ['base', 'sft', 'rl']

@@ -928,9 +928,9 @@ class Pipeline:
             preset['eval_output_dir'] = str(self.stage_dir(run['id'], rnd['round_index'], stage) / 'eval_output')
             preset['custom_eval_config'] = _resolve_existing(preset.get('custom_eval_config'))
             if 'eval_base' not in preset:
-                preset['eval_base'] = True
+                preset['eval_base'] = False
             else:
-                preset['eval_base'] = _flag(preset.get('eval_base'), True)
+                preset['eval_base'] = _flag(preset.get('eval_base'), False)
             return preset
 
         if stage == 'promote':
@@ -1238,7 +1238,7 @@ class Pipeline:
                 if strict:
                     raise PipelineError('请填写 eval_dataset')
                 merged['eval_dataset'] = 'itops-heldout'
-            merged['eval_base'] = _flag(merged.get('eval_base'), True)
+            merged['eval_base'] = _flag(merged.get('eval_base'), False)
             self._rewrite_model(merged, run, side, strict, fetch=fetch)
             self._place_trained_checkpoint(merged, run)
             self._attach_eval_locals(merged, strict)
@@ -1512,7 +1512,7 @@ class Pipeline:
         return {'reports': reports}
 
     def _want_base_eval(self, run: dict, params: dict) -> bool:
-        if not _flag((params or {}).get('eval_base'), True):
+        if not _flag((params or {}).get('eval_base'), False):
             return False
         base = str((run or {}).get('base_model') or '').strip()
         if not base:

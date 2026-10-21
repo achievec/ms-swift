@@ -50,6 +50,22 @@
       </div>
     </form>
   </dialog>
+  <dialog id="eval-compare-dialog">
+    <form id="eval-compare-form" method="dialog">
+      <h2>对比评测报告</h2>
+      <p class="muted eval-compare-sub">勾选同实验里已有的评测报告，再点对比。可选本轮或全部轮次（含历史重跑）。</p>
+      <div class="eval-picker-toolbar">
+        <label class="eval-picker-scope"><input type="radio" name="eval-picker-scope" value="round" data-action="eval-picker-scope"/> 本轮</label>
+        <label class="eval-picker-scope"><input type="radio" name="eval-picker-scope" value="all" data-action="eval-picker-scope"/> 全部轮次</label>
+        <button type="button" class="ghost" data-action="eval-picker-refresh">刷新列表</button>
+      </div>
+      <div class="eval-picker-list" data-eval-picker-list="1"><p class="muted">加载评测报告…</p></div>
+      <div class="row-actions">
+        <button type="button" class="ghost" data-action="eval-picker-close" value="cancel">取消</button>
+        <button type="button" class="primary" data-action="eval-picker-compare">对比</button>
+      </div>
+    </form>
+  </dialog>
   <script src="/static/time.js"></script>
   <script src="/static/log-tools.js"></script>
   <script src="/static/app.js"></script>

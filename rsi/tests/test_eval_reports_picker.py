@@ -36,7 +36,7 @@ def test_list_eval_reports_after_sft_eval(client):
     api = client
     run_id = _create(api, 'list-sft')
     assert _run(api, run_id, 'sft', {'source': 'bundled', 'bundled': 'itops_mix'}).status_code == 200
-    assert _run(api, run_id, 'sft_eval', {}).status_code == 200
+    assert _run(api, run_id, 'sft_eval', {'eval_base': True}).status_code == 200
 
     listed = api.get(f'/api/runs/{run_id}/eval-reports')
     assert listed.status_code == 200, listed.text
@@ -71,9 +71,9 @@ def test_list_eval_reports_includes_rl_and_historical(client):
     api = client
     run_id = _create(api, 'list-rl')
     assert _run(api, run_id, 'sft', {'source': 'bundled', 'bundled': 'itops_mix'}).status_code == 200
-    assert _run(api, run_id, 'sft_eval', {}).status_code == 200
+    assert _run(api, run_id, 'sft_eval', {'eval_base': True}).status_code == 200
     assert _run(api, run_id, 'rl', {}).status_code == 200
-    assert _run(api, run_id, 'rl_eval', {}).status_code == 200
+    assert _run(api, run_id, 'rl_eval', {'eval_base': True}).status_code == 200
 
     first = api.get(f'/api/runs/{run_id}/eval-reports').json()['reports']
     first_ids = {row['id'] for row in first}
@@ -81,7 +81,7 @@ def test_list_eval_reports_includes_rl_and_historical(client):
     assert any(row['stage'] == 'rl_eval' and row['role'] == 'sft' for row in first)
 
     # Re-run sft_eval supersedes the prior step; both should remain listable.
-    assert _run(api, run_id, 'sft_eval', {'eval_base': False}).status_code == 200
+    assert _run(api, run_id, 'sft_eval', {}).status_code == 200
     again = api.get(f'/api/runs/{run_id}/eval-reports').json()['reports']
     assert len(again) > len(first)
     historical = [row for row in again if row['status'] == 'superseded']
@@ -95,7 +95,7 @@ def test_report_endpoint_accepts_step(client):
     api = client
     run_id = _create(api, 'step-report')
     assert _run(api, run_id, 'sft', {'source': 'bundled', 'bundled': 'itops_mix'}).status_code == 200
-    assert _run(api, run_id, 'sft_eval', {}).status_code == 200
+    assert _run(api, run_id, 'sft_eval', {'eval_base': True}).status_code == 200
     reports = api.get(f'/api/runs/{run_id}/eval-reports').json()['reports']
     base = next(row for row in reports if row['role'] == 'base')
     body = api.get(base['report_url'])
@@ -107,7 +107,7 @@ def test_eval_reports_not_embedded_in_run_view(client):
     api = client
     run_id = _create(api, 'no-bloat')
     assert _run(api, run_id, 'sft', {'source': 'bundled', 'bundled': 'itops_mix'}).status_code == 200
-    assert _run(api, run_id, 'sft_eval', {}).status_code == 200
+    assert _run(api, run_id, 'sft_eval', {'eval_base': True}).status_code == 200
     view = api.get(f'/api/runs/{run_id}').json()
     assert 'eval-reports' not in view
     assert 'eval_reports' not in view
@@ -119,11 +119,16 @@ def test_ui_has_eval_picker_markup():
     root = Path(__file__).resolve().parents[1] / 'static'
     script = (root / 'app.js').read_text(encoding='utf-8')
     css = (root / 'app.css').read_text(encoding='utf-8')
+    html = (root / 'index.html').read_text(encoding='utf-8')
     assert 'function evalPickerMarkup(' in script
+    assert 'function openEvalCompareDialog(' in script
     assert 'function loadEvalReports(' in script
     assert 'function runEvalPickerCompare(' in script
     assert 'function buildCompareTableHtml(' in script
-    assert '自选对比' in script
+    assert 'data-action="eval-picker-open"' in script
+    assert '对比' in script
     assert '/eval-reports' in script
     assert 'eval-picker-chip' in css
-    assert 'data-action="eval-picker-compare"' in script
+    assert 'eval-picker-launch' in css
+    assert 'id="eval-compare-dialog"' in html
+    assert 'data-action="eval-picker-compare"' in html
