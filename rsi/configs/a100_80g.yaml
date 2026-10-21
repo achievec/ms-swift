@@ -96,6 +96,9 @@ rl:
   num_train_epochs: 1
   learning_rate: "1e-6"
   per_device_train_batch_size: 1
+  # Explicit: empty Gradio sliders otherwise submit the HTML range midpoint (≈129 / 10).
+  per_device_eval_batch_size: 1
+  neftune_noise_alpha: 0
   gradient_accumulation_steps: 8
   gradient_checkpointing: true
   warmup_ratio: 0.05
@@ -130,7 +133,10 @@ rl:
   offload_model: true
   offload_optimizer: true
   log_completions: true
+  # LoRA GRPO must not pass --ref_model (ms-swift rejects it). Keep empty so sticky
+  # Gradio <select> first-option junk (e.g. Yi-1.5-34B / aya) is not the preset.
   ref_model: ""
+  ref_model_type: ""
   loss_scale: ""
 
 rl_eval:

@@ -5,14 +5,18 @@ import shlex
 from pathlib import Path
 
 # Passed through as repeated CLI values when they contain whitespace,
-# matching `swift sft --dataset a b` / `--reward_funcs accuracy format`.
+# matching `swift sft --dataset a b` / `--reward_funcs accuracy format` /
+# `--reward_weights 1.0 0.5` (nargs list of floats — never one quoted token).
 REPEAT_KEYS = {
     'dataset',
     'val_dataset',
     'eval_dataset',
     'reward_funcs',
+    'reward_weights',
     'reward_model',
     'reward_model_type',
+    'loss_weights',
+    'interleave_prob',
     'adapters',
     'report_to',
     'target_modules',
@@ -198,6 +202,18 @@ def _drop_inactive_args(params: dict, stage: str) -> None:
                 continue
             for arg in args:
                 params.pop(arg, None)
+    if stage == 'rl':
+        _drop_lora_ref_model(params)
+
+
+def _drop_lora_ref_model(params: dict) -> None:
+    """LoRA / adapter GRPO must not pass --ref_model (ms-swift raises); sticky UI junk used to."""
+    tuner = str(params.get('tuner_type') or 'lora').strip() or 'lora'
+    if tuner == 'full':
+        return
+    params.pop('ref_model', None)
+    params.pop('ref_model_type', None)
+    params.pop('ref_model_revision', None)
 
 
 def _drop_single_gpu_args(params: dict) -> None:

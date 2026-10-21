@@ -130,6 +130,60 @@ def test_rl_single_gpu_keeps_colocate_and_drops_other_modes():
     assert '--loss_type' in flags
 
 
+def test_rl_reward_weights_split_into_argv_tokens():
+    """Space-separated reward_weights must be nargs floats, not one quoted token."""
+    argv = build_argv('rl', {
+        'tuner_type': 'lora',
+        'reward_funcs': 'itops_checklist format',
+        'reward_weights': '1.0 0.5',
+        'gpu_id': '0',
+    })
+    assert '--reward_weights' in argv
+    weight_at = argv.index('--reward_weights')
+    assert argv[weight_at:weight_at + 3] == ['--reward_weights', '1.0', '0.5']
+    assert '1.0 0.5' not in argv
+    funcs_at = argv.index('--reward_funcs')
+    assert argv[funcs_at:funcs_at + 3] == ['--reward_funcs', 'itops_checklist', 'format']
+
+
+def test_rl_lora_drops_sticky_ref_model():
+    """LoRA GRPO rejects --ref_model; sticky Gradio first-option junk must not ride along."""
+    argv = build_argv('rl', {
+        'tuner_type': 'lora',
+        'model': 'Qwen/Qwen2.5-7B-Instruct',
+        'ref_model': '01ai/Yi-1.5-34B',
+        'ref_model_type': 'aya',
+        'gpu_id': '0',
+    })
+    flags = _flags(argv)
+    assert '--ref_model' not in flags
+    assert '--ref_model_type' not in flags
+
+
+def test_default_rl_preset_omits_ref_model_and_splits_weights():
+    from rsi.schemas import presets
+
+    preset = dict(presets().get('rl') or {})
+    assert preset.get('per_device_eval_batch_size') == 1
+    assert preset.get('neftune_noise_alpha') == 0
+    assert not str(preset.get('ref_model') or '').strip()
+
+    params = dict(preset)
+    params.update({
+        'model': 'Qwen/Qwen2.5-7B-Instruct',
+        'gpu_id': '0',
+        # Sticky UI junk that must not reach swift rlhf under LoRA.
+        'ref_model': '01ai/Yi-1.5-34B',
+        'ref_model_type': 'aya',
+    })
+    argv = build_argv('rl', params)
+    flags = _flags(argv)
+    assert '--ref_model' not in flags
+    assert '--ref_model_type' not in flags
+    weight_at = argv.index('--reward_weights')
+    assert argv[weight_at:weight_at + 3] == ['--reward_weights', '1.0', '0.5']
+
+
 def _tabs(blocks):
     found = []
     for block in blocks:

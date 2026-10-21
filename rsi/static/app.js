@@ -916,7 +916,13 @@ function renderInferControl(item, values, running, fill) {
     const min = item.minimum == null ? 0 : item.minimum;
     const max = item.maximum == null ? 1 : item.maximum;
     const step = item.step == null ? 'any' : item.step;
-    return `<div class="field infer-slider" data-key="${item.id}">${caption}<div class="control slider-head"><input type="number" class="slider-num" data-slider-num="${item.id}" min="${min}" max="${max}" step="${step}" value="${escapeHtml(value)}" /><button type="button" class="ghost icon" data-action="slider-reset" data-reset="${item.id}" title="恢复初始值">↺</button></div><div class="extra"><input type="range" data-field="${item.id}" min="${min}" max="${max}" step="${step}" value="${escapeHtml(value)}" /><div class="slider-ends"><span>${escapeHtml(min)}</span><span>${escapeHtml(max)}</span></div></div></div>`;
+    // Empty value on <input type="range"> becomes the browser midpoint (e.g. 129 / 10).
+    // Prefer Gradio default, else the slider minimum (ms-swift-safe for batch / NEFTune).
+    let shown = value;
+    if (shown === '' || shown === undefined || shown === null) {
+      shown = item.default != null ? item.default : min;
+    }
+    return `<div class="field infer-slider" data-key="${item.id}">${caption}<div class="control slider-head"><input type="number" class="slider-num" data-slider-num="${item.id}" min="${min}" max="${max}" step="${step}" value="${escapeHtml(shown)}" /><button type="button" class="ghost icon" data-action="slider-reset" data-reset="${item.id}" title="恢复初始值">↺</button></div><div class="extra"><input type="range" data-field="${item.id}" min="${min}" max="${max}" step="${step}" value="${escapeHtml(shown)}" /><div class="slider-ends"><span>${escapeHtml(min)}</span><span>${escapeHtml(max)}</span></div></div></div>`;
   }
   if (item.id === 'running_tasks' && state.tab === 'export') {
     const job = (state.view && state.view.export_job) || {};
@@ -954,6 +960,16 @@ function renderInferControl(item, values, running, fill) {
       const current = String(value ?? '');
       choice.entries = current ? [current] : [];
       choice.selected = new Set(current ? [current] : []);
+    } else if (item.default == null) {
+      // Gradio value=None: keep an empty first option so the browser does not
+      // submit the first catalog id (e.g. ref_model → 01ai/Yi-1.5-34B).
+      if (!choice.entries.includes('')) {
+        choice.entries = ['', ...choice.entries];
+      }
+      const current = value === false || value === 0 ? String(value) : String(value ?? '').trim();
+      if (!current) {
+        choice.selected = new Set(['']);
+      }
     }
     const options = choice.entries.map((entry) => {
       const mark = choice.selected.has(entry) ? 'selected' : '';
