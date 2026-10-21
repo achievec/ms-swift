@@ -1020,7 +1020,12 @@ class Pipeline:
         return '', ''
 
     def _export_defaults(self, run: dict, rnd: dict) -> dict:
-        """Locked experiment identity plus the weights this export should start from."""
+        """Locked experiment identity plus the weights this export should start from.
+
+        ``--model`` matches serve / train / eval: LoRA checkpoints take the base
+        from ``args.json`` (local path after hope fetch), else the run base, then
+        hope/local rewrites a hub id to the ready directory when available.
+        """
         preset = {}
         self._show_round_model(preset, run, rnd)
         weights, _kind = self._export_weights(run, rnd)
@@ -1043,8 +1048,14 @@ class Pipeline:
                 adapter = False
             preset['merge_lora'] = bool(adapter)
             preset['output_dir'] = str(path.parent / f'{path.name}-merged')
+            if adapter:
+                base = _adapter_base_model(path, preset.get('model') or '')
+                if base:
+                    preset['model'] = base
         else:
             preset['output_dir'] = str(self.home / 'runs' / run['id'] / f'round_{rnd["round_index"]}' / 'export')
+        # Same local rewrite train/eval use, without starting a new clone for the form.
+        self._rewrite_model(preset, run, {}, strict=False, fetch=False)
         return preset
 
     def _export_argv(self, merged: dict) -> list:
@@ -2613,6 +2624,12 @@ class Pipeline:
         self._lock_model_fields(merged, defaults)
         if 'adapters' in user:
             merged['adapters'] = user.get('adapters') or ''
+        # Match serve: hub id -> local path, LoRA base from checkpoint args.json.
+        side = {}
+        self._rewrite_model(merged, run, side, strict)
+        self._place_trained_checkpoint(merged, run)
+        if side.get('fetch_state') == '同步中' and strict:
+            raise PipelineError('同步中')
         if 'more_params' in user:
             text = '' if typed_more is None else str(typed_more)
             if text.strip():

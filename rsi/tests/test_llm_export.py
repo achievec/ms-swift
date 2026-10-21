@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from rsi.llm_export_spec import export_layout
 
 BASE = 'Qwen/Qwen2.5-7B-Instruct'
+ARGS_BASE = '/data/models/Qwen2.5-7B-Instruct'
 
 ORDER = [
     'model', 'model_type', 'template', 'adapters', 'merge_lora', 'device_map', 'quant_bits', 'quant_method',
@@ -122,18 +123,19 @@ def test_export_fills_lora_and_ignores_model_edits(client):
     checkpoint = Path(trained['result']['checkpoint'])
     (checkpoint / 'adapter_config.json').write_text('{"peft_type": "LORA"}', encoding='utf-8')
     args = json.loads((checkpoint / 'args.json').read_text(encoding='utf-8'))
-    args['model'] = '/data/models/Qwen2.5-7B-Instruct'
+    args['model'] = ARGS_BASE
     (checkpoint / 'args.json').write_text(json.dumps(args), encoding='utf-8')
 
     view = api.get(f'/api/runs/{run_id}').json()
     fill = view['export_fill']
-    assert fill['model'] == BASE
+    # Same as serve: LoRA export shows the resolved base from checkpoint args.json.
+    assert fill['model'] == ARGS_BASE
     assert fill['model_type'] == 'qwen2'
     assert fill['template'] == 'qwen2_5'
     assert fill['adapters'] == str(checkpoint)
     assert fill['merge_lora'] is True
     assert fill['output_dir'].endswith(f'{checkpoint.name}-merged')
-    assert view['export_form']['model'] == BASE
+    assert view['export_form']['model'] == ARGS_BASE
     assert view['export_form']['adapters'] == str(checkpoint)
     assert view['export_job']['status'] == 'idle'
 
@@ -144,18 +146,19 @@ def test_export_fills_lora_and_ignores_model_edits(client):
     }})
     assert preview.status_code == 200, preview.text
     body = preview.json()
-    assert body['params']['model'] == BASE
+    assert body['params']['model'] == ARGS_BASE
     assert body['params']['model_type'] == 'qwen2'
     assert body['params']['template'] == 'qwen2_5'
     assert body['params']['adapters'] == str(checkpoint)
     command = body['command']
     assert 'swift export' in command
-    assert f'--model {BASE}' in command
+    assert f'--model {ARGS_BASE}' in command
     assert f'--adapters {checkpoint}' in command
     assert '--merge_lora true' in command
     assert '--model_type qwen2' in command
     assert '--template qwen2_5' in command
     assert 'other/model' not in command
+    assert f'--model {BASE}' not in command
     assert '--more_params' not in command
 
     cleared = api.post(f'/api/runs/{run_id}/export/preview', json={'params': {
@@ -165,6 +168,8 @@ def test_export_fills_lora_and_ignores_model_edits(client):
     assert cleared.status_code == 200, cleared.text
     assert '--adapters' not in cleared.json()['command']
     assert '--merge_lora' not in cleared.json()['command']
+    # Adapters cleared; locked --model still comes from the LoRA args.json base.
+    assert f'--model {ARGS_BASE}' in cleared.json()['command']
 
     started = api.post(f'/api/runs/{run_id}/export/run', json={'params': {}})
     assert started.status_code == 200, started.text
@@ -179,7 +184,7 @@ def test_export_fills_lora_and_ignores_model_edits(client):
     again = api.get(f'/api/runs/{run_id}').json()
     assert again['export_job']['status'] == 'succeeded'
     assert again['export_form']['adapters'] == str(checkpoint)
-    assert again['export_form']['model'] == BASE
+    assert again['export_form']['model'] == ARGS_BASE
     stopped = api.post(f'/api/runs/{run_id}/export/stop', json={})
     assert stopped.status_code == 400
 
@@ -205,3 +210,47 @@ def test_rl_weights_win_and_a_full_checkpoint_becomes_model(client):
     assert '--adapters' not in command
     assert full.json()['params']['model'] == BASE
     assert full.json()['params']['model_type'] == 'qwen2'
+
+
+def test_export_prefills_hope_local_base_path(tmp_path, monkeypatch):
+    """Export --model should show the hope-ready local dir, not the hub short id."""
+    monkeypatch.setenv('RSI_MODEL_SOURCE', 'hope')
+    monkeypatch.setenv('RSI_MODEL_ROOT', str(tmp_path / 'models'))
+    monkeypatch.setenv('RSI_DATA_ROOT', str(tmp_path / 'datasets'))
+    monkeypatch.setenv('RSI_FETCH_INLINE', '1')
+    monkeypatch.setenv('RSI_BACKEND', 'mock')
+    monkeypatch.setenv('RSI_SERVE_BACKEND', 'mock')
+    model_dir = tmp_path / 'models' / 'huggingface.co' / 'Qwen' / 'Qwen2.5-7B-Instruct'
+    model_dir.mkdir(parents=True)
+    (model_dir / 'config.json').write_text('{}', encoding='utf-8')
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError('ready model must not call hope')
+
+    from rsi.app import create_app
+    app = create_app(tmp_path / 'rsi-home')
+    app.state.pipeline.fetcher.runner = refuse
+    with TestClient(app) as api:
+        run_id = api.post('/api/runs', json={
+            'name': 'export-hope',
+            'scenario': '导出带上本地基座路径',
+            'base_model': BASE,
+            'model_type': 'qwen2',
+            'template': 'qwen2_5',
+        }).json()['run']['id']
+        before = api.get(f'/api/runs/{run_id}').json()
+        assert before['export_fill']['model'] == str(model_dir)
+        assert before['export_form']['model'] == str(model_dir)
+
+        trained = _run(api, run_id, 'sft', {'source': 'bundled', 'bundled': 'itops_mix'})
+        checkpoint = Path(trained['result']['checkpoint'])
+        (checkpoint / 'adapter_config.json').write_text('{"peft_type": "LORA"}', encoding='utf-8')
+        after = api.get(f'/api/runs/{run_id}').json()
+        assert after['export_fill']['model'] == str(model_dir)
+        assert after['export_fill']['adapters'] == str(checkpoint)
+        preview = api.post(f'/api/runs/{run_id}/export/preview', json={'params': {}})
+        assert preview.status_code == 200, preview.text
+        assert preview.json()['params']['model'] == str(model_dir)
+        assert f'--model {model_dir}' in preview.json()['command']
+        assert f'--adapters {checkpoint}' in preview.json()['command']
+        assert f'--model {BASE}' not in preview.json()['command']
