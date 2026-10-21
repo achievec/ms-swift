@@ -7,6 +7,7 @@ and ``hope`` copies a Hugging Face model, or a ModelScope/Hugging Face dataset,
 locally before swift runs. Dataset clones use the same ``hope login`` as models.
 Credentials stay in the process environment.
 """
+import contextvars
 import logging
 import os
 import re
@@ -14,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -47,6 +49,9 @@ _login_ok = False
 _login_failed_at = 0.0
 _login_generation = 0
 _LOG_LIMIT = 2000
+# Set on the request that started a stage. The clone thread copies the path
+# into its own context so chunks still land in that stage log after the request returns.
+_stage_log: contextvars.ContextVar = contextvars.ContextVar('rsi_stage_log', default=None)
 logger = logging.getLogger('rsi.model_fetch')
 
 
@@ -639,7 +644,7 @@ class ModelFetcher:
         if model_source() != 'hope':
             return FetchStatus(kind, repo, repo, '保持', '')
         inline = os.environ.get('RSI_FETCH_INLINE', '').strip() == '1'
-        self._start_clone(kind, repo, background=background and not inline)
+        self._start_clone(kind, repo, background=background and not inline, stage_log=_stage_log.get())
         latest = self.status_of(kind, repo)
         if latest.state in {'就绪', '失败'}:
             return latest
@@ -655,7 +660,9 @@ class ModelFetcher:
         if model_source() != 'hope' or not is_repo_id(repo):
             return self.status_of(kind, repo) if is_repo_id(repo) else FetchStatus(kind, repo, '', '保持', '')
         inline = os.environ.get('RSI_FETCH_INLINE', '').strip() == '1'
-        self._start_clone(kind, repo, background=background and not inline, force=True, force_login=True)
+        self._start_clone(
+            kind, repo, background=background and not inline, force=True, force_login=True,
+            stage_log=_stage_log.get())
         latest = self.status_of(kind, repo)
         if latest.state in {'就绪', '失败'}:
             return latest
@@ -663,7 +670,7 @@ class ModelFetcher:
         return FetchStatus(kind, repo, latest.local_path, '同步中', message)
 
     def _start_clone(self, kind: str, repo_id: str, background: bool, force: bool = False,
-                     force_login: bool = False) -> None:
+                     force_login: bool = False, stage_log=None) -> None:
         key = f'{kind}:{repo_id}'
         path = self._path_for(kind, repo_id)
         if _ready(kind, path) and not force:
@@ -685,38 +692,47 @@ class ModelFetcher:
             return
 
         def job():
+            # Bind the path inside this thread. A background clone outlives the request,
+            # and a new thread does not keep the caller's context.
+            token = _stage_log.set(stage_log)
             ready_now = False
             ready_path = path
             try:
-                argv, _public = clone_argv(self._url_for(kind, repo_id))
-                # hope clone writes under cwd. Do not cd into org/ first, and do not
-                # assume the older <org>/<name> layout is where the files land.
-                # Models and datasets both go through _run, which runs hope login
-                # before the clone. A repo that is already on disk never reaches here.
-                result = self._run(argv, cwd=root, target=path, repo_key=key, force_login=force_login)
-                if result == 'missing-tool':
+                if stage_log is not None:
+                    label = '数据集' if kind == 'dataset' else '模型'
+                    append_stage_log(stage_log, f'\n[{label}] {repo_id}\n')
+                try:
+                    argv, _public = clone_argv(self._url_for(kind, repo_id))
+                    # hope clone writes under cwd. Do not cd into org/ first, and do not
+                    # assume the older <org>/<name> layout is where the files land.
+                    # Models and datasets both go through _run, which runs hope login
+                    # before the clone. A repo that is already on disk never reaches here.
+                    result = self._run(argv, cwd=root, target=path, repo_key=key, force_login=force_login)
+                    if result == 'missing-tool':
+                        with _LOCK:
+                            self._notes[key] = _TOOL_FAILURE
+                    elif result in ('login-failed', 'no-user'):
+                        pass
+                    elif hope_needs_login(_result_text(result)):
+                        self._note_login_failure(key)
+                    else:
+                        with _LOCK:
+                            self._notes.pop(key, None)
+                finally:
                     with _LOCK:
-                        self._notes[key] = _TOOL_FAILURE
-                elif result in ('login-failed', 'no-user'):
-                    pass
-                elif hope_needs_login(_result_text(result)):
-                    self._note_login_failure(key)
-                else:
-                    with _LOCK:
-                        self._notes.pop(key, None)
+                        _INFLIGHT.discard(key)
+                        found = self._path_for(kind, repo_id)
+                        if _ready(kind, found):
+                            self._notes.pop(key, None)
+                            self._progress.pop(key, None)
+                            ready_now = True
+                            ready_path = found
+                        elif not _is_failure_note(self._notes.get(key, '')):
+                            self._notes[key] = '同步中'
+                if ready_now:
+                    logger.info('hope 就绪 %s %s %s', kind, repo_id, ready_path)
             finally:
-                with _LOCK:
-                    _INFLIGHT.discard(key)
-                    found = self._path_for(kind, repo_id)
-                    if _ready(kind, found):
-                        self._notes.pop(key, None)
-                        self._progress.pop(key, None)
-                        ready_now = True
-                        ready_path = found
-                    elif not _is_failure_note(self._notes.get(key, '')):
-                        self._notes[key] = '同步中'
-            if ready_now:
-                logger.info('hope 就绪 %s %s %s', kind, repo_id, ready_path)
+                _stage_log.reset(token)
 
         if background:
             threading.Thread(target=job, daemon=True).start()
@@ -863,7 +879,7 @@ class ModelFetcher:
             emitted = True
             text = redact(_as_text(data))
             pieces.append(text)
-            append_process_log(text)
+            fanout_log(text)
 
         try:
             if self.runner is subprocess.run:
@@ -885,7 +901,7 @@ class ModelFetcher:
                 if not emitted:
                     text = redact(_result_text(completed))
                     if text:
-                        append_process_log(text)
+                        fanout_log(text)
                         pieces.append(text)
                 code = getattr(completed, 'returncode', 1)
                 stderr = '' if emitted else _as_text(getattr(completed, 'stderr', '') or '')
@@ -923,11 +939,13 @@ class ModelFetcher:
             stdout = _as_text(getattr(exc, 'stdout', '') or '')
             stderr = _as_text(getattr(exc, 'stderr', '') or '')
             logger.info('hope 结束 %s %s exit=超时\n%s', command, where, _trim_log(f'{stdout}\n{stderr}'))
+            _emit_captured(stdout, stderr)
             return _HopeResult(124, stdout, stderr)
         stdout = _as_text(getattr(completed, 'stdout', '') or '')
         stderr = _as_text(getattr(completed, 'stderr', '') or '')
         code = getattr(completed, 'returncode', 1)
         logger.info('hope 结束 %s %s exit=%s\n%s', command, where, code, _trim_log(f'{stdout}\n{stderr}'))
+        _emit_captured(stdout, stderr)
         return completed
 
 
@@ -939,16 +957,74 @@ def process_log_path() -> Path:
     return Path(__file__).resolve().parent / '.rsi.log'
 
 
+def _as_bytes(text) -> bytes:
+    if isinstance(text, bytes):
+        return text
+    return str(text).encode('utf-8')
+
+
+def _write_unlocked(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('ab', buffering=0) as handle:
+        handle.write(data)
+        handle.flush()
+
+
 def append_process_log(text: str) -> None:
     """Append clone output immediately so the process log shows it before hope exits."""
     if not text:
         return
-    data = text.encode('utf-8') if isinstance(text, str) else bytes(text)
-    path = process_log_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     with _LOG_APPEND:
-        with path.open('ab', buffering=0) as handle:
-            handle.write(data)
+        _write_unlocked(process_log_path(), _as_bytes(text))
+
+
+def append_stage_log(path, text: str) -> None:
+    """Append already-redacted text to one stage's swift.log."""
+    if not path or not text:
+        return
+    with _LOG_APPEND:
+        _write_unlocked(Path(path), _as_bytes(text))
+
+
+def fanout_log(text: str) -> None:
+    """Write one already-redacted chunk to the process log and the active stage log."""
+    if not text:
+        return
+    data = _as_bytes(text)
+    stage = _stage_log.get()
+    with _LOG_APPEND:
+        _write_unlocked(process_log_path(), data)
+        if stage is not None:
+            _write_unlocked(Path(stage), data)
+
+
+def _emit_captured(stdout: str, stderr: str) -> None:
+    """Append captured hope login output. Chunks are already on the log when streamed."""
+    parts = [part for part in (stdout, stderr) if part]
+    if not parts:
+        return
+    text = redact('\n'.join(parts))
+    if text and not text.endswith('\n'):
+        text += '\n'
+    fanout_log(text)
+
+
+@contextmanager
+def use_stage_log(path):
+    """Copy hope login and clone output from this thread into ``path`` as well."""
+    token = _stage_log.set(path)
+    try:
+        yield path
+    finally:
+        _stage_log.reset(token)
+
+
+def reset_stage_log(path) -> None:
+    """Truncate a stage log before a fresh run. A syncing continuation does not call this."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with _LOG_APPEND:
+        with target.open('wb') as handle:
             handle.flush()
 
 

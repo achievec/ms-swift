@@ -200,6 +200,38 @@ def resolve_log_dir(context: dict, params: dict) -> Path:
     raise BackendError('缺少实验目录，训练日志不会写到当前工作目录')
 
 
+def _append_after_fetch(path: Path) -> bool:
+    """True when swift.log already holds hope text that the stage command should follow.
+
+    A previous training log starts with ``swift `` or contains the ``exec:`` line
+    written below. That file is replaced. Hope output does neither, so training
+    is appended under the fetch lines.
+    """
+    try:
+        if not path.is_file() or path.stat().st_size == 0:
+            return False
+        head = path.read_bytes()[:4096]
+    except OSError:
+        return False
+    sample = head.lstrip()
+    if not sample or sample.startswith(b'swift ') or b'\nexec:' in head:
+        return False
+    return True
+
+
+def _write_stage_log(path: Path, logs: str) -> str:
+    """Write this run's text. Keep a fetch preamble that is already in the file."""
+    if _append_after_fetch(path):
+        existing = path.read_bytes()
+        prefix = b'' if existing.endswith(b'\n') else b'\n'
+        with path.open('ab') as handle:
+            handle.write(prefix)
+            handle.write(logs.encode('utf-8'))
+        return path.read_text(encoding='utf-8', errors='replace')
+    path.write_text(logs, encoding='utf-8')
+    return logs
+
+
 def _absolute_output(raw, fallback: Path) -> Path:
     text = str(raw or '').strip()
     if text in {'', '.'}:
@@ -284,7 +316,7 @@ class MockBackend:
         logs = '\n'.join(lines) + '\n'
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / 'swift.log'
-        log_path.write_text(logs, encoding='utf-8')
+        logs = _write_stage_log(log_path, logs)
         announce_log(f'[{stage} {context.get("run_id") or "-"}]', log_path)
         return {
             'ok': True,
@@ -318,7 +350,20 @@ class MsSwiftBackend:
         log_path = workdir / 'swift.log'
         prefix = f'[{stage} {context.get("run_id") or "-"}]'
         announce_log(prefix, log_path)
-        with log_path.open('wb') as log_file:
+        append = _append_after_fetch(log_path)
+        needs_nl = False
+        if append:
+            try:
+                with log_path.open('rb') as existing:
+                    existing.seek(0, os.SEEK_END)
+                    if existing.tell():
+                        existing.seek(-1, os.SEEK_END)
+                        needs_nl = existing.read(1) != b'\n'
+            except OSError:
+                needs_nl = False
+        with log_path.open('ab' if append else 'wb') as log_file:
+            if needs_nl:
+                log_file.write(b'\n')
             log_file.write((command + '\nexec: ' + ' '.join(argv) + '\n').encode('utf-8'))
             log_file.flush()
             returncode = run_and_tee(argv, env, log_file, prefix, echo=False)

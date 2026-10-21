@@ -551,11 +551,11 @@ function renderStage(stage) {
     : '';
   const reportLink = form.result ? evalReportLink(stage, form.result) : '';
   const result = form.result ? `${scoreHeadline(form.result.metrics)}${scoreTable(form.result.metrics)}${reportLink ? `<p class="row-actions">${reportLink}</p>` : ''}${outputPanel('结果', JSON.stringify(visibleResult(form.result), null, 2))}` : '';
-  const live = form.status === 'running';
-  const liveAttrs = live ? ` data-live-log="1" data-live-stage="${escapeHtml(stage)}" data-live-round="${view.round.round_index}"` : '';
-  const logs = (form.logs || live) ? logPanel(form.logs || '', liveAttrs) : '';
+  const streaming = form.status === 'running' || form.status === 'syncing';
+  const liveAttrs = streaming ? ` data-live-log="1" data-live-stage="${escapeHtml(stage)}" data-live-round="${view.round.round_index}"` : '';
+  const logs = (form.logs || streaming) ? logPanel(form.logs || '', liveAttrs) : '';
   const command = form.command ? outputPanel('命令', form.command, 'command') : '';
-  const kicker = live
+  const kicker = form.status === 'running'
     ? `${escapeHtml(meta.label)} · ${runningMarkup(form.started_at)}`
     : `${escapeHtml(meta.label)} · ${escapeHtml(statusText(form.status))}`;
   return `
@@ -707,7 +707,7 @@ function renderAudit() {
       <p><b>开始</b> ${escapeHtml(formatShanghai(step.started_at))} · <b>结束</b> ${escapeHtml(formatShanghai(step.ended_at || ''))}</p>
       ${outputPanel('参数', JSON.stringify(step.params, null, 2))}
       ${scoreHeadline((step.result || {}).metrics)}${scoreTable((step.result || {}).metrics)}${evalReportLink(step.stage, step.result, step.round_index) ? `<p class="row-actions">${evalReportLink(step.stage, step.result, step.round_index)}</p>` : ''}${outputPanel('结果', JSON.stringify(visibleResult(step.result), null, 2))}
-      ${logPanel(step.logs || '', step.status === 'running' ? ` data-live-log="1" data-live-stage="${escapeHtml(step.stage)}" data-live-round="${step.round_index}"` : '')}
+      ${logPanel(step.logs || '', (step.status === 'running' || step.status === 'syncing') ? ` data-live-log="1" data-live-stage="${escapeHtml(step.stage)}" data-live-round="${step.round_index}"` : '')}
       ${step.command ? outputPanel('命令', step.command, 'command') : ''}
     </td></tr>` : '';
     return `<tr data-step="${step.id}">

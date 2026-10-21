@@ -37,7 +37,9 @@ from rsi.model_fetch import (
     hope_dataset_cloneable,
     is_repo_id,
     model_source,
+    reset_stage_log,
     split_dataset_sample,
+    use_stage_log,
 )
 from rsi.schemas import STAGE_META, STAGE_ORDER, presets
 from rsi.webui_catalog import match_model
@@ -1411,7 +1413,18 @@ class Pipeline:
         run = self._require_run(run_id)
         self._assert_can_run(run, stage)
         rnd = self.store.get_round(run_id, run['round_index'])
-        merged, side = self._prepare(run, rnd, stage, params or {}, strict=True)
+        fetch_log = None
+        if stage in SWIFT_STAGES:
+            fetch_log = self.stage_log_dir(run['id'], rnd['round_index'], stage) / 'swift.log'
+            prior = self.store.latest_active_steps(run['id'], rnd['round_index']).get(stage)
+            # A click while the previous attempt is still syncing keeps the hope
+            # lines already in the file. A fresh run or a re-run after success starts clean.
+            if not prior or prior.get('status') != 'syncing':
+                reset_stage_log(fetch_log)
+            with use_stage_log(fetch_log):
+                merged, side = self._prepare(run, rnd, stage, params or {}, strict=True)
+        else:
+            merged, side = self._prepare(run, rnd, stage, params or {}, strict=True)
         index = STAGE_ORDER.index(stage)
         with self.store.transaction() as conn:
             superseded = list(STAGE_ORDER[index:])
@@ -1427,10 +1440,15 @@ class Pipeline:
         self._block_hub_model(stage, merged, side)
         if side.get('fetch_state') == '同步中':
             repo = side.get('fetch_repo') or ''
+            note = '同步中\n' + repo + '\n'
+            if fetch_log is not None and fetch_log.is_file():
+                written = fetch_log.read_text(encoding='utf-8', errors='replace')
+                if written.strip():
+                    note = written
             with self.store.transaction() as conn:
                 self.store.finish_step(conn, step_id, 'syncing', {
                     'fetch': {'state': '同步中', 'repo_id': repo},
-                }, '同步中\n' + repo + '\n', '')
+                }, note, '')
             return {
                 'ok': True,
                 'status': 'syncing',

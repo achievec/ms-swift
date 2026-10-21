@@ -1541,3 +1541,246 @@ def test_stream_subprocess_writes_before_the_child_exits(tmp_path, monkeypatch):
     final = log.read_text(encoding='utf-8')
     assert 'tick-1' in final
     assert 'tick-2' in final
+
+
+def _seed_model(root: Path) -> Path:
+    dest = root / 'Qwen' / 'Qwen2.5-7B-Instruct'
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / 'config.json').write_text('{}', encoding='utf-8')
+    return dest
+
+
+def _sft_log(home: Path, run_id: str) -> Path:
+    return home / 'runs' / run_id / 'round_1' / 'sft' / 'swift.log'
+
+
+def test_clone_chunks_reach_the_stage_log_before_hope_returns(tmp_path, hope_env, monkeypatch):
+    process = tmp_path / 'process.log'
+    stage = tmp_path / 'swift.log'
+    monkeypatch.setattr(model_fetch, 'process_log_path', lambda: process)
+    seen = {}
+
+    def runner(argv, **kwargs):
+        if argv[1] == 'login':
+            assert kwargs['timeout'] == model_fetch.LOGIN_TIMEOUT
+            assert kwargs['stdin'] is subprocess.DEVNULL
+            return Completed(stdout=f'登录成功 token={TOKEN} user={USER}')
+        kwargs['on_chunk'](f'下载 1% token={TOKEN}\n'.encode())
+        seen['stage'] = stage.read_text(encoding='utf-8')
+        seen['process'] = process.read_text(encoding='utf-8')
+        kwargs['on_chunk']('下载 8%\n'.encode())
+        return Completed(stdout='should-not-be-appended-again')
+
+    with model_fetch.use_stage_log(stage):
+        status = _fetcher(tmp_path, runner).ensure('model', REPO, background=False)
+    assert status.state == '同步中'
+    assert '[模型] ' + REPO in seen['stage']
+    assert '登录成功' in seen['stage']
+    assert '下载 1%' in seen['stage']
+    assert '下载 8%' not in seen['stage']
+    assert '下载 1%' in seen['process']
+    assert '[模型]' not in seen['process']
+    body = stage.read_text(encoding='utf-8')
+    assert body.index('登录成功') < body.index('下载 1%') < body.index('下载 8%')
+    assert TOKEN not in body
+    assert USER not in body
+    assert 'should-not-be-appended-again' not in body
+    copied = process.read_text(encoding='utf-8')
+    assert '下载 8%' in copied
+    assert TOKEN not in copied
+    assert USER not in copied
+
+
+def test_ready_repo_does_not_write_a_stage_section(tmp_path, hope_env):
+    _seed_model(tmp_path / 'models')
+    stage = tmp_path / 'swift.log'
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError('a repo that is already on disk must not call hope')
+
+    with model_fetch.use_stage_log(stage):
+        status = _fetcher(tmp_path, refuse).ensure('model', REPO, background=False)
+    assert status.state == '就绪'
+    assert not stage.exists()
+
+
+def test_live_stage_log_streams_during_a_mocked_fetch(tmp_path, hope_env, monkeypatch):
+    monkeypatch.delenv('RSI_FETCH_INLINE', raising=False)
+    process = tmp_path / 'process.log'
+    monkeypatch.setattr(model_fetch, 'process_log_path', lambda: process)
+    started = threading.Event()
+    release = threading.Event()
+    _seed_model(tmp_path / 'models')
+
+    def runner(argv, **kwargs):
+        if argv[1] == 'login':
+            return Completed(stdout=f'登录成功 token={TOKEN} user={USER}\n')
+        kwargs['on_chunk'](f'下载 1% token={TOKEN}\n'.encode())
+        started.set()
+        assert release.wait(5)
+        kwargs['on_chunk']('下载 8%\n'.encode())
+        return Completed(stdout='should-not-be-appended-again')
+
+    script = Path(__file__).resolve().parents[1].joinpath('static', 'app.js').read_text(encoding='utf-8')
+    assert "form.status === 'running' || form.status === 'syncing'" in script
+    assert "step.status === 'running' || step.status === 'syncing'" in script
+    assert "form.status === 'running' ? '运行中'" in script
+
+    client, _app = _client(tmp_path, runner)
+    with client as api:
+        run_id = api.post('/api/runs', json={
+            'name': '实时日志',
+            'scenario': '同步时阶段日志跟着刷新',
+            'base_model': REPO,
+        }).json()['run']['id']
+        try:
+            started_run = api.post(f'/api/runs/{run_id}/stages/sft/run', json={
+                'params': {'source': 'public', 'dataset': MS_DATASET},
+            })
+            assert started_run.status_code == 200, started_run.text
+            assert started_run.json()['status'] == 'syncing'
+            assert started.wait(5)
+            mid = api.get(f'/api/runs/{run_id}/stages/sft/log')
+            assert mid.status_code == 200, mid.text
+            payload = mid.json()
+            assert payload['done'] is False
+            assert payload['status'] == 'syncing'
+            text = payload['text']
+            assert f'[数据集] {MS_DATASET}' in text
+            assert '下载 1%' in text
+            assert '下载 8%' not in text
+            assert TOKEN not in text
+            assert USER not in text
+            assert 'should-not-be-appended-again' not in text
+            process_mid = process.read_text(encoding='utf-8')
+            assert '下载 1%' in process_mid
+            assert TOKEN not in process_mid
+        finally:
+            release.set()
+        deadline = time.monotonic() + 3
+        later = ''
+        while time.monotonic() < deadline:
+            later = api.get(f'/api/runs/{run_id}/stages/sft/log').json()['text']
+            if '下载 8%' in later:
+                break
+            time.sleep(0.05)
+        assert '下载 1%' in later
+        assert '下载 8%' in later
+        assert later.index('下载 1%') < later.index('下载 8%')
+        assert TOKEN not in later
+        assert USER not in later
+
+
+def test_multiselect_labels_each_repo_in_the_stage_log(tmp_path, hope_env, monkeypatch):
+    process = tmp_path / 'process.log'
+    monkeypatch.setattr(model_fetch, 'process_log_path', lambda: process)
+    _seed_model(tmp_path / 'models')
+    other = 'openai/gsm8k'
+
+    def runner(argv, **kwargs):
+        if argv[1] == 'login':
+            return Completed(stdout=f'token={TOKEN} user={USER}\n')
+        kwargs['on_chunk'](f'{argv[2]} 拉取中\n'.encode())
+        return Completed(stdout='should-not-be-appended-again')
+
+    client, _app = _client(tmp_path, runner)
+    with client as api:
+        run_id = api.post('/api/runs', json={
+            'name': '多选',
+            'scenario': '每个仓库单独成段',
+            'base_model': REPO,
+        }).json()['run']['id']
+        started = api.post(f'/api/runs/{run_id}/stages/sft/run', json={
+            'params': {'source': 'public', 'dataset': f'{MS_DATASET} {other}'},
+        })
+        assert started.status_code == 200, started.text
+        assert started.json()['status'] == 'syncing'
+        text = _sft_log(tmp_path / 'home', run_id).read_text(encoding='utf-8')
+    assert text.index(f'[数据集] {MS_DATASET}') < text.index(f'[数据集] {other}')
+    assert MS_DATASET_URL + ' 拉取中' in text
+    assert 'https://huggingface.co/datasets/openai/gsm8k 拉取中' in text
+    assert TOKEN not in text
+    assert USER not in text
+    copied = process.read_text(encoding='utf-8')
+    assert '拉取中' in copied
+    assert '[数据集]' not in copied
+    assert TOKEN not in copied
+
+
+def test_fetch_lines_stay_above_the_stage_command(tmp_path, hope_env, monkeypatch):
+    monkeypatch.setattr(model_fetch, 'process_log_path', lambda: tmp_path / 'process.log')
+    _seed_model(tmp_path / 'models')
+
+    def runner(argv, **kwargs):
+        if argv[1] == 'login':
+            return Completed(stdout=f'登录成功 token={TOKEN}\n')
+        kwargs['on_chunk'](b'clone-progress\n')
+        return Completed()
+
+    client, _app = _client(tmp_path, runner)
+    with client as api:
+        run_id = api.post('/api/runs', json={
+            'name': '进度留在上面',
+            'scenario': '训练输出接在拉取后面',
+            'base_model': REPO,
+        }).json()['run']['id']
+        waiting = api.post(f'/api/runs/{run_id}/stages/sft/run', json={
+            'params': {'source': 'public', 'dataset': MS_DATASET},
+        })
+        assert waiting.status_code == 200, waiting.text
+        assert waiting.json()['status'] == 'syncing'
+        log_path = _sft_log(tmp_path / 'home', run_id)
+        assert 'clone-progress' in log_path.read_text(encoding='utf-8')
+        _ready_ms_dataset(tmp_path / 'datasets')
+        trained = api.post(f'/api/runs/{run_id}/stages/sft/run', json={
+            'params': {'source': 'public', 'dataset': MS_DATASET},
+        })
+        assert trained.status_code == 200, trained.text
+        assert trained.json()['status'] == 'succeeded'
+        body = log_path.read_text(encoding='utf-8')
+        assert f'[数据集] {MS_DATASET}' in body
+        assert body.index('clone-progress') < body.index('swift sft')
+        assert TOKEN not in body
+        shown = trained.json()['view']['forms']['sft']['logs']
+        assert 'clone-progress' in shown
+        assert 'swift sft' in shown
+        again = api.post(f'/api/runs/{run_id}/stages/sft/run', json={
+            'params': {'source': 'public', 'dataset': MS_DATASET},
+        })
+        assert again.status_code == 200, again.text
+        assert again.json()['status'] == 'succeeded'
+        fresh = log_path.read_text(encoding='utf-8')
+        assert 'clone-progress' not in fresh
+        assert 'swift sft' in fresh
+
+
+def test_model_fetch_lines_stay_above_the_swift_command(tmp_path, hope_env, monkeypatch):
+    monkeypatch.setattr(model_fetch, 'process_log_path', lambda: tmp_path / 'process.log')
+
+    def runner(argv, **kwargs):
+        if argv[1] == 'login':
+            return Completed(stdout=f'登录成功 token={TOKEN}\n')
+        kwargs['on_chunk']('模型进度\n'.encode())
+        if argv[1] == 'clone':
+            dest = Path(kwargs['cwd']) / 'huggingface.co' / 'Qwen' / 'Qwen2.5-7B-Instruct'
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / 'config.json').write_text('{}', encoding='utf-8')
+        return Completed()
+
+    client, _app = _client(tmp_path, runner)
+    with client as api:
+        run_id = api.post('/api/runs', json={
+            'name': '模型进度',
+            'scenario': '模型拉取写进阶段日志',
+            'base_model': REPO,
+        }).json()['run']['id']
+        trained = api.post(f'/api/runs/{run_id}/stages/sft/run', json={
+            'params': {'source': 'bundled', 'bundled': 'itops_mix'},
+        })
+        assert trained.status_code == 200, trained.text
+        assert trained.json()['status'] == 'succeeded', trained.text
+        body = _sft_log(tmp_path / 'home', run_id).read_text(encoding='utf-8')
+    assert f'[模型] {REPO}' in body
+    assert body.index('模型进度') < body.index('swift sft')
+    assert TOKEN not in body
+    assert '登录成功' in body
