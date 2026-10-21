@@ -23,6 +23,13 @@ const state = {
   draftTimer: null,
   mediaTab: 'image',
   mediaFiles: { image: null, video: null, audio: null },
+  metricsCache: {},
+};
+
+// Same keys as swift.ui Runtime.sft_plot / grpo_plot (placeholder until TB arrives).
+const STAGE_METRIC_KEYS = {
+  sft: ['train/loss', 'train/acc', 'train/learning_rate', 'eval/loss', 'eval/acc'],
+  rl: ['train/loss', 'train/reward', 'train/learning_rate', 'train/completions/mean_length', 'train/kl'],
 };
 
 function evalReportLink(stage, result, roundIndex) {
@@ -540,6 +547,100 @@ function outputPanel(title, text, kind) {
   return `<div class="log-panel"><div class="log-head"><h3>${escapeHtml(title)}</h3>${logTools()}</div><pre class="${cls}">${escapeHtml(text || '')}</pre></div>`;
 }
 
+function metricEmptySvg() {
+  return `<svg viewBox="0 0 48 48" aria-hidden="true"><path fill="currentColor" d="M8 36V12h4v20h28v4H8zm6-6 8-10 6 7 8-12 4 3-11 16-6-7-5 6z"/><path fill="currentColor" opacity=".45" d="M10 10 38 38l-2.1 2.1L7.9 12.1z"/></svg>`;
+}
+
+function metricLineSvg(series) {
+  const steps = (series && series.steps) || [];
+  const values = (series && series.values) || [];
+  const smoothed = (series && series.smoothed) || null;
+  if (!steps.length || !values.length) {
+    return `<div class="metric-empty">${metricEmptySvg()}</div>`;
+  }
+  const w = 240;
+  const h = 110;
+  const pad = 8;
+  const xs = steps;
+  const ys = smoothed && smoothed.length === values.length
+    ? values.concat(smoothed)
+    : values;
+  let minX = xs[0];
+  let maxX = xs[0];
+  let minY = ys[0];
+  let maxY = ys[0];
+  xs.forEach((x) => { if (x < minX) minX = x; if (x > maxX) maxX = x; });
+  ys.forEach((y) => { if (y < minY) minY = y; if (y > maxY) maxY = y; });
+  if (minX === maxX) { minX -= 1; maxX += 1; }
+  if (minY === maxY) { minY -= 1; maxY += 1; }
+  const sx = (x) => pad + ((x - minX) / (maxX - minX)) * (w - pad * 2);
+  const sy = (y) => h - pad - ((y - minY) / (maxY - minY)) * (h - pad * 2);
+  const pathFor = (vals, color, width) => {
+    if (vals.length === 1) {
+      const cx = sx(xs[0]);
+      const cy = sy(vals[0]);
+      return `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="3" fill="${color}"/>`;
+    }
+    const d = vals.map((v, i) => `${i ? 'L' : 'M'}${sx(xs[i]).toFixed(1)},${sy(v).toFixed(1)}`).join(' ');
+    return `<path d="${d}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linejoin="round" stroke-linecap="round"/>`;
+  };
+  const raw = smoothed ? pathFor(values, '#FFE2D9', 1.5) : '';
+  const main = pathFor(smoothed || values, '#FF7043', 2);
+  return `<svg class="metric-plot" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml((series && series.name) || '')}">${raw}${main}</svg>`;
+}
+
+function metricsCacheKey(stage, round) {
+  return `${stage}|${round || ''}`;
+}
+
+function metricsPanel(stage, round, live) {
+  const keys = STAGE_METRIC_KEYS[stage];
+  if (!keys) return '';
+  const cached = state.metricsCache[metricsCacheKey(stage, round)];
+  const byName = {};
+  ((cached && cached.series) || []).forEach((item) => { byName[item.name] = item; });
+  const cards = keys.map((name) => {
+    const series = byName[name] || { name, steps: [], values: [] };
+    return `<div class="metric-card" data-metric="${escapeHtml(name)}">
+      <div class="metric-head"><svg class="icon" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M1 13h14v1H1zm2-1 3-4 2.5 3L12 5l2 2.5-.9.7L12 7.2 8.4 12 5.8 9 3 12.5z"/></svg><span>${escapeHtml(name)}</span></div>
+      ${metricLineSvg(series)}
+    </div>`;
+  }).join('');
+  const liveAttrs = live
+    ? ` data-live-metrics="1" data-live-stage="${escapeHtml(stage)}" data-live-round="${escapeHtml(String(round || ''))}"`
+    : ` data-metrics-once="1" data-live-stage="${escapeHtml(stage)}" data-live-round="${escapeHtml(String(round || ''))}"`;
+  return `<div class="metric-charts"${liveAttrs}>${cards}</div>`;
+}
+
+function paintMetrics(el, payload) {
+  if (!el || !el.isConnected || !payload) return;
+  const stage = el.dataset.liveStage || payload.stage;
+  const round = el.dataset.liveRound || payload.round;
+  state.metricsCache[metricsCacheKey(stage, round)] = payload;
+  const byName = {};
+  (payload.series || []).forEach((item) => { byName[item.name] = item; });
+  el.querySelectorAll('.metric-card').forEach((card) => {
+    const name = card.dataset.metric;
+    const series = byName[name] || { name, steps: [], values: [] };
+    const head = card.querySelector('.metric-head');
+    const next = metricLineSvg(series);
+    const old = card.querySelector('.metric-plot, .metric-empty');
+    if (old) old.outerHTML = next;
+    else if (head) head.insertAdjacentHTML('afterend', next);
+  });
+}
+
+async function fetchStageMetrics(stage, round) {
+  if (!state.view || !STAGE_METRIC_KEYS[stage]) return null;
+  const query = new URLSearchParams();
+  if (round) query.set('round', round);
+  try {
+    return await api(`/api/runs/${state.view.run.id}/stages/${encodeURIComponent(stage)}/metrics?${query}`);
+  } catch (_err) {
+    return null;
+  }
+}
+
 function renderStage(stage) {
   const view = state.view;
   const form = view.forms[stage];
@@ -568,6 +669,9 @@ function renderStage(stage) {
   const liveAttrs = streaming ? ` data-live-log="1" data-live-stage="${escapeHtml(stage)}" data-live-round="${view.round.round_index}"` : '';
   const logText = streaming ? liveLogSeed(stage, form.logs || '') : (form.logs || '');
   const logs = (logText || streaming) ? logPanel(logText, liveAttrs) : '';
+  const charts = STAGE_METRIC_KEYS[stage]
+    ? metricsPanel(stage, view.round.round_index, streaming || form.status === 'succeeded' || form.status === 'failed')
+    : '';
   const command = form.command ? outputPanel('命令', form.command, 'command') : '';
   const stop = form.status === 'running'
     ? '<button type="button" class="danger" data-action="stage-stop">停止</button>'
@@ -601,6 +705,7 @@ function renderStage(stage) {
       <div id="live-command"></div>
       ${result}
       ${command}
+      ${charts}
       ${logs}
     </section>`;
 }
@@ -2254,7 +2359,9 @@ document.addEventListener('focusout', (event) => {
 });
 
 function syncLive() {
-  const needs = document.querySelector('[data-started], [data-duration-start], [data-live-log]') || needsFetchPoll();
+  const needs = document.querySelector(
+    '[data-started], [data-duration-start], [data-live-log], [data-live-metrics], [data-metrics-once]')
+    || needsFetchPoll();
   if (!needs) {
     if (state.liveTimer) {
       clearInterval(state.liveTimer);
@@ -2313,11 +2420,35 @@ async function pollFetchProgress() {
   }
 }
 
+async function pollStageMetrics() {
+  const live = [...document.querySelectorAll('[data-live-metrics]')];
+  const once = [...document.querySelectorAll('[data-metrics-once]')];
+  const targets = live.concat(once);
+  if (!targets.length) return;
+  const groups = new Map();
+  targets.forEach((el) => {
+    const key = `${el.dataset.liveStage}|${el.dataset.liveRound || ''}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(el);
+  });
+  for (const [key, els] of groups) {
+    const [stage, round] = key.split('|');
+    const payload = await fetchStageMetrics(stage, round);
+    if (!payload) continue;
+    els.forEach((el) => {
+      if (!el.isConnected) return;
+      paintMetrics(el, payload);
+      if (el.hasAttribute('data-metrics-once')) el.removeAttribute('data-metrics-once');
+    });
+  }
+}
+
 async function pollLive() {
   paintElapsed();
   if (state.liveBusy || !state.view) return;
   const panels = [...document.querySelectorAll('[data-live-log]')];
-  if (!panels.length) {
+  const wantMetrics = document.querySelector('[data-live-metrics], [data-metrics-once]');
+  if (!panels.length && !wantMetrics) {
     if (!needsFetchPoll()) return;
     state.liveBusy = true;
     try {
@@ -2359,9 +2490,18 @@ async function pollLive() {
         return;
       }
     }
+    await pollStageMetrics();
     await pollFetchProgress();
   } finally {
     state.liveBusy = false;
+    // One-shot metrics drop their attribute after the first paint; stop the timer
+    // when nothing else needs live updates.
+    if (!document.querySelector(
+      '[data-started], [data-duration-start], [data-live-log], [data-live-metrics], [data-metrics-once]')
+      && !needsFetchPoll() && state.liveTimer) {
+      clearInterval(state.liveTimer);
+      state.liveTimer = null;
+    }
   }
 }
 

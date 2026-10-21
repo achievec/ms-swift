@@ -37,6 +37,7 @@ from rsi.llm_infer_spec import chat_request_body, cuda_visible_devices, template
 from rsi.dataset_validate import MAX_BYTES, validate_file, validate_public_id
 from rsi.flow import ACTION_LABELS, assemble_flow, blocked_message, decision_actions, stage_unlocked
 from rsi.logtail import announce_log, read_log_window, slice_bytes, truncate_log_text
+from rsi.metrics import STAGE_PLOTS, collect_stage_metrics
 from rsi.model_fetch import (
     ModelFetcher,
     activate_stage_log,
@@ -1597,6 +1598,69 @@ class Pipeline:
             'ended_at': step.get('ended_at') if step else None,
             **window,
         }
+
+    def stage_metrics(self, run_id: str, stage: str, round_index=None) -> dict:
+        """TensorBoard scalars for SFT/RL charts (Web-UI Runtime.plot equivalent).
+
+        Looks under ``logging_dir``, ``output_dir/runs``, and ``output_dir``. Paths
+        must stay inside this experiment. Payload is a tailed summary only.
+        """
+        if stage not in STAGE_PLOTS:
+            raise PipelineError('该阶段没有训练曲线')
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', run_id or ''):
+            raise PipelineError('实验不存在', 404)
+        run = self._require_run(run_id)
+        if round_index is None:
+            round_index = run['round_index']
+        else:
+            round_index = int(round_index)
+        if round_index < 1:
+            raise PipelineError('轮次不存在', 404)
+        rnd = self.store.get_round(run_id, round_index)
+        if not rnd:
+            raise PipelineError('轮次不存在', 404)
+        step = self.store.latest_active_steps(run_id, round_index).get(stage)
+        params = _loads(step['params_json']) if step else {}
+        roots = self._metrics_search_roots(run_id, round_index, stage, params)
+        payload = collect_stage_metrics(stage, roots)
+        status = step['status'] if step else 'locked'
+        return {
+            'stage': stage,
+            'round': round_index,
+            'status': status,
+            'done': status not in {'running', 'syncing'},
+            'event_file': payload.get('event_file'),
+            'series': payload.get('series') or [],
+        }
+
+    def _metrics_search_roots(self, run_id: str, round_index: int, stage: str, params: dict) -> list[Path]:
+        """Candidate TensorBoard dirs owned by this run."""
+        owned: list[Path] = []
+        seen: set[Path] = set()
+
+        def add(raw):
+            path = self._owned_dir(run_id, Path(str(raw)) if raw else None)
+            if path is None or path in seen:
+                return
+            seen.add(path)
+            owned.append(path)
+
+        add(params.get('logging_dir'))
+        add(params.get('output_dir'))
+        add(self.stage_dir(run_id, round_index, stage))
+        return owned
+
+    def _owned_dir(self, run_id: str, candidate: Path | None) -> Path | None:
+        if candidate is None:
+            return None
+        root = (self.home / 'runs' / run_id).resolve()
+        try:
+            resolved = candidate.expanduser().resolve()
+        except OSError:
+            return None
+        if resolved != root and root not in resolved.parents:
+            return None
+        return resolved
 
     def _stage_log_path(self, run_id: str, round_index: int, stage: str, step) -> Path | None:
         params = _loads(step['params_json']) if step else {}

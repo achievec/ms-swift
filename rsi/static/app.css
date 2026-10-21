@@ -320,6 +320,57 @@ summary { cursor: pointer; color: var(--accent-ink); font-weight: 600; }
   box-shadow: none;
 }
 .log-panel { min-width: 0; max-width: 100%; }
+
+/* Web-UI Runtime.plot row: five TensorBoard cards for SFT / GRPO. */
+.metric-charts {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+  min-width: 0;
+  max-width: 100%;
+}
+.metric-card {
+  min-width: 0;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px 6px;
+  box-shadow: var(--shadow);
+}
+.metric-card .metric-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #4b5563;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.metric-card .metric-head svg.icon { flex: 0 0 auto; color: #9ca3af; }
+.metric-card .metric-plot {
+  width: 100%;
+  height: 110px;
+  display: block;
+}
+.metric-card .metric-empty {
+  width: 100%;
+  height: 110px;
+  display: grid;
+  place-items: center;
+  color: #d1d5db;
+}
+.metric-card .metric-empty svg { width: 36px; height: 36px; }
+@media (max-width: 1100px) {
+  .metric-charts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .metric-charts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 .candidates { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .candidate {
   border: 1px solid var(--line);
