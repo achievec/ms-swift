@@ -26,7 +26,7 @@ hardware:
 
 data:
   source: public
-  dataset: AI-ModelScope/alpaca-gpt4-data-zh
+  dataset: ""
   max_length: 1024
   split_dataset_ratio: 0
   padding_free: false

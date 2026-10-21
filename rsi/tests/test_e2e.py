@@ -438,7 +438,7 @@ def test_delete_run_removes_audit_and_only_its_directory(client):
     db = sqlite3.connect(home / 'rsi.sqlite')
     try:
         assert db.execute('SELECT COUNT(*) FROM runs WHERE id=?', (run_id, )).fetchone()[0] == 0
-        for table in ('rounds', 'steps', 'checkpoints', 'services'):
+        for table in ('rounds', 'steps', 'checkpoints', 'services', 'drafts'):
             count = db.execute(f'SELECT COUNT(*) FROM {table} WHERE run_id=?', (run_id, )).fetchone()[0]
             assert count == 0, table
         assert db.execute('SELECT COUNT(*) FROM runs WHERE id=?', (other_id, )).fetchone()[0] == 1
@@ -462,9 +462,9 @@ def test_empty_post_body_is_not_internal_server_error(client):
     run_id = created.json()['run']['id']
     headers = {'Content-Type': 'application/json'}
     started = api.post(f'/api/runs/{run_id}/stages/sft/run', content=b'', headers=headers)
-    assert started.status_code == 200, started.text
+    assert started.status_code == 400, started.text
     assert started.headers['content-type'].startswith('application/json')
-    assert started.json()['ok'] is True
+    assert started.json()['detail'] == '请先选择数据集'
     assert 'Internal Server Error' not in started.text
     blank = api.post(f'/api/runs/{run_id}/stages/sft/run', content=b'   \n', headers=headers)
     assert blank.status_code != 500, blank.text

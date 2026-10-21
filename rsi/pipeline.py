@@ -130,6 +130,38 @@ def _merge(defaults: dict, user: dict) -> dict:
     return merged
 
 
+def _clean_draft(params: dict) -> dict:
+    """One stage snapshot. Locked identity stays on the experiment, not in the draft."""
+    cleaned = {}
+    for key, value in (params or {}).items():
+        if not isinstance(key, str) or not key or key.startswith('_'):
+            continue
+        if key in {'model', 'model_type', 'template', 'trained_model'}:
+            continue
+        if isinstance(value, dict):
+            continue
+        if isinstance(value, list):
+            parts = []
+            for item in value:
+                if isinstance(item, (dict, list)):
+                    continue
+                text = str(item).strip()
+                if text:
+                    parts.append(text)
+            cleaned[key] = ' '.join(parts)
+            continue
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            cleaned[key] = value
+            continue
+        if isinstance(value, (int, float)):
+            cleaned[key] = value
+            continue
+        cleaned[key] = str(value)
+    return cleaned
+
+
 def _metric(step, name):
     if not step or step.get('status') != 'succeeded' or not step.get('result_json'):
         return None
@@ -689,12 +721,12 @@ class Pipeline:
         return _loads(step['params_json'])
 
     def _seed_dataset(self, preset: dict) -> None:
-        """SFT keeps the old data-stage dataset when its own preset does not name one."""
+        """SFT keeps the data-stage source and split. The dataset name stays empty until chosen."""
         data = presets().get('data') or {}
         if not preset.get('source'):
             preset['source'] = data.get('source') or 'public'
         if preset.get('dataset') in (None, ''):
-            preset['dataset'] = data.get('dataset') or ''
+            preset['dataset'] = ''
         for key in ('split_dataset_ratio', 'padding_free'):
             if key not in preset and data.get(key) not in (None, ''):
                 preset[key] = data[key]
@@ -762,6 +794,8 @@ class Pipeline:
             return preset
 
         if stage in {'sft_eval', 'rl_eval'}:
+            # Web-UI's eval dataset dropdown has no default. This loop's gate is the
+            # bundled itops-heldout set, so the preset keeps that name.
             self._show_round_model(preset, run, rnd)
             kind = 'sft' if stage == 'sft_eval' else 'rl'
             checkpoint = self.store.active_checkpoint(run['id'], rnd['round_index'], kind)
@@ -959,6 +993,9 @@ class Pipeline:
         defaults = self._defaults_for(run, rnd, stage)
         merged = _merge(defaults, user)
         self._lock_model_fields(merged, defaults)
+        if isinstance(merged.get('dataset'), list):
+            merged['dataset'] = ' '.join(
+                str(item).strip() for item in merged['dataset'] if str(item).strip())
         if 'more_params' in (user or {}):
             text = '' if user.get('more_params') is None else str(user.get('more_params'))
             merged['more_params'] = text
@@ -971,11 +1008,21 @@ class Pipeline:
                 merged['more_params'] = text
         side = {}
         if stage == 'sft' and merged.get('source'):
-            try:
-                dataset, report = self.resolve_dataset(merged)
-            except PipelineError:
-                if strict:
-                    raise
+            public_blank = (
+                str(merged.get('source')) == 'public' and not str(merged.get('dataset') or '').strip())
+            if public_blank and strict:
+                raise PipelineError('请先选择数据集')
+            if public_blank:
+                dataset, report = None, None
+            else:
+                try:
+                    dataset, report = self.resolve_dataset(merged)
+                except PipelineError:
+                    if strict:
+                        raise
+                    dataset, report = None, None
+            if dataset is None and report is None:
+                pass
             else:
                 merged['dataset'] = dataset
                 side['validation'] = report
@@ -993,7 +1040,7 @@ class Pipeline:
             dataset = merged.get('dataset') or ''
             if strict:
                 if not dataset:
-                    raise PipelineError('请填写数据集')
+                    raise PipelineError('请先选择数据集')
                 self._require_dataset(str(dataset))
                 if not merged.get('model'):
                     raise PipelineError('缺少模型路径')
@@ -1082,21 +1129,33 @@ class Pipeline:
             return 'ready'
         return 'locked'
 
-    def _form_state(self, run, rnd, stage, active, recommendation):
+    def _form_state(self, run, rnd, stage, active, recommendation, draft=None):
         defaults = self._defaults_for(run, rnd, stage)
         if stage == 'promote':
             defaults['choice'] = recommendation
         step = active.get(stage)
-        if step and step['status'] == 'succeeded':
-            values = _loads(step['params_json'])
-        else:
-            values = dict(defaults)
+        step_params = None
+        if step and step['status'] in {'succeeded', 'failed', 'running', 'syncing'}:
+            step_params = _loads(step['params_json'])
+        values = dict(defaults)
+        if step_params:
+            for key, value in step_params.items():
+                if key in {'model', 'model_type', 'template', 'trained_model'}:
+                    continue
+                values[key] = value
+        if draft:
+            for key, value in draft.items():
+                if key in {'model', 'model_type', 'template'} or isinstance(value, dict):
+                    continue
+                values[key] = value
         shown = {}
         self._show_round_model(shown, run, rnd)
         for key in ('model', 'model_type', 'template'):
             if shown.get(key) not in (None, ''):
                 values[key] = shown[key]
-        if defaults.get('adapters') and not str(values.get('adapters') or '').strip():
+        adapters_set = (
+            (step_params is not None and 'adapters' in step_params) or (draft is not None and 'adapters' in draft))
+        if not adapters_set and defaults.get('adapters') and not str(values.get('adapters') or '').strip():
             values['adapters'] = defaults['adapters']
         result = _loads(step['result_json']) if step and step.get('result_json') else None
         result = self._with_eval_report(run['id'], stage, result, values)
@@ -1170,11 +1229,12 @@ class Pipeline:
             raise PipelineError('轮次不存在', 404)
         active = self.store.latest_active_steps(run_id, round_index)
         candidates, recommendation = self.candidates(run, rnd)
+        drafts = self.store.list_drafts(run_id, round_index)
         forms = {}
         board = []
         for meta in STAGE_META:
             stage = meta['id']
-            state = self._form_state(run, rnd, stage, active, recommendation)
+            state = self._form_state(run, rnd, stage, active, recommendation, drafts.get(stage))
             forms[stage] = state
             metric = None
             metrics = (state.get('result') or {}).get('metrics') or {}
@@ -1200,6 +1260,13 @@ class Pipeline:
             remembered = saved_serve.get('more_params')
             if remembered not in (None, ''):
                 serve_values['more_params'] = remembered
+        for key, value in (drafts.get('serve') or {}).items():
+            if key in {'model', 'model_type', 'template', 'adapters'} or isinstance(value, dict):
+                continue
+            serve_values[key] = value
+        for key in ('model', 'model_type', 'template', 'adapters'):
+            if key in serve_fill:
+                serve_values[key] = serve_fill.get(key) if serve_fill.get(key) is not None else ''
         if service and service.get('api_key'):
             service = dict(service)
             service['api_key_set'] = True
@@ -1218,6 +1285,12 @@ class Pipeline:
             export_values[key] = export_fill.get(key) if export_fill.get(key) is not None else ''
         if 'merge_lora' in saved_export:
             export_values['merge_lora'] = saved_export.get('merge_lora') in {True, 'true', 'True', 1, '1'}
+        for key, value in (drafts.get('export') or {}).items():
+            if key in {'model', 'model_type', 'template'} or isinstance(value, dict):
+                continue
+            export_values[key] = value
+        for key in ('model', 'model_type', 'template'):
+            export_values[key] = export_fill.get(key) if export_fill.get(key) is not None else ''
         export_running = self._exports.running(run_id)
         export_status = 'running' if export_running else (export_step['status'] if export_step else 'idle')
         export_job = {
@@ -1409,10 +1482,37 @@ class Pipeline:
             return None
         return resolved
 
+    def _remember_user_draft(self, run_id: str, round_index: int, stage: str, params: dict) -> None:
+        """Keep the raw form, including a run that never finishes, so refresh can refill it."""
+        if stage not in set(STAGE_ORDER) | {'serve', 'export'}:
+            return
+        cleaned = _clean_draft(params or {})
+        if not cleaned:
+            return
+        self.store.upsert_draft(run_id, round_index, stage, cleaned)
+
+    def save_draft(self, run_id: str, stage: str, round_index, params: dict) -> dict:
+        run = self._require_run(run_id)
+        stage = str(stage or '').strip()
+        if stage not in set(STAGE_ORDER) | {'serve', 'export'}:
+            raise PipelineError('未知阶段')
+        if round_index in (None, ''):
+            round_index = run['round_index']
+        try:
+            round_index = int(round_index)
+        except (TypeError, ValueError):
+            raise PipelineError('轮次不存在', 404) from None
+        if not self.store.get_round(run_id, round_index):
+            raise PipelineError('轮次不存在', 404)
+        self._remember_user_draft(run_id, round_index, stage, params if isinstance(params, dict) else {})
+        stored = self.store.list_drafts(run_id, round_index).get(stage) or {}
+        return {'ok': True, 'stage': stage, 'round': round_index, 'params': stored}
+
     def run_stage(self, run_id: str, stage: str, params: dict) -> dict:
         run = self._require_run(run_id)
         self._assert_can_run(run, stage)
         rnd = self.store.get_round(run_id, run['round_index'])
+        self._remember_user_draft(run_id, rnd['round_index'], stage, params or {})
         fetch_log = None
         if stage in SWIFT_STAGES:
             fetch_log = self.stage_log_dir(run['id'], rnd['round_index'], stage) / 'swift.log'
@@ -1656,6 +1756,7 @@ class Pipeline:
 
     def start_serve(self, run_id: str, params: dict) -> dict:
         run = self._require_run(run_id)
+        self._remember_user_draft(run_id, run['round_index'], 'serve', params or {})
         merged = self._prepare_serve(run, params or {}, strict=True)
         host = merged['host']
         port = int(merged['port'])
@@ -1924,6 +2025,7 @@ class Pipeline:
         run = self._require_run(run_id)
         if self._exports.running(run_id):
             raise PipelineError('这个实验已经有一个导出在跑')
+        self._remember_user_draft(run_id, run['round_index'], 'export', params or {})
         merged = self._prepare_export(run, params or {}, strict=True)
         command = self.preview_export_command(merged)
         argv = self._export_argv(merged)

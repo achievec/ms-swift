@@ -132,6 +132,12 @@ def create_app(home: Path | None = None) -> FastAPI:
         data = await file.read()
         return pipeline.save_upload(file.filename or 'data.jsonl', data)
 
+    @app.post('/api/runs/{run_id}/drafts')
+    async def save_draft(run_id: str, request: Request):
+        body = await read_json(request)
+        params = body.get('params') if isinstance(body.get('params'), dict) else {}
+        return pipeline.save_draft(run_id, body.get('stage') or '', body.get('round'), params)
+
     @app.post('/api/runs/{run_id}/fetch')
     async def refresh_fetch(run_id: str, request: Request):
         body = await read_json(request)

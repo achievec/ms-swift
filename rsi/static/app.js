@@ -20,6 +20,7 @@ const state = {
   exportLog: '',
   exportLogTimer: null,
   exportRuntimeOpen: false,
+  draftTimer: null,
   mediaTab: 'image',
   mediaFiles: { image: null, video: null, audio: null },
 };
@@ -262,6 +263,7 @@ async function deleteRun(id) {
 }
 
 async function openRun(id, round, keepStage) {
+  await flushDraft();
   const query = round ? `?round=${round}` : '';
   state.view = await api(`/api/runs/${id}${query}`);
   state.serveDraft = null;
@@ -1039,9 +1041,6 @@ function exportFormValues(view) {
   ['model', 'model_type', 'template'].forEach((key) => {
     if (Object.prototype.hasOwnProperty.call(fill, key)) base[key] = fill[key] == null ? '' : fill[key];
   });
-  if (!drafted && Object.prototype.hasOwnProperty.call(fill, 'adapters')) {
-    base.adapters = fill.adapters == null ? '' : fill.adapters;
-  }
   return base;
 }
 
@@ -1173,6 +1172,7 @@ function applyPreset() {
   });
   document.querySelectorAll('.chip-box').forEach((box) => paintDatasetChips(box));
   syncSource();
+  flushDraft();
   toast('已恢复本阶段预设');
 }
 
@@ -1189,6 +1189,7 @@ async function uploadFile(file) {
   syncSource();
   const slot = document.getElementById('live-command');
   if (slot) slot.innerHTML = outputPanel('上传校验', JSON.stringify(data.validation, null, 2));
+  scheduleDraftSave();
   toast(data.validation.ok ? '上传通过校验' : '上传文件格式未通过');
 }
 
@@ -1251,6 +1252,7 @@ async function refreshExportLog() {
   }
   if (was === 'running' && payload.status && payload.status !== 'running') {
     stopExportLogPoll();
+    await flushDraft();
     render();
   }
 }
@@ -1355,6 +1357,7 @@ async function sendChat() {
   state.chat.push({ role: 'user', content: content || '（多媒体）' });
   state.chat.push({ role: 'assistant', content: '' });
   input.value = '';
+  captureDraft();
   render();
   const response = await fetch(`/api/runs/${state.view.run.id}/chat`, {
     method: 'POST',
@@ -1420,6 +1423,7 @@ document.addEventListener('keydown', (event) => {
   input.value = '';
   paintDatasetChips(box);
   showCombo(input, true);
+  scheduleDraftSave();
 });
 
 document.addEventListener('click', async (event) => {
@@ -1431,6 +1435,7 @@ document.addEventListener('click', async (event) => {
     const drop = chip.dataset.chipRemove;
     hidden.value = datasetTokens(hidden.value).filter((item) => item !== drop).join(' ');
     paintDatasetChips(box);
+    scheduleDraftSave();
     return;
   }
   const clearAll = event.target.closest('[data-action="chip-clear"], [data-action="dataset-clear"]');
@@ -1442,6 +1447,7 @@ document.addEventListener('click', async (event) => {
     const query = box.querySelector('.chip-query');
     if (query) query.value = '';
     paintDatasetChips(box);
+    scheduleDraftSave();
     return;
   }
   const caret = event.target.closest('[data-action="chip-menu"], [data-action="dataset-menu"]');
@@ -1481,11 +1487,13 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (target.dataset.tab) {
+      await flushDraft();
       state.tab = target.dataset.tab;
       render();
       return;
     }
     if (target.dataset.decision) {
+      await flushDraft();
       const payload = await api(`/api/runs/${state.view.run.id}/decide`, {
         method: 'POST',
         body: JSON.stringify({ action: target.dataset.decision }),
@@ -1499,6 +1507,7 @@ document.addEventListener('click', async (event) => {
     }
     if (target.dataset.stage) {
       if (target.disabled) return;
+      await flushDraft();
       let stage = target.dataset.stage;
       if (stage === 'sft_finish' || stage === 'rl_finish' || stage === 'finish') {
         if (state.view.run.status !== 'completed') {
@@ -1551,6 +1560,7 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (target.dataset.action === 'refetch') {
+      await flushDraft();
       const params = collectParams();
       const payload = await api(`/api/runs/${state.view.run.id}/fetch`, {
         method: 'POST',
@@ -1565,11 +1575,13 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (target.dataset.action === 'open-serve') {
+      await flushDraft();
       state.tab = 'serve';
       render();
       return;
     }
     if (target.dataset.action === 'open-export') {
+      await flushDraft();
       state.tab = 'export';
       render();
       return;
@@ -1587,6 +1599,7 @@ document.addEventListener('click', async (event) => {
         merge_lora: Boolean(fill.merge_lora),
       };
       state.exportDraftRun = state.view.run.id;
+      await saveDraftSnapshot('export', state.exportDraft);
       render();
       toast('已填入本轮权重');
       return;
@@ -1602,6 +1615,7 @@ document.addEventListener('click', async (event) => {
         template: fill.template || current.template || '',
       };
       state.serveDraftRun = state.view.run.id;
+      await saveDraftSnapshot('serve', state.serveDraft);
       render();
       toast('已填入本轮 checkpoint');
       return;
@@ -1617,6 +1631,7 @@ document.addEventListener('click', async (event) => {
       });
       state.serveDraft = next;
       state.serveDraftRun = state.view.run.id;
+      await saveDraftSnapshot('serve', state.serveDraft);
       render();
       toast('已恢复初始值');
       return;
@@ -1641,21 +1656,25 @@ document.addEventListener('click', async (event) => {
         input.value = fallback;
         if (num) num.value = fallback;
         rememberServeDraft({ target: input });
+        scheduleDraftSave();
       }
       return;
     }
     if (target.dataset.mediaTab) {
+      captureDraft();
       state.mediaTab = target.dataset.mediaTab;
       render();
       return;
     }
     if (target.dataset.action === 'clear-chat') {
+      captureDraft();
       state.chat = [];
       state.mediaFiles = { image: null, video: null, audio: null };
       render();
       return;
     }
     if (target.dataset.action === 'serve-refresh') {
+      await flushDraft();
       const round = state.view.round.round_index;
       state.view = await api(`/api/runs/${state.view.run.id}?round=${round}`);
       render();
@@ -1699,6 +1718,7 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (target.dataset.action === 'export-refresh') {
+      await flushDraft();
       const round = state.view.round.round_index;
       state.view = await api(`/api/runs/${state.view.run.id}?round=${round}`);
       state.exportRuntimeOpen = true;
@@ -1732,6 +1752,91 @@ document.addEventListener('toggle', (event) => {
   else state.inferRuntimeOpen = Boolean(node.open);
 }, true);
 
+const DRAFT_STAGES = ['sft', 'sft_eval', 'rl', 'rl_eval', 'promote', 'next_round'];
+
+function currentDraftStage() {
+  if (!state.view) return null;
+  if (state.tab === 'serve') return 'serve';
+  if (state.tab === 'export') return 'export';
+  if (state.tab !== 'flow') return null;
+  return DRAFT_STAGES.includes(state.stage) ? state.stage : null;
+}
+
+function captureDraft() {
+  const stage = currentDraftStage();
+  if (!stage || !state.view) return null;
+  const params = collectParams();
+  if (stage === 'serve') {
+    state.serveDraft = params;
+    state.serveDraftRun = state.view.run.id;
+  } else if (stage === 'export') {
+    state.exportDraft = params;
+    state.exportDraftRun = state.view.run.id;
+  }
+  return {
+    stage,
+    params,
+    runId: state.view.run.id,
+    round: state.view.round.round_index,
+  };
+}
+
+function scheduleDraftSave() {
+  captureDraft();
+  if (state.draftTimer) clearTimeout(state.draftTimer);
+  state.draftTimer = setTimeout(() => {
+    state.draftTimer = null;
+    flushDraft();
+  }, 400);
+}
+
+async function saveDraftSnapshot(stage, params) {
+  if (!state.view || !stage) return;
+  if (state.draftTimer) {
+    clearTimeout(state.draftTimer);
+    state.draftTimer = null;
+  }
+  const runId = state.view.run.id;
+  const round = state.view.round.round_index;
+  try {
+    await api(`/api/runs/${runId}/drafts`, {
+      method: 'POST',
+      body: JSON.stringify({ stage, round, params }),
+    });
+  } catch (_err) {
+    /* 草稿没写上时，页面上的值还在。 */
+  }
+}
+
+async function flushDraft(keepalive) {
+  if (state.draftTimer) {
+    clearTimeout(state.draftTimer);
+    state.draftTimer = null;
+  }
+  const snap = captureDraft();
+  if (!snap) return;
+  const url = `/api/runs/${snap.runId}/drafts`;
+  const body = JSON.stringify({ stage: snap.stage, round: snap.round, params: snap.params });
+  if (keepalive) {
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      keepalive: true,
+    }).catch(() => {});
+    return;
+  }
+  await saveDraftSnapshot(snap.stage, snap.params);
+}
+
+function draftEvent(target) {
+  if (!target || !state.view) return false;
+  if (target.id === 'chat-input') return false;
+  if (target.id === 'extra-yaml') return true;
+  if (!target.dataset || !target.dataset.field) return false;
+  return Boolean(target.closest('#main'));
+}
+
 function rememberServeDraft(event) {
   if ((state.tab !== 'serve' && state.tab !== 'export') || !state.view) return;
   const field = event.target && event.target.dataset && event.target.dataset.field;
@@ -1756,11 +1861,13 @@ document.addEventListener('input', (event) => {
     if (range) {
       range.value = target.value;
       rememberServeDraft({ target: range });
+      scheduleDraftSave();
       return;
     }
   }
   if (target && target.id === 'chat-input') syncSendButton();
   rememberServeDraft(event);
+  if (draftEvent(target)) scheduleDraftSave();
 });
 
 document.addEventListener('change', async (event) => {
@@ -1773,6 +1880,7 @@ document.addEventListener('change', async (event) => {
     syncSendButton();
   }
   rememberServeDraft(event);
+  if (draftEvent(event.target)) scheduleDraftSave();
   if (event.target.dataset && event.target.dataset.field === 'source') syncSource();
   if (event.target.dataset && event.target.dataset.field === 'eval_backend') {
     const scope = event.target.closest('section, form') || document;
@@ -2067,6 +2175,7 @@ async function pollFetchProgress() {
   state.view.fetches = view.fetches || [];
   paintFetchNotes();
   if (wasSyncing && !fetchRows().some((row) => row.state === '同步中')) {
+    await flushDraft();
     state.view = view;
     const failed = fetchRows().find((row) => row.state === '失败');
     if (failed && failed.message) toast(failed.message);
@@ -2112,6 +2221,7 @@ async function pollLive() {
       });
       const current = ((state.view.forms || {})[stage] || {}).status;
       if (payload.done && (current === 'running' || current === 'syncing')) {
+        await flushDraft();
         const view = await api(`/api/runs/${state.view.run.id}?round=${state.view.round.round_index}`);
         state.view = view;
         state.round = view.round.round_index;
@@ -2132,6 +2242,10 @@ document.addEventListener('scroll', (event) => {
   const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
   el.dataset.pinned = gap < 28 ? '1' : '0';
 }, true);
+
+window.addEventListener('pagehide', () => {
+  flushDraft(true);
+});
 
 async function boot() {
   state.schema = await api('/api/schema');

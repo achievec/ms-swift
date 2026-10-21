@@ -128,6 +128,14 @@ class Store:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (kind, repo_id)
                 );
+                CREATE TABLE IF NOT EXISTS drafts (
+                    run_id TEXT NOT NULL,
+                    round_index INTEGER NOT NULL,
+                    stage TEXT NOT NULL,
+                    params_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (run_id, round_index, stage)
+                );
                 CREATE INDEX IF NOT EXISTS idx_steps_run ON steps(run_id, round_index, id);
                 CREATE INDEX IF NOT EXISTS idx_rounds_run ON rounds(run_id, round_index);
                 """)
@@ -216,6 +224,7 @@ class Store:
             if not row:
                 return False
             conn.execute('DELETE FROM services WHERE run_id=?', (run_id, ))
+            conn.execute('DELETE FROM drafts WHERE run_id=?', (run_id, ))
             conn.execute('DELETE FROM checkpoints WHERE run_id=?', (run_id, ))
             conn.execute('DELETE FROM steps WHERE run_id=?', (run_id, ))
             conn.execute('DELETE FROM rounds WHERE run_id=?', (run_id, ))
@@ -411,3 +420,35 @@ class Store:
         with self.transaction() as conn:
             rows = conn.execute('SELECT * FROM services WHERE run_id=? ORDER BY id', (run_id, )).fetchall()
         return [dict(row) for row in rows]
+
+    def upsert_draft(self, run_id, round_index, stage, params: dict) -> None:
+        """Replace one stage snapshot. Update-or-insert, same as fetch rows."""
+        payload = _dumps(params or {})
+        now = utcnow()
+        round_index = int(round_index)
+        with self.transaction() as conn:
+            found = conn.execute(
+                'SELECT 1 FROM drafts WHERE run_id=? AND round_index=? AND stage=?',
+                (run_id, round_index, stage)).fetchone()
+            if found:
+                conn.execute(
+                    'UPDATE drafts SET params_json=?, updated_at=? WHERE run_id=? AND round_index=? AND stage=?',
+                    (payload, now, run_id, round_index, stage))
+            else:
+                conn.execute(
+                    'INSERT INTO drafts (run_id, round_index, stage, params_json, updated_at) '
+                    'VALUES (?, ?, ?, ?, ?)',
+                    (run_id, round_index, stage, payload, now))
+
+    def list_drafts(self, run_id, round_index) -> dict:
+        with self.transaction() as conn:
+            rows = conn.execute(
+                'SELECT stage, params_json FROM drafts WHERE run_id=? AND round_index=?',
+                (run_id, int(round_index))).fetchall()
+        found = {}
+        for row in rows:
+            try:
+                found[row['stage']] = json.loads(row['params_json'] or '{}')
+            except json.JSONDecodeError:
+                found[row['stage']] = {}
+        return found

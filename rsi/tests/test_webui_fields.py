@@ -182,7 +182,7 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         assert values['model_type'] == 'qwen2'
         assert values['template'] == 'qwen2_5'
         assert values['source'] == 'public'
-        assert values['dataset'] == 'AI-ModelScope/alpaca-gpt4-data-zh'
+        assert values['dataset'] == ''
         assert values['max_length'] == 2048
         for stage in ('rl', 'sft_eval', 'rl_eval'):
             locked = created['forms'][stage]['values']
