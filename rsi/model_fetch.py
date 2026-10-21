@@ -35,6 +35,9 @@ HF_CLONEABLE_DATASETS = (
 REPO_ID = re.compile(r'^[A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*$')
 _LOCK = threading.Lock()
 _INFLIGHT = set()
+# repo key -> [stage_log_path]. Mutated when a later ensure binds a stage log onto an
+# already-running clone that was started without one (preview/validate race).
+_CLONE_LOG_REFS: dict = {}
 _HOPE_WARNED = False
 _TOOL_FAILURE = '下载工具不可用'
 LOGIN_WAITING = '已向大象发送登录确认，请在大象里确认'
@@ -678,11 +681,21 @@ class ModelFetcher:
         if _ready(kind, path) and not force:
             logger.info('hope 跳过 %s %s 已就绪 %s', kind, repo_id, path)
             return
+        log_ref = [stage_log]
         with _LOCK:
             if key in _INFLIGHT:
                 logger.info('hope 跳过 %s %s 已在进行', kind, repo_id)
+                held = _CLONE_LOG_REFS.get(key)
+                # A clone started without a stage log (preview/validate) can be rebound
+                # when 运行本阶段 arrives, so hope chunks still land in swift.log.
+                if stage_log is not None and held is not None and held[0] is None:
+                    held[0] = stage_log
+                    activate_stage_log(stage_log)
+                    label = '数据集' if kind == 'dataset' else '模型'
+                    append_stage_log(stage_log, f'\n[{label}] {repo_id}\n')
                 return
             _INFLIGHT.add(key)
+            _CLONE_LOG_REFS[key] = log_ref
         # Mark the stage log before the thread runs. A second click in that window
         # must not truncate lines this clone is about to append.
         if stage_log is not None:
@@ -693,6 +706,7 @@ class ModelFetcher:
         except OSError as exc:
             with _LOCK:
                 _INFLIGHT.discard(key)
+                _CLONE_LOG_REFS.pop(key, None)
                 self._notes[key] = f'无法创建目录 {root}'
             deactivate_stage_log(stage_log)
             logger.info('hope 无法创建目录 %s %s', root, exc.strerror or exc)
@@ -700,20 +714,32 @@ class ModelFetcher:
 
         def job():
             # Bind the path inside this thread. A background clone outlives the request,
-            # and a new thread does not keep the caller's context.
-            token = _stage_log.set(stage_log)
+            # and a new thread does not keep the caller's context. Re-read log_ref so a
+            # rebind from the request thread is visible before hope starts writing.
+            current = log_ref[0]
+            token = _stage_log.set(current)
             ready_now = False
             ready_path = path
+            bound = current
             try:
-                if stage_log is not None:
+                if current is not None:
                     label = '数据集' if kind == 'dataset' else '模型'
-                    append_stage_log(stage_log, f'\n[{label}] {repo_id}\n')
+                    append_stage_log(current, f'\n[{label}] {repo_id}\n')
                 try:
                     argv, _public = clone_argv(self._url_for(kind, repo_id))
                     # hope clone writes under cwd. Do not cd into org/ first, and do not
                     # assume the older <org>/<name> layout is where the files land.
                     # Models and datasets both go through _run, which runs hope login
                     # before the clone. A repo that is already on disk never reaches here.
+                    # Pick up a late stage-log rebind before streaming starts.
+                    current = log_ref[0]
+                    if current is not bound:
+                        _stage_log.reset(token)
+                        token = _stage_log.set(current)
+                        if current is not None and bound is None:
+                            label = '数据集' if kind == 'dataset' else '模型'
+                            append_stage_log(current, f'\n[{label}] {repo_id}\n')
+                        bound = current
                     result = self._run(argv, cwd=root, target=path, repo_key=key, force_login=force_login)
                     if result == 'missing-tool':
                         with _LOCK:
@@ -735,6 +761,7 @@ class ModelFetcher:
                 finally:
                     with _LOCK:
                         _INFLIGHT.discard(key)
+                        _CLONE_LOG_REFS.pop(key, None)
                         found = self._path_for(kind, repo_id)
                         if _ready(kind, found):
                             self._notes.pop(key, None)
@@ -752,7 +779,7 @@ class ModelFetcher:
                         self.on_settled()
                 except Exception:
                     logger.exception('拉取结束后继续阶段')
-                deactivate_stage_log(stage_log)
+                deactivate_stage_log(log_ref[0] if log_ref[0] is not None else stage_log)
 
         if background:
             threading.Thread(target=job, daemon=True).start()
@@ -1105,6 +1132,14 @@ def deactivate_stage_log(path) -> None:
             _ACTIVE_STAGE_LOGS.pop(key, None)
         else:
             _ACTIVE_STAGE_LOGS[key] = left
+
+
+def stage_log_is_active(path) -> bool:
+    """True while hope (or a pinned training handoff) still owns this swift.log."""
+    if not path:
+        return False
+    with _LOG_APPEND:
+        return _ACTIVE_STAGE_LOGS.get(_log_key(path), 0) > 0
 
 
 def reset_stage_log(path) -> None:

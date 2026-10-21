@@ -203,10 +203,16 @@ def resolve_log_dir(context: dict, params: dict) -> Path:
 def _append_after_fetch(path: Path) -> bool:
     """True when swift.log already holds hope text that the stage command should follow.
 
-    A previous training log starts with ``swift `` or contains the ``exec:`` line
-    written below. That file is replaced. Hope output does neither, so training
-    is appended under the fetch lines.
+    A previous training-only log starts with ``swift `` / ``exec:`` and has no hope
+    section markers; that file is replaced. Hope login/clone lines are kept, and
+    training is appended under them.
     """
+    try:
+        from rsi.model_fetch import stage_log_is_active
+        if stage_log_is_active(path):
+            return True
+    except Exception:
+        pass
     try:
         if not path.is_file() or path.stat().st_size == 0:
             return False
@@ -214,7 +220,12 @@ def _append_after_fetch(path: Path) -> bool:
     except OSError:
         return False
     sample = head.lstrip()
-    if not sample or sample.startswith(b'swift ') or b'\nexec:' in head:
+    if not sample:
+        return False
+    hope_markers = ('[模型]'.encode('utf-8'), '[数据集]'.encode('utf-8'), '登录'.encode('utf-8'), b'hope ')
+    if any(marker in head for marker in hope_markers):
+        return True
+    if sample.startswith(b'swift ') or b'\nexec:' in head:
         return False
     return True
 

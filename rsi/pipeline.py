@@ -32,8 +32,10 @@ from rsi.flow import ACTION_LABELS, assemble_flow, blocked_message, decision_act
 from rsi.logtail import announce_log, read_log_window, slice_bytes
 from rsi.model_fetch import (
     ModelFetcher,
+    activate_stage_log,
     benchmark_dir,
     dataset_block_message,
+    deactivate_stage_log,
     hf_cloneable,
     hope_dataset_cloneable,
     is_repo_id,
@@ -411,7 +413,7 @@ class Pipeline:
             raise PipelineError('上传文件不存在')
         return path
 
-    def resolve_dataset(self, params: dict):
+    def resolve_dataset(self, params: dict, *, fetch: bool = True):
         source = params.get('source') or 'bundled'
         if source == 'bundled':
             name = params.get('bundled') or 'itops_mix'
@@ -420,7 +422,7 @@ class Pipeline:
                 raise PipelineError(f'未知内置数据集：{name}')
             return str(path.resolve()), validate_file(path)
         if source == 'public':
-            return self._resolve_public(params.get('dataset') or '')
+            return self._resolve_public(params.get('dataset') or '', fetch=fetch)
         if source == 'upload':
             path = self._upload_path(params.get('dataset') or '')
             return str(path), validate_file(path)
@@ -455,7 +457,7 @@ class Pipeline:
             'dataset': path,
         }
 
-    def _resolve_public_one(self, raw: str):
+    def _resolve_public_one(self, raw: str, *, fetch: bool = True):
         raw = str(raw or '').strip()
         base, sample = split_dataset_sample(raw)
         existing = self._existing_dataset_path(base if sample else raw)
@@ -471,11 +473,12 @@ class Pipeline:
         blocked = dataset_block_message(raw, kind='dataset')
         if blocked:
             raise PipelineError(blocked)
-        fetch = (model_source() == 'hope' and hope_dataset_cloneable(raw)) or (
+        cloneable = (model_source() == 'hope' and hope_dataset_cloneable(raw)) or (
             model_source() == 'local' and hf_cloneable(raw))
-        if fetch:
+        if cloneable:
             repo = base if sample else raw
-            status = self.fetcher.ensure('dataset', repo, background=True)
+            status = self.fetcher.ensure('dataset', repo, background=True) if fetch else self.fetcher.status_of(
+                'dataset', repo)
             self._note_fetch(status)
             if status.state == '就绪':
                 shown = status.local_path
@@ -497,18 +500,18 @@ class Pipeline:
         report = validate_public_id(raw)
         return report.get('dataset') or '', report
 
-    def _resolve_public(self, raw: str):
+    def _resolve_public(self, raw: str, *, fetch: bool = True):
         text = str(raw or '').strip()
         parts = [part for part in text.split() if part] if ' ' in text else [text]
         if len(parts) <= 1:
-            return self._resolve_public_one(parts[0] if parts else '')
+            return self._resolve_public_one(parts[0] if parts else '', fetch=fetch)
         resolved = []
         warnings = []
         errors = []
         syncing = None
         repos = []
         for part in parts:
-            path, report = self._resolve_public_one(part)
+            path, report = self._resolve_public_one(part, fetch=fetch)
             if report.get('fetch_state') == '同步中':
                 repo = report.get('fetch_repo') or ''
                 if repo and repo not in repos:
@@ -650,7 +653,7 @@ class Pipeline:
         if not merged.get('template'):
             merged['template'] = (run or {}).get('template') or meta.get('template') or ''
 
-    def _rewrite_model(self, merged: dict, run: dict, side: dict, strict: bool) -> None:
+    def _rewrite_model(self, merged: dict, run: dict, side: dict, strict: bool, *, fetch: bool = True) -> None:
         if model_source() not in {'hope', 'local'}:
             return
         model = str(merged.get('model') or '')
@@ -661,7 +664,8 @@ class Pipeline:
         if blocked:
             raise PipelineError(blocked)
         self._pin_identity(merged, run)
-        status = self.fetcher.ensure('model', model, background=True)
+        status = self.fetcher.ensure('model', model, background=True) if fetch else self.fetcher.status_of(
+            'model', model)
         self._note_fetch(status)
         local = Path(status.local_path).expanduser() if status.local_path else None
         if local is not None and not is_repo_id(status.local_path):
@@ -728,7 +732,8 @@ class Pipeline:
             raise PipelineError('评测集 ' + ', '.join(missing) + ' 需要放在本地后再运行')
 
     def validate_request(self, params: dict) -> dict:
-        _dataset, report = self.resolve_dataset(params or {})
+        # Format checks must not start hope clone; that would race the stage log writer.
+        _dataset, report = self.resolve_dataset(params or {}, fetch=False)
         return report
 
     def _sft_params(self, run_id: str, round_index: int) -> dict:
@@ -1006,7 +1011,7 @@ class Pipeline:
                 best = 'base'
         return rows, best
 
-    def _prepare(self, run, rnd, stage, user, strict: bool):
+    def _prepare(self, run, rnd, stage, user, strict: bool, *, fetch: bool = True):
         defaults = self._defaults_for(run, rnd, stage)
         merged = _merge(defaults, user)
         self._lock_model_fields(merged, defaults)
@@ -1033,7 +1038,7 @@ class Pipeline:
                 dataset, report = None, None
             else:
                 try:
-                    dataset, report = self.resolve_dataset(merged)
+                    dataset, report = self.resolve_dataset(merged, fetch=fetch)
                 except PipelineError:
                     if strict:
                         raise
@@ -1048,7 +1053,7 @@ class Pipeline:
                     names = list(report.get('fetch_repos') or ([] if not dataset_repo else [dataset_repo]))
                     side['fetch_repos'] = [
                         {'kind': 'dataset', 'repo_id': repo} for repo in names if repo]
-                    self._rewrite_model(merged, run, side, strict)
+                    self._rewrite_model(merged, run, side, strict, fetch=fetch)
                     if side.get('fetch_state') != '同步中':
                         side['fetch_state'] = '同步中'
                         side['fetch_repo'] = dataset_repo
@@ -1068,7 +1073,7 @@ class Pipeline:
                                                           False)
             if not dataset:
                 merged['dataset'] = '<dataset>'
-            self._rewrite_model(merged, run, side, strict)
+            self._rewrite_model(merged, run, side, strict, fetch=fetch)
             self._place_trained_checkpoint(merged, run)
             return merged, side
 
@@ -1118,7 +1123,7 @@ class Pipeline:
                 if strict:
                     raise PipelineError('请填写 eval_dataset')
                 merged['eval_dataset'] = 'itops-heldout'
-            self._rewrite_model(merged, run, side, strict)
+            self._rewrite_model(merged, run, side, strict, fetch=fetch)
             self._place_trained_checkpoint(merged, run)
             self._attach_eval_locals(merged, strict)
             return merged, side
@@ -1179,18 +1184,38 @@ class Pipeline:
             values['adapters'] = defaults['adapters']
         result = _loads(step['result_json']) if step and step.get('result_json') else None
         result = self._with_eval_report(run['id'], stage, result, values)
+        status = self._status_for(stage, active, rnd)
+        logs = step['logs'] if step else ''
+        # Syncing/running keep writing hope + swift into the file. The step row is only a
+        # snapshot from when status flipped; the panel must not roll back to that text.
+        if step and status in {'syncing', 'running'}:
+            live = self._live_form_logs(run['id'], rnd['round_index'], stage, step)
+            if live:
+                logs = live
         return {
-            'status': self._status_for(stage, active, rnd),
+            'status': status,
             'values': values,
             'preset': defaults,
             'result': result,
-            'logs': step['logs'] if step else '',
+            'logs': logs,
             'command': step['command'] if step else '',
             'started_at': step['started_at'] if step else None,
             'ended_at': step['ended_at'] if step else None,
             'step_id': step['id'] if step else None,
             'backend': step['backend'] if step else None,
         }
+
+    def _live_form_logs(self, run_id: str, round_index: int, stage: str, step: dict) -> str:
+        """Latest normalized swift.log text for a stage that is still in flight."""
+        path = self._stage_log_path(run_id, round_index, stage, step)
+        if path is None or not path.is_file():
+            return ''
+        try:
+            if path.stat().st_size <= 0:
+                return ''
+        except OSError:
+            return ''
+        return read_log_window(path, None, None).get('text') or ''
 
     def _with_eval_report(self, run_id: str, stage: str, result, params):
         if stage not in {'sft_eval', 'rl_eval'} or not isinstance(result, dict):
@@ -1431,7 +1456,8 @@ class Pipeline:
             raise PipelineError('未知阶段')
         run = self._require_run(run_id)
         rnd = self.store.get_round(run_id, run['round_index'])
-        merged, _side = self._prepare(run, rnd, stage, params or {}, strict=False)
+        # Preview must not kick off hope; otherwise an inflight clone has no stage log.
+        merged, _side = self._prepare(run, rnd, stage, params or {}, strict=False, fetch=False)
         command = stage_shell(stage, merged) if stage in STAGE_COMMAND else ''
         return {'params': merged, 'command': command}
 
@@ -1677,9 +1703,13 @@ class Pipeline:
             }
 
         if stage in SWIFT_STAGES and self.backend.name != 'mock':
+            # Hold the stage log until the training thread opens it for append, so a
+            # concurrent re-click cannot truncate hope lines already on disk.
+            if fetch_log is not None:
+                activate_stage_log(fetch_log)
             thread = threading.Thread(
                 target=self._run_swift_stage,
-                args=(run_id, rnd['round_index'], stage, step_id, merged, side),
+                args=(run_id, rnd['round_index'], stage, step_id, merged, side, fetch_log),
                 daemon=True)
             thread.start()
             return {
@@ -1711,7 +1741,7 @@ class Pipeline:
             'view': self.view(refreshed['id'], refreshed['round_index'] if stage == 'next_round' else rnd['round_index']),
         }
 
-    def _run_swift_stage(self, run_id, round_index, stage, step_id, params, side):
+    def _run_swift_stage(self, run_id, round_index, stage, step_id, params, side, fetch_log=None):
         run = self.store.get_run(run_id)
         rnd = self.store.get_round(run_id, round_index)
         try:
@@ -1722,6 +1752,9 @@ class Pipeline:
                 self.store.finish_step(conn, step_id, 'failed', {'error': str(exc), 'backend': self.backend.name}, logs,
                                        stage_shell(stage, params))
             return
+        finally:
+            if fetch_log is not None:
+                deactivate_stage_log(fetch_log)
         self._commit_success(run_id, round_index, stage, step_id, params, outcome)
 
     def _execute(self, run, rnd, stage, params, side) -> dict:

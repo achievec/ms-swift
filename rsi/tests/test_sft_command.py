@@ -160,3 +160,50 @@ def test_sft_layout_hides_single_gpu_and_other_tuner_entries():
     rl = stage_layout('rl', 2)
     assert rl['by_id']['deepspeed']['min_gpus'] == 2
     assert rl['by_id']['use_ddp']['min_gpus'] == 2
+
+
+def test_sft_quant_selects_default_to_empty_not_bnb():
+    """Unset Gradio quant dropdowns must not force the first HTML option (bnb)."""
+    layout = stage_layout('sft', 1)
+    assert layout['by_id']['quant_method']['choices'][0] == ''
+    assert 'bnb' in layout['by_id']['quant_method']['choices']
+    assert layout['by_id']['quant_bits']['choices'][0] == ''
+    assert layout['by_id']['bnb_4bit_quant_type']['choices'][0] == ''
+    rl = stage_layout('rl', 1)
+    assert rl['by_id']['quant_method']['choices'][0] == ''
+
+
+def test_default_sft_command_omits_bnb_quant_flags():
+    from rsi.schemas import presets
+
+    params = dict(presets().get('sft') or {})
+    params.update({
+        'model': 'Qwen/Qwen2.5-7B-Instruct',
+        'gpu_id': '0',
+        # Stale browser / draft values that must not ride along without quant_method.
+        'bnb_4bit_quant_type': 'fp4',
+        'bnb_4bit_use_double_quant': False,
+        'bnb_4bit_compute_dtype': 'bfloat16',
+    })
+    argv = build_argv('sft', params)
+    flags = _flags(argv)
+    assert '--quant_method' not in flags
+    assert '--quant_bits' not in flags
+    assert '--bnb_4bit_quant_type' not in flags
+    assert '--bnb_4bit_use_double_quant' not in flags
+    assert '--bnb_4bit_compute_dtype' not in flags
+
+
+def test_empty_quant_method_drops_bnb_even_when_bits_set():
+    argv = build_argv('sft', {
+        'model': 'Qwen/Qwen2.5-7B-Instruct',
+        'quant_method': '',
+        'quant_bits': 4,
+        'bnb_4bit_quant_type': 'fp4',
+        'bnb_4bit_use_double_quant': False,
+        'gpu_id': '0',
+    })
+    flags = _flags(argv)
+    assert '--quant_method' not in flags
+    assert '--quant_bits' not in flags
+    assert '--bnb_4bit_quant_type' not in flags

@@ -99,6 +99,14 @@ _VLLM_TABS = {
 # still imports the package, including the zero0 preset.
 _MULTI_GPU_ARGS = ('deepspeed', 'sequence_parallel_size', 'fsdp', 'deepspeed_autotp_size', 'zero_hpz_partition_size')
 
+# bitsandbytes / QLoRA knobs only apply when the user picked a load-time quant method.
+_BNB_ARGS = (
+    'bnb_4bit_compute_dtype',
+    'bnb_4bit_quant_type',
+    'bnb_4bit_use_double_quant',
+    'bnb_4bit_quant_storage',
+)
+
 
 def _repeat_value(key, value):
     if isinstance(value, (list, tuple)):
@@ -190,10 +198,25 @@ def _drop_single_gpu_args(params: dict) -> None:
         params.pop(key, None)
 
 
+def _drop_inactive_quant_args(params: dict) -> None:
+    """Omit load-time quant flags unless the user chose a method (avoid forcing bitsandbytes)."""
+    method = str(params.get('quant_method') or '').strip()
+    if not method or method == 'none':
+        params.pop('quant_method', None)
+        params.pop('quant_bits', None)
+        for key in _BNB_ARGS:
+            params.pop(key, None)
+        return
+    if method != 'bnb':
+        for key in _BNB_ARGS:
+            params.pop(key, None)
+
+
 def _command_params(stage: str, params: dict) -> dict:
     cleaned = dict(params or {})
     _drop_inactive_args(cleaned, stage)
     _drop_single_gpu_args(cleaned)
+    _drop_inactive_quant_args(cleaned)
     return cleaned
 
 

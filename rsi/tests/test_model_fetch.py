@@ -1628,6 +1628,8 @@ def test_live_stage_log_streams_during_a_mocked_fetch(tmp_path, hope_env, monkey
     assert "form.status === 'running' || form.status === 'syncing'" in script
     assert "step.status === 'running' || step.status === 'syncing'" in script
     assert "form.status === 'running' ? '运行中'" in script
+    assert 'function liveLogSeed(' in script
+    assert 'liveLogSeed(stage, form.logs' in script
 
     client, _app = _client(tmp_path, runner)
     with client as api:
@@ -1672,6 +1674,54 @@ def test_live_stage_log_streams_during_a_mocked_fetch(tmp_path, hope_env, monkey
         assert later.index('下载 1%') < later.index('下载 8%')
         assert TOKEN not in later
         assert USER not in later
+
+
+def test_view_forms_logs_follow_the_stage_file_while_syncing(tmp_path, hope_env, monkeypatch):
+    """render() seeds from form.logs; that field must track swift.log, not the first snapshot."""
+    monkeypatch.delenv('RSI_FETCH_INLINE', raising=False)
+    monkeypatch.setattr(model_fetch, 'process_log_path', lambda: tmp_path / 'process.log')
+    started = threading.Event()
+    release = threading.Event()
+    _seed_model(tmp_path / 'models')
+
+    def runner(argv, **kwargs):
+        if argv[1] == 'login':
+            return Completed(stdout='登录成功\n')
+        kwargs['on_chunk'](b'first-progress\n')
+        started.set()
+        assert release.wait(5)
+        kwargs['on_chunk'](b'second-progress\n')
+        return Completed()
+
+    client, _app = _client(tmp_path, runner)
+    with client as api:
+        run_id = api.post('/api/runs', json={
+            'name': '表单日志跟文件',
+            'scenario': '同步中 view.forms.logs 不要停在旧快照',
+            'base_model': REPO,
+        }).json()['run']['id']
+        try:
+            started_run = api.post(f'/api/runs/{run_id}/stages/sft/run', json={
+                'params': {'source': 'public', 'dataset': MS_DATASET},
+            })
+            assert started_run.status_code == 200, started_run.text
+            assert started_run.json()['status'] == 'syncing'
+            assert started.wait(5)
+            mid = api.get(f'/api/runs/{run_id}').json()['forms']['sft']
+            assert mid['status'] == 'syncing'
+            assert 'first-progress' in (mid.get('logs') or '')
+            assert 'second-progress' not in (mid.get('logs') or '')
+        finally:
+            release.set()
+        deadline = time.monotonic() + 3
+        logs = ''
+        while time.monotonic() < deadline:
+            logs = api.get(f'/api/runs/{run_id}').json()['forms']['sft'].get('logs') or ''
+            if 'second-progress' in logs:
+                break
+            time.sleep(0.05)
+        assert 'first-progress' in logs
+        assert 'second-progress' in logs
 
 
 def test_multiselect_labels_each_repo_in_the_stage_log(tmp_path, hope_env, monkeypatch):

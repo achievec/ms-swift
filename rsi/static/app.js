@@ -517,6 +517,17 @@ function renderPromote(values) {
   return `<div class="candidates">${cards}</div>${hint}`;
 }
 
+function liveLogSeed(stage, formLogs) {
+  // Full render replaces the <pre>. Prefer text already painted by pollLive over an
+  // empty/stale step snapshot (syncing→running often has form.logs === '').
+  const existing = [...document.querySelectorAll('[data-live-log]')].find(
+    (el) => el.dataset.liveStage === String(stage) && el.isConnected);
+  const shown = existing ? (existing.textContent || '') : '';
+  const fromForm = formLogs || '';
+  if (shown && (!fromForm || shown.length >= fromForm.length)) return shown;
+  return fromForm;
+}
+
 function logPanel(text, liveAttrs, title) {
   return `<div class="log-panel">
     <div class="log-head"><h3>${escapeHtml(title || '日志')}</h3>${logTools()}</div>
@@ -555,7 +566,8 @@ function renderStage(stage) {
   const result = form.result ? `${scoreHeadline(form.result.metrics)}${scoreTable(form.result.metrics)}${reportLink ? `<p class="row-actions">${reportLink}</p>` : ''}${outputPanel('结果', JSON.stringify(visibleResult(form.result), null, 2))}` : '';
   const streaming = form.status === 'running' || form.status === 'syncing';
   const liveAttrs = streaming ? ` data-live-log="1" data-live-stage="${escapeHtml(stage)}" data-live-round="${view.round.round_index}"` : '';
-  const logs = (form.logs || streaming) ? logPanel(form.logs || '', liveAttrs) : '';
+  const logText = streaming ? liveLogSeed(stage, form.logs || '') : (form.logs || '');
+  const logs = (logText || streaming) ? logPanel(logText, liveAttrs) : '';
   const command = form.command ? outputPanel('命令', form.command, 'command') : '';
   const kicker = form.status === 'running'
     ? `${escapeHtml(meta.label)} · ${runningMarkup(form.started_at)}`
@@ -709,7 +721,9 @@ function renderAudit() {
       <p><b>开始</b> ${escapeHtml(formatShanghai(step.started_at))} · <b>结束</b> ${escapeHtml(formatShanghai(step.ended_at || ''))}</p>
       ${outputPanel('参数', JSON.stringify(step.params, null, 2))}
       ${scoreHeadline((step.result || {}).metrics)}${scoreTable((step.result || {}).metrics)}${evalReportLink(step.stage, step.result, step.round_index) ? `<p class="row-actions">${evalReportLink(step.stage, step.result, step.round_index)}</p>` : ''}${outputPanel('结果', JSON.stringify(visibleResult(step.result), null, 2))}
-      ${logPanel(step.logs || '', (step.status === 'running' || step.status === 'syncing') ? ` data-live-log="1" data-live-stage="${escapeHtml(step.stage)}" data-live-round="${step.round_index}"` : '')}
+      ${logPanel(
+        (step.status === 'running' || step.status === 'syncing') ? liveLogSeed(step.stage, step.logs || '') : (step.logs || ''),
+        (step.status === 'running' || step.status === 'syncing') ? ` data-live-log="1" data-live-stage="${escapeHtml(step.stage)}" data-live-round="${step.round_index}"` : '')}
       ${step.command ? outputPanel('命令', step.command, 'command') : ''}
     </td></tr>` : '';
     return `<tr data-step="${step.id}">
@@ -2238,6 +2252,7 @@ async function pollFetchProgress() {
   paintFetchNotes();
   if (wasSyncing && !fetchRows().some((row) => row.state === '同步中')) {
     await flushDraft();
+    // Keep painted live-log text; view.forms.*.logs may still be a short syncing snapshot.
     state.view = view;
     const failed = fetchRows().find((row) => row.state === '失败');
     if (failed && failed.message) toast(failed.message);

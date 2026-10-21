@@ -785,6 +785,16 @@ def _insert_after_model(blocks: list, widget: dict) -> bool:
 # Shown only when at least two GPUs are selected. One card does not use them.
 _MULTI_GPU_WIDGETS = frozenset({'deepspeed', 'sequence_parallel_size', 'use_ddp', 'ddp_num'})
 
+# Gradio Dropdowns use value=None (unset). An HTML <select> without an empty
+# choice would otherwise submit the first entry — e.g. deepspeed=zero0 or
+# quant_method=bnb — and pull in optional packages the user never opted into.
+_OPTIONAL_SELECTS = frozenset({
+    'deepspeed',
+    'quant_method',
+    'quant_bits',
+    'bnb_4bit_quant_type',
+})
+
 # Tuner and task tabs that do not apply to the current selection stay off the form.
 # Keys match swift.ui.llm_train Tuner.tabs_to_filter / Task.tabs_to_filter.
 _TAB_SHOW = {
@@ -809,9 +819,7 @@ def _annotate_stage(blocks: list) -> None:
             for item in block.get('widgets') or []:
                 if item.get('id') in _MULTI_GPU_WIDGETS:
                     item['min_gpus'] = 2
-                # Gradio leaves this dropdown unset. An HTML select would otherwise
-                # submit the first entry, which is zero0, and swift then requires deepspeed.
-                if item.get('id') == 'deepspeed':
+                if item.get('id') in _OPTIONAL_SELECTS:
                     choices = [str(choice) for choice in item.get('choices') or []]
                     if '' not in choices:
                         item['choices'] = ['', *choices]
