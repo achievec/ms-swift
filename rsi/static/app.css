@@ -887,6 +887,72 @@ dialog label input, dialog label textarea { font-weight: 400; color: var(--ink);
 .infer-form.stage-form,
 .infer-form.export-form { display: flex; flex-direction: column; gap: 8px; }
 .infer-runtime .infer-runtime { background: #f8fafc; }
+.export-result {
+  margin-top: 4px;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.export-result.ok { border-color: var(--green-line); background: #f7fdf9; }
+.export-result.bad { border-color: var(--red-line); background: #fff8f8; }
+.export-result-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.export-result-head strong { font-size: 14px; }
+.export-result-path {
+  margin: 0;
+  word-break: break-all;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.export-result-error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #fef2f2;
+  color: #991b1b;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow: auto;
+}
+.export-artifacts { margin: 0; }
+.export-artifacts summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+}
+.export-artifacts ul {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.export-artifacts li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+.export-artifacts li .mono {
+  flex: 1 1 180px;
+  min-width: 0;
+  word-break: break-all;
+  font-size: 12px;
+}
+.export-artifacts li button { flex: 0 0 auto; padding: 4px 10px; }
 .infer-group > .log-panel { flex: 1; min-width: 0; }
 .infer-log .log-head { margin: 0 0 6px; align-items: flex-start; }
 .infer-log .log-title span { display: block; font-size: 14px; font-weight: 600; color: #111827; line-height: 1.35; }

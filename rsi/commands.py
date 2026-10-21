@@ -53,6 +53,8 @@ INTERNAL_KEYS = {
     'dry_run',
     # RSI-only: run a second eval on the experiment base model (no adapters).
     'eval_base',
+    # RSI-only: deploy a successful export output_dir as full --model.
+    'deploy_export',
 }
 
 STAGE_COMMAND = {

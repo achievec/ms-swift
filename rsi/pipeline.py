@@ -42,7 +42,14 @@ from rsi.llm_export_spec import CALIB_QUANT_METHODS, EXPORT_QUANT_KEYS, export_q
 from rsi.llm_infer_spec import chat_request_body, cuda_visible_devices, template_default_system
 from rsi.dataset_validate import MAX_BYTES, validate_file, validate_public_id
 from rsi.flow import ACTION_LABELS, assemble_flow, blocked_message, decision_actions, stage_unlocked
-from rsi.logtail import LIVE_TAIL_BYTES, announce_log, read_log_window, slice_bytes, truncate_log_text
+from rsi.logtail import (
+    LIVE_TAIL_BYTES,
+    announce_log,
+    normalize_log,
+    read_log_window,
+    slice_bytes,
+    truncate_log_text,
+)
 from rsi.metrics import STAGE_PLOTS, collect_stage_metrics
 from rsi.model_fetch import (
     ModelFetcher,
@@ -196,6 +203,31 @@ def _loads(text, fallback=None):
     if not text:
         return {} if fallback is None else fallback
     return json.loads(text)
+
+
+def _export_error_snippet(logs: str, limit: int = 8) -> str:
+    """Last non-empty log lines for a failed export status card."""
+    lines = [line.strip() for line in normalize_log(logs or '').splitlines() if line.strip()]
+    if not lines:
+        return ''
+    return '\n'.join(lines[-limit:])
+
+
+def _export_step_output(step) -> tuple:
+    """Return ``(output_dir, returncode)`` from an export step row."""
+    if not step:
+        return '', None
+    result = _loads(step.get('result_json')) if step.get('result_json') else {}
+    params = _loads(step.get('params_json')) if step.get('params_json') else {}
+    if not isinstance(result, dict):
+        result = {}
+    if not isinstance(params, dict):
+        params = {}
+    output_dir = str(result.get('output_dir') or params.get('output_dir') or '').strip()
+    code = result.get('returncode')
+    if code is None and step.get('status') == 'succeeded':
+        code = 0
+    return output_dir, code
 
 
 def _merge(defaults: dict, user: dict) -> dict:
@@ -1026,6 +1058,78 @@ class Pipeline:
                 return '', ''
         return '', ''
 
+    def _export_artifacts(self, run_id: str, round_index: int) -> list:
+        """Recent finished export steps for this round (path, time, success)."""
+        rows = []
+        for row in self.store.list_steps(run_id, round_index):
+            if row.get('stage') != 'export' or row.get('status') not in {'succeeded', 'failed'}:
+                continue
+            output_dir, code = _export_step_output(row)
+            rows.append({
+                'id': row['id'],
+                'status': row['status'],
+                'output_dir': output_dir,
+                'ended_at': row.get('ended_at') or '',
+                'returncode': code,
+            })
+        return rows[-8:]
+
+    def _export_job_payload(self, run_id: str, round_index: int, export_step, export_values: dict,
+                            running: bool) -> dict:
+        """Runtime status for the export tab: live job plus last finished result."""
+        status = 'running' if running else (export_step['status'] if export_step else 'idle')
+        output_dir, code = _export_step_output(export_step)
+        if not output_dir:
+            output_dir = str((export_values or {}).get('output_dir') or '').strip()
+        error = ''
+        if status == 'failed' and export_step:
+            error = _export_error_snippet(export_step.get('logs') or '')
+        return {
+            'status': status,
+            'command': (export_step or {}).get('command') or '',
+            'output_dir': output_dir,
+            'returncode': code,
+            'started_at': (export_step or {}).get('started_at'),
+            'ended_at': (export_step or {}).get('ended_at'),
+            'error': error,
+            'artifacts': self._export_artifacts(run_id, round_index),
+        }
+
+    def _known_export_output(self, run_id: str, path: str) -> str:
+        """Return a succeeded export output_dir for this run, or ''."""
+        want = str(path or '').strip()
+        if not want:
+            return ''
+        for row in self.store.list_steps(run_id):
+            if row.get('stage') != 'export' or row.get('status') != 'succeeded':
+                continue
+            output_dir, _code = _export_step_output(row)
+            if output_dir and Path(output_dir).expanduser() == Path(want).expanduser():
+                return output_dir
+        return ''
+
+    def _resolved_export_deploy(self, run: dict, user: dict) -> str:
+        """Allow 推理服务 to deploy a successful export as full ``--model`` (no adapters)."""
+        user = user or {}
+        flag = user.get('deploy_export') in {True, 'true', 'True', 1, '1'}
+        path = str(user.get('model') or '').strip()
+        if not flag and not path:
+            return ''
+        if flag:
+            known = self._known_export_output(run['id'], path)
+            if known:
+                return known
+            # CTA without an explicit path: latest successful export this round.
+            for row in reversed(self.store.list_steps(run['id'], run['round_index'])):
+                if row.get('stage') == 'export' and row.get('status') == 'succeeded':
+                    output_dir, _code = _export_step_output(row)
+                    if output_dir:
+                        return output_dir
+            return ''
+        if user.get('adapters') not in ('', None):
+            return ''
+        return self._known_export_output(run['id'], path)
+
     def _export_defaults(self, run: dict, rnd: dict) -> dict:
         """Locked experiment identity plus the weights this export should start from.
 
@@ -1764,12 +1868,8 @@ class Pipeline:
             export_values['quant_bits'] = ''
             export_values['quant_n_samples'] = 256
         export_running = self._exports.running(run_id)
-        export_status = 'running' if export_running else (export_step['status'] if export_step else 'idle')
-        export_job = {
-            'status': export_status,
-            'command': (export_step or {}).get('command') or '',
-            'output_dir': export_values.get('output_dir') or '',
-        }
+        export_job = self._export_job_payload(
+            run_id, rnd['round_index'], export_step, export_values, export_running)
         steps = []
         for row in self.store.list_steps(run_id):
             item = dict(row)
@@ -2454,16 +2554,26 @@ class Pipeline:
         # Keep the typed 「更多参数」 text. apply_more_params merges the flags
         # into the swift command and drops the box, which is not a swift flag.
         typed_more = user.get('more_params') if 'more_params' in user else None
+        export_model = self._resolved_export_deploy(run, user)
         defaults = self._defaults_for(run, rnd, 'serve')
         merged = _merge(defaults, user)
         self._lock_model_fields(merged, defaults)
         if 'adapters' in user:
             merged['adapters'] = user.get('adapters') or ''
+        if export_model:
+            # Merged/quantized export is a full model: deploy --model only.
+            merged['model'] = export_model
+            merged['adapters'] = ''
+            merged.pop('trained_model', None)
         try:
             merged = apply_more_params(merged)
         except ValueError as exc:
             raise PipelineError(str(exc)) from exc
         self._lock_model_fields(merged, defaults)
+        if export_model:
+            merged['model'] = export_model
+            merged['adapters'] = ''
+            merged.pop('trained_model', None)
         if strict and not merged.get('model') and not merged.get('adapters'):
             raise PipelineError('还没有可部署的模型')
         if not merged.get('served_model_name'):
@@ -2478,7 +2588,11 @@ class Pipeline:
         merged['host'] = merged.get('host') or '127.0.0.1'
         side = {}
         self._rewrite_model(merged, run, side, strict)
-        self._place_trained_checkpoint(merged, run)
+        if export_model:
+            merged['model'] = export_model
+            merged['adapters'] = ''
+        else:
+            self._place_trained_checkpoint(merged, run)
         if side.get('fetch_state') == '同步中' and strict:
             raise PipelineError('同步中')
         if 'more_params' in user:
@@ -2742,19 +2856,26 @@ class Pipeline:
     def export_log(self, run_id: str) -> dict:
         run = self._require_run(run_id)
         rnd = self.store.get_round(run_id, run['round_index'])
-        step = self.store.latest_active_steps(run_id, run['round_index']).get('export')
+        round_index = (rnd or run)['round_index']
+        step = self.store.latest_active_steps(run_id, round_index).get('export')
         self._settle_export(run_id, step)
-        step = self.store.latest_active_steps(run_id, run['round_index']).get('export')
-        text = self._read_export_log(run_id, (rnd or run)['round_index'])
+        step = self.store.latest_active_steps(run_id, round_index).get('export')
+        text = self._read_export_log(run_id, round_index)
         if not text and step:
             text = step.get('logs') or ''
         running = self._exports.running(run_id) or bool(step and step.get('status') == 'running')
-        status = 'running' if running else (step['status'] if step else 'idle')
+        params = _loads(step.get('params_json')) if step else {}
+        job = self._export_job_payload(run_id, round_index, step, params or {}, running)
         return {
             'log': text,
             'running': running,
-            'status': status,
-            'command': (step or {}).get('command') or '',
+            'status': job['status'],
+            'command': job['command'],
+            'output_dir': job['output_dir'],
+            'returncode': job['returncode'],
+            'ended_at': job['ended_at'],
+            'error': job['error'],
+            'artifacts': job['artifacts'],
         }
 
     def _settle_export(self, run_id: str, step) -> None:
@@ -2769,8 +2890,19 @@ class Pipeline:
         status = 'failed'
         if '模型导出已完成' in text or text.rstrip().endswith('exit 0'):
             status = 'succeeded'
+        output_dir, _code = _export_step_output(step)
+        code = 0 if status == 'succeeded' else 1
+        match = re.search(r'(?m)^exit (-?\d+)\s*$', text)
+        if match:
+            try:
+                code = int(match.group(1))
+            except ValueError:
+                pass
+            status = 'succeeded' if code == 0 else 'failed'
         with self.store.transaction() as conn:
-            self.store.finish_step(conn, step['id'], status, {'output_dir': ''}, text, step.get('command') or '')
+            self.store.finish_step(
+                conn, step['id'], status, {'output_dir': output_dir, 'returncode': code}, text,
+                step.get('command') or '')
 
     def preview_export_command(self, merged: dict) -> str:
         return format_shell(self._export_argv(merged), env_prefix(merged))

@@ -88,6 +88,13 @@ def test_layout_matches_the_webui_llm_export_tab():
     assert '填入本轮权重' in page
     assert '填入本轮晋级 checkpoint' in page
     assert "item.default == null || item.default === ''" in page
+    assert 'exportResultMarkup' in page
+    assert '用该模型部署推理' in page
+    assert 'deploy-export' in page
+    assert 'serveExportOverride' in page
+    assert '上次导出已完成' in page
+    css = Path(__file__).resolve().parents[1].joinpath('static', 'app.css').read_text(encoding='utf-8')
+    assert '.export-result' in css
 
 
 def test_gpu_choices_follow_device_count():
@@ -196,14 +203,39 @@ def test_export_fills_lora_and_ignores_model_edits(client):
     assert Path(done['output_dir'], 'export_ok.txt').is_file()
     log = api.get(f'/api/runs/{run_id}/export/log')
     assert log.status_code == 200
-    assert log.json()['running'] is False
-    assert '模型导出已完成' in log.json()['log']
+    log_body = log.json()
+    assert log_body['running'] is False
+    assert '模型导出已完成' in log_body['log']
+    assert log_body['status'] == 'succeeded'
+    assert log_body['output_dir'] == done['output_dir']
+    assert log_body['returncode'] == 0
+    assert log_body['error'] == ''
+    assert any(row['output_dir'] == done['output_dir'] for row in log_body['artifacts'])
     again = api.get(f'/api/runs/{run_id}').json()
-    assert again['export_job']['status'] == 'succeeded'
+    job = again['export_job']
+    assert job['status'] == 'succeeded'
+    assert job['output_dir'] == done['output_dir']
+    assert job['returncode'] == 0
+    assert job['ended_at']
+    assert job['error'] == ''
+    assert len(job['artifacts']) >= 1
+    assert job['artifacts'][-1]['status'] == 'succeeded'
+    assert job['artifacts'][-1]['output_dir'] == done['output_dir']
     assert again['export_form']['adapters'] == str(checkpoint)
     assert again['export_form']['model'] == ARGS_BASE
     stopped = api.post(f'/api/runs/{run_id}/export/stop', json={})
     assert stopped.status_code == 400
+
+    # Deploy the merged export as a full --model (no adapters).
+    preview = api.post(f'/api/runs/{run_id}/stages/serve/preview', json={'params': {
+        'deploy_export': True,
+        'model': done['output_dir'],
+        'adapters': '',
+    }})
+    assert preview.status_code == 200, preview.text
+    serve_cmd = preview.json()['command']
+    assert f"--model {done['output_dir']}" in serve_cmd
+    assert '--adapters' not in serve_cmd
 
 
 def test_rl_weights_win_and_a_full_checkpoint_becomes_model(client):
@@ -422,3 +454,26 @@ def test_export_prefills_hope_local_base_path(tmp_path, monkeypatch):
         assert f'--model {model_dir}' in preview.json()['command']
         assert f'--adapters {checkpoint}' in preview.json()['command']
         assert f'--model {BASE}' not in preview.json()['command']
+
+
+def test_failed_export_keeps_status_card_fields(client):
+    api = client
+    run_id = _create(api)
+    _run(api, run_id, 'sft', {'source': 'bundled', 'bundled': 'itops_mix'})
+    pipe = api.app.state.pipeline
+    out = str(pipe.home / 'runs' / run_id / 'round_1' / 'export' / 'broken-out')
+    with pipe.store.transaction() as conn:
+        step_id = pipe.store.insert_step(
+            conn, run_id, 1, 'export', {'output_dir': out, 'adapters': '/x'}, 'mock')
+        pipe.store.finish_step(
+            conn, step_id, 'failed', {'output_dir': out, 'returncode': 2},
+            'Traceback (most recent call last):\nModuleNotFoundError: No module named awq\nexit 2\n',
+            'swift export --output_dir ' + out)
+    view = api.get(f'/api/runs/{run_id}').json()
+    job = view['export_job']
+    assert job['status'] == 'failed'
+    assert job['output_dir'] == out
+    assert job['returncode'] == 2
+    assert 'ModuleNotFoundError' in job['error']
+    assert job['ended_at']
+    assert any(row['status'] == 'failed' and row['output_dir'] == out for row in job['artifacts'])

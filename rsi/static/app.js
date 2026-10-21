@@ -20,6 +20,9 @@ const state = {
   exportLog: '',
   exportLogTimer: null,
   exportRuntimeOpen: false,
+  // After 「用该模型部署推理」: show exported path as --model (no adapters).
+  serveExportOverride: null,
+  serveExportOverrideRun: null,
   draftTimer: null,
   mediaTab: 'image',
   mediaFiles: { image: null, video: null, audio: null },
@@ -642,6 +645,7 @@ async function openRun(id, round, keepStage) {
   state.exportDraft = null;
   state.exportDraftRun = null;
   state.exportLog = '';
+  if (prevId !== id) clearServeExportOverride();
   state.round = state.view.round.round_index;
   if (!keepStage) {
     const current = state.view.run.current_stage;
@@ -768,6 +772,12 @@ function collectParams() {
   });
   const yaml = document.getElementById('extra-yaml');
   if (yaml) params.extra_yaml = yaml.value;
+  if (state.tab === 'serve' && state.serveExportOverride
+      && state.view && state.serveExportOverrideRun === state.view.run.id) {
+    params.deploy_export = true;
+    params.model = state.serveExportOverride.model || '';
+    params.adapters = '';
+  }
   return params;
 }
 
@@ -1278,7 +1288,53 @@ function serveFormValues(view) {
   ['model', 'model_type', 'template', 'adapters'].forEach((key) => {
     if (Object.prototype.hasOwnProperty.call(fill, key)) base[key] = fill[key] == null ? '' : fill[key];
   });
+  if (state.serveExportOverride && state.serveExportOverrideRun === view.run.id) {
+    base.model = state.serveExportOverride.model || '';
+    base.adapters = '';
+  }
   return base;
+}
+
+function clearServeExportOverride() {
+  state.serveExportOverride = null;
+  state.serveExportOverrideRun = null;
+}
+
+function exportResultMarkup(job) {
+  if (!job || !job.status || job.status === 'idle' || job.status === 'running') return '';
+  const ok = job.status === 'succeeded';
+  const badge = `<span class="badge ${escapeHtml(job.status)}">${escapeHtml(statusText(job.status))}</span>`;
+  const code = job.returncode == null ? '' : ` · exit ${escapeHtml(String(job.returncode))}`;
+  const when = job.ended_at
+    ? ` · ${escapeHtml(formatShanghai(job.ended_at))}`
+    : '';
+  const path = job.output_dir
+    ? `<p class="export-result-path mono" title="${escapeHtml(job.output_dir)}">${escapeHtml(job.output_dir)}</p>`
+    : '<p class="muted">没有记录输出路径</p>';
+  const err = !ok && job.error
+    ? `<pre class="export-result-error">${escapeHtml(job.error)}</pre>`
+    : '';
+  const deploy = ok && job.output_dir
+    ? '<button type="button" class="primary" data-action="deploy-export">用该模型部署推理</button>'
+    : '';
+  const artifacts = (job.artifacts || []).filter((row) => row && row.output_dir);
+  const list = artifacts.length
+    ? `<details class="export-artifacts"><summary>本轮导出记录（${artifacts.length}）</summary><ul>${artifacts.map((row) => {
+      const mark = `<span class="badge ${escapeHtml(row.status)}">${escapeHtml(statusText(row.status))}</span>`;
+      const stamp = row.ended_at ? escapeHtml(formatShanghai(row.ended_at)) : '';
+      const deployOne = row.status === 'succeeded'
+        ? `<button type="button" class="ghost" data-action="deploy-export" data-output="${escapeHtml(row.output_dir)}">部署</button>`
+        : '';
+      return `<li>${mark}<span class="mono" title="${escapeHtml(row.output_dir)}">${escapeHtml(row.output_dir)}</span><span class="muted">${stamp}</span>${deployOne}</li>`;
+    }).join('')}</ul></details>`
+    : '';
+  return `<div class="export-result ${ok ? 'ok' : 'bad'}">
+    <div class="export-result-head"><strong>最近一次导出</strong>${badge}<span class="muted">${code}${when}</span></div>
+    ${path}
+    ${err}
+    <div class="row-actions">${deploy}</div>
+    ${list}
+  </div>`;
 }
 
 function inferItemValue(item, values) {
@@ -1442,10 +1498,13 @@ function renderInferControl(item, values, running, fill) {
   if (item.id === 'running_tasks' && state.tab === 'export') {
     const job = (state.view && state.view.export_job) || {};
     const active = job.status === 'running';
+    let empty = '没有导出任务';
+    if (job.status === 'succeeded') empty = `上次导出已完成 · ${job.output_dir || ''}`.trim();
+    else if (job.status === 'failed') empty = `上次导出失败 · ${job.output_dir || ''}`.trim();
     const label = active ? `导出进行中 · ${job.output_dir || ''}`.trim() : '';
     const options = active
       ? `<option value="export" selected>${escapeHtml(label)}</option>`
-      : '<option value="">没有导出任务</option>';
+      : `<option value="">${escapeHtml(empty)}</option>`;
     return `<div class="field" data-key="running_tasks">${caption}<div class="control"><select>${options}</select></div><div class="extra"></div></div>`;
   }
   if (item.id === 'running_tasks') {
@@ -1663,10 +1722,11 @@ function renderExport() {
   const fill = view.export_fill || {};
   const job = view.export_job || {};
   const running = job.status === 'running';
+  const finished = job.status === 'succeeded' || job.status === 'failed';
   if (!layout) {
     return '<section class="panel infer-form"><p>模型导出布局还没加载。</p></section>';
   }
-  if (running) state.exportRuntimeOpen = true;
+  if (running || finished) state.exportRuntimeOpen = true;
   const chunks = (layout.sections || []).map((section) => {
     if (section.kind === 'rows') {
       return (section.rows || []).map((row) => renderInferRow(row, values, running, fill)).join('');
@@ -1674,7 +1734,7 @@ function renderExport() {
     if (section.kind === 'accordion') {
       const body = (section.rows || []).map((row) => renderInferRow(row, values, running, fill)).join('');
       const open = state.exportRuntimeOpen ? ' open' : '';
-      return `<details class="infer-runtime" data-runtime="export"${open}><summary>${escapeHtml(section.label || '运行时')}</summary><div class="body">${body}</div></details>`;
+      return `<details class="infer-runtime" data-runtime="export"${open}><summary>${escapeHtml(section.label || '运行时')}</summary><div class="body">${body}${exportResultMarkup(job)}</div></details>`;
     }
     return '';
   }).join('');
@@ -1859,7 +1919,15 @@ async function refreshExportLog() {
   const payload = await api(`/api/runs/${state.view.run.id}/export/log`);
   const was = state.view.export_job && state.view.export_job.status;
   state.exportLog = payload.log || '';
-  if (state.view.export_job) state.view.export_job.status = payload.status || state.view.export_job.status;
+  if (!state.view.export_job) state.view.export_job = {};
+  const job = state.view.export_job;
+  job.status = payload.status || job.status;
+  if (payload.output_dir != null) job.output_dir = payload.output_dir;
+  if (payload.returncode !== undefined) job.returncode = payload.returncode;
+  if (payload.ended_at !== undefined) job.ended_at = payload.ended_at;
+  if (payload.error !== undefined) job.error = payload.error;
+  if (payload.artifacts) job.artifacts = payload.artifacts;
+  if (payload.command != null) job.command = payload.command;
   const box = document.querySelector('[data-key="log"] textarea');
   if (box && box.value !== state.exportLog) {
     const follow = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
@@ -1869,6 +1937,11 @@ async function refreshExportLog() {
   if (was === 'running' && payload.status && payload.status !== 'running') {
     stopExportLogPoll();
     await flushDraft();
+    try {
+      state.view = await api(`/api/runs/${state.view.run.id}`);
+    } catch (_err) {
+      /* keep patched export_job from the log payload */
+    }
     render();
   }
 }
@@ -2232,6 +2305,7 @@ document.addEventListener('click', async (event) => {
     }
     if (target.dataset.action === 'open-serve') {
       await flushDraft();
+      clearServeExportOverride();
       state.tab = 'serve';
       render();
       return;
@@ -2240,6 +2314,32 @@ document.addEventListener('click', async (event) => {
       await flushDraft();
       state.tab = 'export';
       render();
+      return;
+    }
+    if (target.dataset.action === 'deploy-export') {
+      const job = (state.view && state.view.export_job) || {};
+      const output = target.dataset.output || job.output_dir || '';
+      if (!output) {
+        toast('还没有可部署的导出路径');
+        return;
+      }
+      await flushDraft();
+      const current = state.tab === 'serve' ? collectParams() : { ...(state.view.serve_form || {}) };
+      state.serveExportOverride = { model: output, adapters: '' };
+      state.serveExportOverrideRun = state.view.run.id;
+      state.serveDraft = {
+        ...current,
+        model: output,
+        adapters: '',
+        model_type: current.model_type || state.view.run.model_type || '',
+        template: current.template || state.view.run.template || '',
+      };
+      state.serveDraftRun = state.view.run.id;
+      await saveDraftSnapshot('serve', state.serveDraft);
+      state.tab = 'serve';
+      state.inferRuntimeOpen = true;
+      render();
+      toast('已填入导出模型，可直接部署推理');
       return;
     }
     if (target.dataset.action === 'fill-export') {
@@ -2261,6 +2361,7 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (target.dataset.action === 'fill-serve') {
+      clearServeExportOverride();
       const fill = (state.view && state.view.serve_fill) || {};
       const current = collectParams();
       state.serveDraft = {
@@ -2277,6 +2378,7 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (target.dataset.action === 'reset-infer') {
+      clearServeExportOverride();
       const layout = state.schema.llm_infer;
       const current = collectParams();
       const locked = new Set((layout && layout.locked) || []);
@@ -2378,6 +2480,7 @@ document.addEventListener('click', async (event) => {
       const round = state.view.round.round_index;
       state.view = await api(`/api/runs/${state.view.run.id}?round=${round}`);
       state.exportRuntimeOpen = true;
+      await refreshExportLog().catch(() => {});
       render();
       toast('已找回导出任务');
       return;
