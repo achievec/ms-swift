@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from rsi.commands import apply_process_env, build_argv, stage_shell
-from rsi.logtail import announce_log, normalize_log, run_and_tee
+from rsi.logtail import announce_log, normalize_log, run_and_tee, truncate_log_text
 from rsi.model_fetch import apply_runtime_env, configured_train_python
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -378,13 +378,16 @@ class MsSwiftBackend:
             log_file.write((command + '\nexec: ' + ' '.join(argv) + '\n').encode('utf-8'))
             log_file.flush()
             returncode = run_and_tee(argv, env, log_file, prefix, echo=False)
-        logs = normalize_log(log_path.read_text(encoding='utf-8', errors='replace'))
+        # Parse metrics from the full file; only a short tail is stored/returned in
+        # the step row so /api/runs/{id} stays small. Live UI tails swift.log itself.
+        full = normalize_log(log_path.read_text(encoding='utf-8', errors='replace'))
+        logs = truncate_log_text(full)
         if returncode != 0:
             raise BackendError(f'swift 退出码 {returncode}', logs=logs)
-        metrics = parse_metrics(logs)
+        metrics = parse_metrics(full)
         checkpoint = None
         if stage in {'sft', 'rl'}:
-            found = find_checkpoint(Path(params['output_dir']), logs)
+            found = find_checkpoint(Path(params['output_dir']), full)
             if found is None:
                 raise BackendError('swift 已结束，但 output_dir 里没有 checkpoint-*（也查了 v*-* 版本目录）', logs=logs)
             checkpoint = str(found)

@@ -143,34 +143,63 @@ def _tabs(blocks):
     return found
 
 
-def test_sft_layout_hides_single_gpu_and_other_tuner_entries():
+def _top_labels(blocks):
+    labels = []
+    for block in blocks:
+        kind = block.get('kind')
+        if kind == 'accordion':
+            labels.append(block.get('label') or block.get('id') or '')
+        elif kind == 'row':
+            for item in block.get('widgets') or []:
+                labels.append(item.get('label') or item.get('id') or '')
+    return labels
+
+
+def test_sft_layout_hides_single_gpu_and_keeps_core_panels():
     layout = stage_layout('sft', 1)
     assert layout['by_id']['deepspeed']['min_gpus'] == 2
     assert layout['by_id']['deepspeed']['choices'][0] == ''
     assert 'zero0' in layout['by_id']['deepspeed']['choices']
     assert layout['by_id']['ddp_num']['min_gpus'] == 2
     assert layout['by_id']['gpu_id'].get('min_gpus') is None
-    tabs = {tab['id']: tab for tab in _tabs(layout['blocks'])}
-    assert tabs['lora_tab']['show_values'] == ['lora', 'longlora', 'adalora']
-    assert tabs['adalora_tab']['show_key'] == 'tuner_type'
-    assert tabs['adalora_tab']['show_values'] == ['adalora']
-    assert tabs['vera_tab']['show_values'] == ['vera']
-    assert tabs['embed_tab']['show_key'] == 'task_type'
-    assert tabs['lora_ga_tab']['show_key'] == 'init_weights'
+    assert layout['by_id']['tuner_type']['choices']
+    assert 'lora_rank' not in layout['by_id']
+    assert 'quant_method' not in layout['by_id']
+    assert not _tabs(layout['blocks'])
+    labels = _top_labels(layout['blocks'])
+    assert '环境变量' not in labels
+    assert 'Tuner参数' not in labels
+    assert '优化器参数' not in labels
+    assert '任务参数' not in labels
+    assert '其他参数设置' not in labels
+    assert '模型设置' in labels
+    assert '数据集设置' in labels
+    assert '训练参数设置' in labels
     rl = stage_layout('rl', 2)
     assert rl['by_id']['deepspeed']['min_gpus'] == 2
     assert rl['by_id']['use_ddp']['min_gpus'] == 2
+    assert 'lora_rank' not in rl['by_id']
+    rl_labels = _top_labels(rl['blocks'])
+    assert '环境变量' not in rl_labels
+    assert 'Tuner参数' not in rl_labels
 
 
-def test_sft_quant_selects_default_to_empty_not_bnb():
-    """Unset Gradio quant dropdowns must not force the first HTML option (bnb)."""
+def test_sft_layout_drops_quant_and_advanced_accordions():
+    """RSI SFT must not mirror Web-UI quant / tuner / optimizer / task shells."""
     layout = stage_layout('sft', 1)
-    assert layout['by_id']['quant_method']['choices'][0] == ''
-    assert 'bnb' in layout['by_id']['quant_method']['choices']
-    assert layout['by_id']['quant_bits']['choices'][0] == ''
-    assert layout['by_id']['bnb_4bit_quant_type']['choices'][0] == ''
+    assert 'quant_method' not in layout['by_id']
+    assert 'quant_bits' not in layout['by_id']
+    assert 'bnb_4bit_quant_type' not in layout['by_id']
+    assert 'envs' not in layout['by_id']
+    assert 'use_galore' not in layout['by_id']
+    assert 'task_type' not in layout['by_id']
+    assert 'more_params' not in layout['by_id']
     rl = stage_layout('rl', 1)
-    assert rl['by_id']['quant_method']['choices'][0] == ''
+    assert 'envs' not in rl['by_id']
+    assert 'lora_rank' not in rl['by_id']
+    # RL still has GRPO advanced (ref_model); quant stays optional-empty if present.
+    if 'quant_method' in rl['by_id']:
+        assert rl['by_id']['quant_method']['choices'][0] == ''
 
 
 def test_default_sft_command_omits_bnb_quant_flags():
@@ -192,6 +221,7 @@ def test_default_sft_command_omits_bnb_quant_flags():
     assert '--bnb_4bit_quant_type' not in flags
     assert '--bnb_4bit_use_double_quant' not in flags
     assert '--bnb_4bit_compute_dtype' not in flags
+    assert '--lora_rank' in flags
 
 
 def test_empty_quant_method_drops_bnb_even_when_bits_set():
@@ -207,3 +237,47 @@ def test_empty_quant_method_drops_bnb_even_when_bits_set():
     assert '--quant_method' not in flags
     assert '--quant_bits' not in flags
     assert '--bnb_4bit_quant_type' not in flags
+
+
+def test_sticky_draft_bnb_is_stripped_before_sft_prepare(tmp_path, monkeypatch):
+    """Old drafts with quant_method=bnb must not reach the swift command."""
+    monkeypatch.setenv('RSI_BACKEND', 'mock')
+    monkeypatch.setenv('RSI_SERVE_BACKEND', 'mock')
+    monkeypatch.setenv('RSI_HOME', str(tmp_path / 'home'))
+    from fastapi.testclient import TestClient
+
+    from rsi.app import create_app
+    from rsi.commands import strip_form_quant
+
+    sticky = {
+        'gpu_id': '0',
+        'quant_method': 'bnb',
+        'quant_bits': 4,
+        'bnb_4bit_quant_type': 'fp4',
+        'bnb_4bit_use_double_quant': False,
+        'dataset': 'AI-ModelScope/alpaca-gpt4-data-zh',
+        'source': 'public',
+    }
+    assert 'quant_method' not in strip_form_quant(sticky)
+    with TestClient(create_app(tmp_path / 'home')) as api:
+        created = api.post('/api/runs', json={
+            'name': 'bnb-sticky',
+            'scenario': 'test',
+            'base_model': 'Qwen/Qwen2.5-7B-Instruct',
+        })
+        assert created.status_code == 200, created.text
+        run_id = created.json()['run']['id']
+        preview = api.post(f'/api/runs/{run_id}/stages/sft/preview', json={'params': sticky})
+        assert preview.status_code == 200, preview.text
+        command = preview.json().get('command') or ''
+        assert '--quant_method' not in command
+        assert '--bnb_4bit_quant_type' not in command
+        assert '--lora_rank' in command
+        # Saving a sticky draft must not keep quant keys for a later refresh.
+        saved = api.post(f'/api/runs/{run_id}/drafts', json={'stage': 'sft', 'params': sticky})
+        assert saved.status_code == 200, saved.text
+        assert 'quant_method' not in (saved.json().get('params') or {})
+        view = api.get(f'/api/runs/{run_id}').json()
+        values = ((view.get('forms') or {}).get('sft') or {}).get('values') or {}
+        assert 'quant_method' not in values
+        assert 'bnb_4bit_quant_type' not in values

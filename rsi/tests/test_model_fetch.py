@@ -1676,8 +1676,9 @@ def test_live_stage_log_streams_during_a_mocked_fetch(tmp_path, hope_env, monkey
         assert USER not in later
 
 
-def test_view_forms_logs_follow_the_stage_file_while_syncing(tmp_path, hope_env, monkeypatch):
-    """render() seeds from form.logs; that field must track swift.log, not the first snapshot."""
+def test_view_forms_logs_stay_empty_while_syncing_live_log_has_progress(
+        tmp_path, hope_env, monkeypatch):
+    """Live UI polls /stages/{stage}/log; view.forms.logs must not embed swift.log."""
     monkeypatch.delenv('RSI_FETCH_INLINE', raising=False)
     monkeypatch.setattr(model_fetch, 'process_log_path', lambda: tmp_path / 'process.log')
     started = threading.Event()
@@ -1696,8 +1697,8 @@ def test_view_forms_logs_follow_the_stage_file_while_syncing(tmp_path, hope_env,
     client, _app = _client(tmp_path, runner)
     with client as api:
         run_id = api.post('/api/runs', json={
-            'name': '表单日志跟文件',
-            'scenario': '同步中 view.forms.logs 不要停在旧快照',
+            'name': '表单日志不跟文件',
+            'scenario': '同步中 view.forms.logs 保持空，进度走 log 接口',
             'base_model': REPO,
         }).json()['run']['id']
         try:
@@ -1709,19 +1710,80 @@ def test_view_forms_logs_follow_the_stage_file_while_syncing(tmp_path, hope_env,
             assert started.wait(5)
             mid = api.get(f'/api/runs/{run_id}').json()['forms']['sft']
             assert mid['status'] == 'syncing'
-            assert 'first-progress' in (mid.get('logs') or '')
-            assert 'second-progress' not in (mid.get('logs') or '')
+            assert (mid.get('logs') or '') == ''
+            live = api.get(f'/api/runs/{run_id}/stages/sft/log').json()['text']
+            assert 'first-progress' in live
+            assert 'second-progress' not in live
         finally:
             release.set()
         deadline = time.monotonic() + 3
-        logs = ''
+        live = ''
         while time.monotonic() < deadline:
-            logs = api.get(f'/api/runs/{run_id}').json()['forms']['sft'].get('logs') or ''
-            if 'second-progress' in logs:
+            assert (api.get(f'/api/runs/{run_id}').json()['forms']['sft'].get('logs') or '') == ''
+            live = api.get(f'/api/runs/{run_id}/stages/sft/log').json()['text']
+            if 'second-progress' in live:
                 break
             time.sleep(0.05)
-        assert 'first-progress' in logs
-        assert 'second-progress' in logs
+        assert 'first-progress' in live
+        assert 'second-progress' in live
+
+
+def test_view_payload_does_not_grow_with_huge_stage_log(tmp_path, hope_env, monkeypatch):
+    """A multi‑MB swift.log must not inflate GET /api/runs/{id} (forms.logs / steps)."""
+    from rsi.logtail import TAIL_BYTES
+
+    monkeypatch.delenv('RSI_FETCH_INLINE', raising=False)
+    monkeypatch.setattr(model_fetch, 'process_log_path', lambda: tmp_path / 'process.log')
+    started = threading.Event()
+    release = threading.Event()
+    _seed_model(tmp_path / 'models')
+
+    def runner(argv, **kwargs):
+        if argv[1] == 'login':
+            return Completed(stdout='登录成功\n')
+        kwargs['on_chunk'](b'clone-start\n')
+        started.set()
+        assert release.wait(5)
+        return Completed()
+
+    home = tmp_path / 'home'
+    client, _app = _client(tmp_path, runner)
+    with client as api:
+        run_id = api.post('/api/runs', json={
+            'name': '大日志不进 view',
+            'scenario': 'swift.log 很大时 view 仍小',
+            'base_model': REPO,
+        }).json()['run']['id']
+        try:
+            started_run = api.post(f'/api/runs/{run_id}/stages/sft/run', json={
+                'params': {'source': 'public', 'dataset': MS_DATASET},
+            })
+            assert started_run.status_code == 200, started_run.text
+            assert started.wait(5)
+            log_path = _sft_log(home, run_id)
+            assert log_path.is_file()
+            # ~2.5MB of padding plus a unique tail the live endpoint should still see.
+            padding = ('pad-line\n' * 320_000)
+            log_path.write_text(log_path.read_text(encoding='utf-8') + padding + 'HUGE_TAIL_OK\n',
+                                encoding='utf-8')
+            assert log_path.stat().st_size > 2_000_000
+
+            response = api.get(f'/api/runs/{run_id}')
+            assert response.status_code == 200
+            assert len(response.content) < 750_000, len(response.content)
+            body = response.json()
+            assert body['forms']['sft']['status'] == 'syncing'
+            assert (body['forms']['sft'].get('logs') or '') == ''
+            for step in body.get('steps') or []:
+                assert len((step.get('logs') or '').encode('utf-8')) <= TAIL_BYTES
+
+            live = api.get(f'/api/runs/{run_id}/stages/sft/log')
+            assert live.status_code == 200
+            text = live.json()['text']
+            assert 'HUGE_TAIL_OK' in text
+            assert len(text.encode('utf-8')) <= TAIL_BYTES + 4096
+        finally:
+            release.set()
 
 
 def test_multiselect_labels_each_repo_in_the_stage_log(tmp_path, hope_env, monkeypatch):

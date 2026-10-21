@@ -107,6 +107,18 @@ _BNB_ARGS = (
     'bnb_4bit_quant_storage',
 )
 
+# Form / draft keys for load-time quant. RSI SFT/RL no longer expose these widgets;
+# sticky drafts used to keep quant_method=bnb from an HTML <select> first-option bug.
+QUANT_FORM_KEYS = frozenset(('quant_method', 'quant_bits', *_BNB_ARGS))
+
+
+def strip_form_quant(params: dict) -> dict:
+    """Drop load-time quant fields from a form/draft snapshot (extra_yaml may re-add)."""
+    cleaned = dict(params or {})
+    for key in QUANT_FORM_KEYS:
+        cleaned.pop(key, None)
+    return cleaned
+
 
 def _repeat_value(key, value):
     if isinstance(value, (list, tuple)):

@@ -8,10 +8,21 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from rsi.logtail import TAIL_BYTES, truncate_log_text
+
 logger = logging.getLogger(__name__)
 # Wait for a lock instead of failing at once. The journal stays one reused file
 # (TRUNCATE) so a shared filesystem is not asked for a new -wal/-shm pair.
 _CONNECT_TIMEOUT_SECONDS = 30.0
+# Cap step.logs in list queries so a bloated historical row cannot load tens of MB
+# into every /api/runs/{id} response. Full text stays in swift.log on disk.
+_LOG_LIST_CHARS = TAIL_BYTES
+_STEP_LIST_SQL = (
+    'id, run_id, round_index, stage, status, params_json, result_json, '
+    f'CASE WHEN length(logs) > {_LOG_LIST_CHARS} '
+    f'THEN substr(logs, length(logs) - {_LOG_LIST_CHARS} + 1) ELSE logs END AS logs, '
+    'command, backend, started_at, ended_at'
+)
 
 
 class StoreError(Exception):
@@ -250,15 +261,18 @@ class Store:
     def list_steps(self, run_id, round_index=None) -> list:
         with self.transaction() as conn:
             if round_index is None:
-                rows = conn.execute('SELECT * FROM steps WHERE run_id=? ORDER BY id', (run_id, )).fetchall()
+                rows = conn.execute(
+                    f'SELECT {_STEP_LIST_SQL} FROM steps WHERE run_id=? ORDER BY id', (run_id, )).fetchall()
             else:
-                rows = conn.execute('SELECT * FROM steps WHERE run_id=? AND round_index=? ORDER BY id',
-                                    (run_id, round_index)).fetchall()
+                rows = conn.execute(
+                    f'SELECT {_STEP_LIST_SQL} FROM steps WHERE run_id=? AND round_index=? ORDER BY id',
+                    (run_id, round_index)).fetchall()
         return [dict(row) for row in rows]
 
     def list_steps_with_status(self, status: str) -> list:
         with self.transaction() as conn:
-            rows = conn.execute('SELECT * FROM steps WHERE status=? ORDER BY id', (status, )).fetchall()
+            rows = conn.execute(
+                f'SELECT {_STEP_LIST_SQL} FROM steps WHERE status=? ORDER BY id', (status, )).fetchall()
         return [dict(row) for row in rows]
 
     def latest_active_steps(self, run_id, round_index) -> dict:
@@ -295,9 +309,10 @@ class Store:
         return int(cursor.lastrowid)
 
     def finish_step(self, conn, step_id, status, result, logs, command):
+        # Store a short tail only; stage_log reads the full swift.log from disk.
         conn.execute(
             'UPDATE steps SET status=?, result_json=?, logs=?, command=?, ended_at=? WHERE id=?',
-            (status, _dumps(result or {}), logs or '', command or '', utcnow(), step_id))
+            (status, _dumps(result or {}), truncate_log_text(logs or ''), command or '', utcnow(), step_id))
 
     def add_checkpoint(self, conn, run_id, round_index, kind, path, metrics):
         conn.execute(

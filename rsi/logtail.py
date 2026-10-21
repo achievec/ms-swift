@@ -57,6 +57,26 @@ def normalize_log(text: str) -> str:
     return collapse_cr(strip_ansi(text or ''))
 
 
+def truncate_log_text(text: str, max_bytes: int | None = None) -> str:
+    """Keep only the tail of a log for API/DB payloads.
+
+    Full training output lives in ``swift.log`` on disk and is served by the
+    stage log endpoint. Embedding multi‑MB text in every ``/api/runs/{id}``
+    poll (forms.logs / steps[].logs) makes the view request explode.
+    """
+    if not text:
+        return ''
+    limit = TAIL_BYTES if max_bytes is None else max(1, int(max_bytes))
+    raw = text.encode('utf-8')
+    if len(raw) <= limit:
+        return text
+    cut = len(raw) - limit
+    # Avoid splitting a multi-byte UTF-8 sequence at the start of the window.
+    while cut < len(raw) and raw[cut] & 0xC0 == 0x80:
+        cut += 1
+    return raw[cut:].decode('utf-8', errors='replace')
+
+
 def window_bounds(size: int, offset: int | None, limit: int | None, tail: int | None = None) -> tuple[int, int]:
     """Byte window. Omit ``offset`` to keep the tail. ``tail`` overrides the default tail size."""
     tail_bytes = TAIL_BYTES if tail is None else max(1, int(tail))

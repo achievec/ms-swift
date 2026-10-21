@@ -18,6 +18,7 @@ import yaml
 from rsi.backends import BackendError, swift_launch
 from rsi.eval_report import inside_directory, merge_eval_report
 from rsi.commands import (
+    QUANT_FORM_KEYS,
     STAGE_COMMAND,
     apply_more_params,
     apply_process_env,
@@ -25,11 +26,12 @@ from rsi.commands import (
     env_prefix,
     format_shell,
     stage_shell,
+    strip_form_quant,
 )
 from rsi.llm_infer_spec import chat_request_body, cuda_visible_devices, template_default_system
 from rsi.dataset_validate import MAX_BYTES, validate_file, validate_public_id
 from rsi.flow import ACTION_LABELS, assemble_flow, blocked_message, decision_actions, stage_unlocked
-from rsi.logtail import announce_log, read_log_window, slice_bytes
+from rsi.logtail import announce_log, read_log_window, slice_bytes, truncate_log_text
 from rsi.model_fetch import (
     ModelFetcher,
     activate_stage_log,
@@ -134,13 +136,16 @@ def _merge(defaults: dict, user: dict) -> dict:
     return merged
 
 
-def _clean_draft(params: dict) -> dict:
+def _clean_draft(params: dict, stage: str = '') -> dict:
     """One stage snapshot. Locked identity stays on the experiment, not in the draft."""
     cleaned = {}
     for key, value in (params or {}).items():
         if not isinstance(key, str) or not key or key.startswith('_'):
             continue
         if key in {'model', 'model_type', 'template', 'trained_model'}:
+            continue
+        # SFT no longer exposes quant widgets; drop sticky draft bnb values.
+        if stage == 'sft' and key in QUANT_FORM_KEYS:
             continue
         if isinstance(value, dict):
             continue
@@ -802,7 +807,7 @@ class Pipeline:
             self._carry_dataset(preset, run, rnd)
             self._show_round_model(preset, run, rnd)
             preset['output_dir'] = str(self.stage_dir(run['id'], rnd['round_index'], 'sft'))
-            return preset
+            return strip_form_quant(preset)
 
         if stage == 'rl':
             self._show_round_model(preset, run, rnd)
@@ -813,7 +818,8 @@ class Pipeline:
                 preset['dataset'] = sft_params['dataset']
             preset['output_dir'] = str(self.stage_dir(run['id'], rnd['round_index'], 'rl'))
             preset['external_plugins'] = _resolve_existing(preset.get('external_plugins'))
-            return preset
+            # Keep empty-meaning quant off the RL form defaults (HTML select first-option bug).
+            return strip_form_quant(preset)
 
         if stage in {'sft_eval', 'rl_eval'}:
             # Web-UI's eval dataset dropdown has no default. This loop's gate is the
@@ -1013,7 +1019,9 @@ class Pipeline:
 
     def _prepare(self, run, rnd, stage, user, strict: bool, *, fetch: bool = True):
         defaults = self._defaults_for(run, rnd, stage)
-        merged = _merge(defaults, user)
+        # SFT form/draft must not reintroduce QLoRA; enable only via extra_yaml / 更多参数.
+        incoming = strip_form_quant(user) if stage == 'sft' else dict(user or {})
+        merged = _merge(defaults, incoming)
         self._lock_model_fields(merged, defaults)
         if isinstance(merged.get('dataset'), list):
             merged['dataset'] = ' '.join(
@@ -1172,7 +1180,18 @@ class Pipeline:
             for key, value in draft.items():
                 if key in {'model', 'model_type', 'template'} or isinstance(value, dict):
                     continue
+                if stage == 'sft' and key in QUANT_FORM_KEYS:
+                    continue
                 values[key] = value
+        if stage == 'sft':
+            for key in QUANT_FORM_KEYS:
+                values.pop(key, None)
+        elif stage == 'rl':
+            # Empty-meaning: do not keep a sticky method that was never intentionally set.
+            method = str(values.get('quant_method') or '').strip()
+            if not method or method == 'none':
+                for key in QUANT_FORM_KEYS:
+                    values.pop(key, None)
         shown = {}
         self._show_round_model(shown, run, rnd)
         for key in ('model', 'model_type', 'template'):
@@ -1185,13 +1204,12 @@ class Pipeline:
         result = _loads(step['result_json']) if step and step.get('result_json') else None
         result = self._with_eval_report(run['id'], stage, result, values)
         status = self._status_for(stage, active, rnd)
-        logs = step['logs'] if step else ''
-        # Syncing/running keep writing hope + swift into the file. The step row is only a
-        # snapshot from when status flipped; the panel must not roll back to that text.
-        if step and status in {'syncing', 'running'}:
-            live = self._live_form_logs(run['id'], rnd['round_index'], stage, step)
-            if live:
-                logs = live
+        # Live panels poll /stages/{stage}/log (tailed). Never embed swift.log here —
+        # a training run can be tens of MB and would bloat every view poll.
+        if status in {'syncing', 'running'}:
+            logs = ''
+        else:
+            logs = truncate_log_text(step['logs'] if step else '')
         return {
             'status': status,
             'values': values,
@@ -1204,18 +1222,6 @@ class Pipeline:
             'step_id': step['id'] if step else None,
             'backend': step['backend'] if step else None,
         }
-
-    def _live_form_logs(self, run_id: str, round_index: int, stage: str, step: dict) -> str:
-        """Latest normalized swift.log text for a stage that is still in flight."""
-        path = self._stage_log_path(run_id, round_index, stage, step)
-        if path is None or not path.is_file():
-            return ''
-        try:
-            if path.stat().st_size <= 0:
-                return ''
-        except OSError:
-            return ''
-        return read_log_window(path, None, None).get('text') or ''
 
     def _with_eval_report(self, run_id: str, stage: str, result, params):
         if stage not in {'sft_eval', 'rl_eval'} or not isinstance(result, dict):
@@ -1346,6 +1352,8 @@ class Pipeline:
         steps = []
         for row in self.store.list_steps(run_id):
             item = dict(row)
+            # Cap audit-trail logs the same way as forms; full text is on disk.
+            item['logs'] = truncate_log_text(row.get('logs') or '')
             item['params'] = _loads(row['params_json'])
             item['result'] = self._with_eval_report(
                 run_id, row.get('stage'), _loads(row['result_json']) if row.get('result_json') else None, item['params'])
@@ -1539,7 +1547,7 @@ class Pipeline:
         """Keep the raw form, including a run that never finishes, so refresh can refill it."""
         if stage not in set(STAGE_ORDER) | {'serve', 'export'}:
             return
-        cleaned = _clean_draft(params or {})
+        cleaned = _clean_draft(params or {}, stage)
         if not cleaned:
             return
         self.store.upsert_draft(run_id, round_index, stage, cleaned)

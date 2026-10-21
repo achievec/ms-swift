@@ -795,6 +795,21 @@ _OPTIONAL_SELECTS = frozenset({
     'bnb_4bit_quant_type',
 })
 
+# RSI SFT keeps model / dataset / train / hyper panels. The Web-UI advanced
+# accordions (envs, Tuner, optimizer, task,「其他参数设置」) are preset-driven
+# only — exposing them reintroduced sticky quant_method=bnb from old drafts.
+_SFT_DROP_ACCORDION_IDS = frozenset({
+    'tuner_params',
+    'optimizer_params',
+    'task_params',
+    'extra_params',
+})
+# GRPO keeps「其他参数设置」(ref_model / GRPO advanced). Drop only env + Tuner shells.
+_RL_DROP_ACCORDION_IDS = frozenset({
+    'tuner_params',
+})
+_DROP_ENVS_ROW = frozenset({'envs'})
+
 # Tuner and task tabs that do not apply to the current selection stay off the form.
 # Keys match swift.ui.llm_train Tuner.tabs_to_filter / Task.tabs_to_filter.
 _TAB_SHOW = {
@@ -836,6 +851,28 @@ def _annotate_stage(blocks: list) -> None:
                 _annotate_stage(tab.get('blocks') or [])
 
 
+def _prune_rsi_blocks(blocks: list, drop_ids: frozenset) -> list:
+    """Drop Web-UI accordions / env rows RSI no longer surfaces for train stages."""
+    kept = []
+    for block in blocks:
+        kind = block.get('kind')
+        if kind == 'accordion' and (block.get('id') or '') in drop_ids:
+            continue
+        if kind == 'row':
+            widgets = [
+                item for item in (block.get('widgets') or [])
+                if (item.get('id') or '') not in _DROP_ENVS_ROW
+            ]
+            if not widgets:
+                continue
+            copied = dict(block)
+            copied['widgets'] = widgets
+            kept.append(copied)
+            continue
+        kept.append(block)
+    return kept
+
+
 def stage_layout(stage: str, device_count: int = 0) -> dict:
     """``sft`` mirrors LLM预训练/微调, ``rl`` mirrors LLM GRPO, ``eval`` mirrors LLM评测."""
     key = {'sft': 'sft', 'sft_eval': 'eval', 'rl': 'rl', 'rl_eval': 'eval'}[stage]
@@ -845,6 +882,10 @@ def stage_layout(stage: str, device_count: int = 0) -> dict:
     _fill_gpu(blocks, device_count)
     if key in {'sft', 'rl'}:
         _annotate_stage(blocks)
+    if key == 'sft':
+        blocks = _prune_rsi_blocks(blocks, _SFT_DROP_ACCORDION_IDS)
+    elif key == 'rl':
+        blocks = _prune_rsi_blocks(blocks, _RL_DROP_ACCORDION_IDS)
     return _layout(blocks)
 
 

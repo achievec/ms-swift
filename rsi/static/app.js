@@ -2252,7 +2252,7 @@ async function pollFetchProgress() {
   paintFetchNotes();
   if (wasSyncing && !fetchRows().some((row) => row.state === '同步中')) {
     await flushDraft();
-    // Keep painted live-log text; view.forms.*.logs may still be a short syncing snapshot.
+    // Keep painted live-log text; view.forms.*.logs stays empty while streaming.
     state.view = view;
     const failed = fetchRows().find((row) => row.state === '失败');
     if (failed && failed.message) toast(failed.message);

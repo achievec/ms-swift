@@ -6,7 +6,14 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from rsi.logtail import ConsoleTee, collapse_cr, normalize_log, strip_ansi
+from rsi.logtail import (
+    TAIL_BYTES,
+    ConsoleTee,
+    collapse_cr,
+    normalize_log,
+    strip_ansi,
+    truncate_log_text,
+)
 from rsi.store import Store
 
 
@@ -19,6 +26,18 @@ def client(tmp_path, monkeypatch):
     app = create_app(home)
     with TestClient(app) as test_client:
         yield test_client, home
+
+
+def test_truncate_log_text_keeps_tail_only():
+    assert truncate_log_text('') == ''
+    assert truncate_log_text('short') == 'short'
+    big = ('a' * 1000) + 'TAIL'
+    clipped = truncate_log_text(big, max_bytes=8)
+    assert clipped.endswith('TAIL')
+    assert len(clipped.encode('utf-8')) <= 8
+    huge = 'x' * (TAIL_BYTES + 50_000) + '\nEND\n'
+    assert truncate_log_text(huge).endswith('END\n')
+    assert len(truncate_log_text(huge).encode('utf-8')) <= TAIL_BYTES
 
 
 def test_normalize_collapses_cr_and_strips_ansi():

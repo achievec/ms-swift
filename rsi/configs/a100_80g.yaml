@@ -66,9 +66,8 @@ sft:
   dataset_num_proc: 8
   dataloader_num_workers: 4
   load_from_cache_file: true
-  # Leave unset: HTML selects must stay empty so SFT does not pull in bitsandbytes.
-  quant_method: ""
-  quant_bits: ""
+  # Quant/QLoRA is off by default. RSI SFT no longer exposes quant widgets;
+  # enable only via 额外 YAML / 更多参数 if needed (avoids sticky bnb drafts).
   split_dataset_ratio: 0
   padding_free: false
 
@@ -131,8 +130,6 @@ rl:
   offload_model: true
   offload_optimizer: true
   log_completions: true
-  quant_method: ""
-  quant_bits: ""
   ref_model: ""
   loss_scale: ""
 
