@@ -92,7 +92,7 @@ Install ms-swift and a GPU stack on the training machine the usual way (`pip ins
 
 `rsi/configs/fetch.yaml` 的 `model_source` 默认是 **hope**。拉取这份代码后不用再设环境变量：训练前会用 hope 把 Hugging Face 模型同步到本地，`--model` 用本地绝对路径。环境变量 `RSI_MODEL_SOURCE` 仍然优先。Mac 上如果要走 ModelScope，启动前设置 `RSI_MODEL_SOURCE=modelscope`。
 
-hope 或 local 下，同步还是「同步中」时不会启动 swift。`modelscope/...` 这种 id 会提示不能在当前网络下载。
+hope 或 local 下，同步还是「同步中」时不会启动 swift。模型 id 若是 `modelscope/...` 仍会提示不能在当前网络下载（模型从 Hugging Face 拉）。公开数据集里的 ModelScope id 不再提示这句话，而是用 hope 拉到 `data_root`。
 
 hope 模式下可以不装 modelscope 这个 pip 包：`swift/utils/logger.py` 在缺包时退回本地日志，`import swift` 不会因此失败。完整安装 `pip install -e .` 仍会装上 modelscope。
 
@@ -119,7 +119,7 @@ train_python: /usr/local/conda/envs/model-train/bin/python
 rsi_home: /opt/meituan/dolphinfs_liubo108/ms-swift/workspace
 ```
 
-仓库里的 `fetch.yaml` 就是这样写的：模型落在 `/opt/meituan/dolphinfs_liubo108/ms-swift/models`，数据集落在 `/opt/meituan/dolphinfs_liubo108/ms-swift/datasets`（目录不存在时会自动创建，需要当前用户有写权限）。也可以改成 `~/models` 这类路径，`~` 会展开成当前用户的家目录。拉取模型时先进入 `model_root`，再执行 `hope clone https://huggingface.co/<org>/<name>`。hope 3.6.6 把文件放在 `<model_root>/huggingface.co/<org>/<name>`（`rsi/.rsi.log` 里的「数据存储在」就是这个目录）。旧布局 `<model_root>/<org>/<name>` 也算就绪。两边都看 `config.json`，页面上的本地路径和训练的 `--model` 用实际有文件的那一个。数据集同样：`<data_root>/huggingface.co/datasets/<org>/<name>` 或 `<data_root>/<org>/<name>`。这些目录里已经有文件时，打开页面或进入阶段不会再执行 `hope clone`。只有点「重新拉取」才会再拉一次。
+仓库里的 `fetch.yaml` 就是这样写的：模型落在 `/opt/meituan/dolphinfs_liubo108/ms-swift/models`，数据集落在 `/opt/meituan/dolphinfs_liubo108/ms-swift/datasets`（目录不存在时会自动创建，需要当前用户有写权限）。也可以改成 `~/models` 这类路径，`~` 会展开成当前用户的家目录。拉取模型时先进入 `model_root`，再执行 `hope clone https://huggingface.co/<org>/<name>`。hope 3.6.6 把文件放在 `<model_root>/huggingface.co/<org>/<name>`（`rsi/.rsi.log` 里的「数据存储在」就是这个目录）。旧布局 `<model_root>/<org>/<name>` 也算就绪。两边都看 `config.json`，页面上的本地路径和训练的 `--model` 用实际有文件的那一个。Hugging Face 数据集先进入 `data_root`，再执行 `hope clone https://huggingface.co/datasets/<org>/<name>`，文件在 `<data_root>/huggingface.co/datasets/<org>/<name>`，旧布局 `<data_root>/<org>/<name>` 也算就绪。ModelScope 公开数据集（例如 `AI-ModelScope/alpaca-gpt4-data-zh`，以及 Web-UI 那份 `ms_dataset_id` 列表）同样先进入 `data_root`（`fetch.yaml` 的 `data_root`，默认 `/opt/meituan/dolphinfs_liubo108/ms-swift/datasets`），再执行 `hope clone https://www.modelscope.cn/datasets/<org>/<name>.git`。hope 按网址的主机和路径落盘，并去掉末尾的 `.git`，所以目录是 `<data_root>/www.modelscope.cn/datasets/<org>/<name>`。若目录名保留了 `.git`，那个路径也算就绪。数据集目录里要有数据文件（jsonl、parquet 等，或除 `.git` 以外的子目录）才算就绪。这些目录里已经有文件时，打开页面或进入阶段不会再执行 `hope login` 或 `hope clone`。只有点「重新拉取」，或本地还没有这份数据时，才会先走和模型相同的 `hope login`，再 `hope clone`。多选的每个 id 各自判断。上传文件和服务器本地路径不走 hope。
 
 实验目录（`rsi.sqlite`、每次运行的日志和检查点、上传文件）默认用 `fetch.yaml` 的 `rsi_home`：`/opt/meituan/dolphinfs_liubo108/ms-swift/workspace`。环境变量 `RSI_HOME` 优先。这个目录不存在、并且上一级也不存在或不可写时（Mac 上没有 dolphinfs），改用仓库里的 `rsi/workspace`，不会去创建 `/opt/meituan/...`。实验记录库写失败时，接口返回的中文错误里带数据库绝对路径，这时把 `RSI_HOME` 指到别的可写目录即可。
 
@@ -149,7 +149,7 @@ pip3 install hope==3.6.6 --no-cache-dir -i https://pypi.sankuai.com/simple
 
 `hope --version` 应为 3.6.6。同步是异步的。页面上的拉取状态只看本地文件：目录里出现 `config.json` 后才是「就绪」，在这之前是「同步中，进度见 rsi/.rsi.log」。不会调用 `hope list`。训练命令的 `--model` 改为本地路径，并带上 `--model_type` 和 `--template`。子进程会设置 `HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`、`HF_DATASETS_OFFLINE=1`。
 
-公开数据集请用 Hugging Face 的 `org/name`，或直接上传本地文件。`modelscope/...` 会提示不能在当前网络下载。内置评测 jsonl 仍走本地 `general_qa`。其它评测集放到 `$RSI_DATA_ROOT/benchmarks/<名字>`，或在 `eval_dataset_args` 里写 `local_path`。
+公开数据集在 hope 下会先 clone 到 `data_root`，SFT 的 `--dataset` 用那个本地目录。ModelScope id 用 `https://www.modelscope.cn/datasets/<org>/<name>.git`，Hugging Face 的 `org/name` 仍用 `huggingface.co/datasets`。上传文件和服务器本地路径不走 hope。模型 id 若是 `modelscope/...` 仍提示不能在当前网络下载。内置评测 jsonl 仍走本地 `general_qa`。其它评测集放到 `$RSI_DATA_ROOT/benchmarks/<名字>`，或在 `eval_dataset_args` 里写 `local_path`。
 
 在 Mac 的这份仓库里，把分支 `cursor/rsi-diag-card-ui-20261019-4ed3` 同步到内网：
 

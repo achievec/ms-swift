@@ -29,7 +29,16 @@ from rsi.llm_infer_spec import chat_request_body, cuda_visible_devices, template
 from rsi.dataset_validate import MAX_BYTES, validate_file, validate_public_id
 from rsi.flow import ACTION_LABELS, assemble_flow, blocked_message, decision_actions, stage_unlocked
 from rsi.logtail import announce_log, read_log_window, slice_bytes
-from rsi.model_fetch import ModelFetcher, benchmark_dir, dataset_block_message, hf_cloneable, is_repo_id, model_source
+from rsi.model_fetch import (
+    ModelFetcher,
+    benchmark_dir,
+    dataset_block_message,
+    hf_cloneable,
+    hope_dataset_cloneable,
+    is_repo_id,
+    model_source,
+    split_dataset_sample,
+)
 from rsi.schemas import STAGE_META, STAGE_ORDER, presets
 from rsi.webui_catalog import match_model
 from rsi.serving import find_free_port, loopback, port_is_free
@@ -384,34 +393,67 @@ class Pipeline:
             return str(path.resolve()), validate_file(path)
         raise PipelineError('未知数据来源')
 
+    def _existing_dataset_path(self, raw: str) -> Path | None:
+        if not raw or '://' in raw:
+            return None
+        path = Path(raw).expanduser()
+        try:
+            if path.is_file() or path.is_dir():
+                return path.resolve()
+        except OSError:
+            return None
+        return None
+
+    def _directory_dataset_report(self, path: str) -> dict:
+        return {
+            'ok': True,
+            'num_rows': None,
+            'formats': {'dataset': 1},
+            'errors': [],
+            'error_count': 0,
+            'warnings': [],
+            'preview': [],
+            'dataset': path,
+        }
+
     def _resolve_public_one(self, raw: str):
         raw = str(raw or '').strip()
-        blocked = dataset_block_message(raw)
+        base, sample = split_dataset_sample(raw)
+        existing = self._existing_dataset_path(base if sample else raw)
+        if existing is not None:
+            shown = str(existing)
+            if sample:
+                shown = f'{shown}#{sample}'
+            if existing.is_file():
+                report = validate_file(existing)
+                report['dataset'] = shown
+                return shown, report
+            return shown, self._directory_dataset_report(shown)
+        blocked = dataset_block_message(raw, kind='dataset')
         if blocked:
             raise PipelineError(blocked)
-        if model_source() in {'hope', 'local'} and hf_cloneable(raw):
-            status = self.fetcher.ensure('dataset', raw, background=True)
+        fetch = (model_source() == 'hope' and hope_dataset_cloneable(raw)) or (
+            model_source() == 'local' and hf_cloneable(raw))
+        if fetch:
+            repo = base if sample else raw
+            status = self.fetcher.ensure('dataset', repo, background=True)
             self._note_fetch(status)
             if status.state == '就绪':
+                shown = status.local_path
+                if sample:
+                    shown = f'{shown}#{sample}'
                 local = Path(status.local_path)
                 if local.is_file():
-                    return status.local_path, validate_file(local)
-                return status.local_path, {
-                    'ok': True,
-                    'num_rows': None,
-                    'formats': {'dataset': 1},
-                    'errors': [],
-                    'error_count': 0,
-                    'warnings': [],
-                    'preview': [],
-                    'dataset': status.local_path,
-                }
-            report = validate_public_id(raw)
+                    report = validate_file(local)
+                    report['dataset'] = shown
+                    return shown, report
+                return shown, self._directory_dataset_report(shown)
+            report = validate_public_id(repo)
             report['ok'] = False
             report['errors'] = [{'row': 0, 'error': status.message or '同步中'}]
             report['error_count'] = 1
             report['fetch_state'] = status.state
-            report['fetch_repo'] = raw
+            report['fetch_repo'] = status.repo_id or repo
             return status.local_path, report
         report = validate_public_id(raw)
         return report.get('dataset') or '', report
@@ -424,14 +466,19 @@ class Pipeline:
         resolved = []
         warnings = []
         errors = []
+        syncing = None
         for part in parts:
             path, report = self._resolve_public_one(part)
             if report.get('fetch_state') == '同步中':
-                return path, report
+                if syncing is None:
+                    syncing = (path, report)
+                continue
             if not report.get('ok'):
                 errors.extend(report.get('errors') or [])
             warnings.extend(report.get('warnings') or [])
             resolved.append(path or part)
+        if syncing is not None:
+            return syncing
         joined = ' '.join(resolved)
         return joined, {
             'ok': not errors,
@@ -450,7 +497,8 @@ class Pipeline:
         for part in parts:
             if not part:
                 continue
-            item = Path(part)
+            base, sample = split_dataset_sample(part)
+            item = Path(base if sample else part)
             if item.is_file():
                 report = validate_file(item)
                 if not report['ok']:
@@ -458,7 +506,7 @@ class Pipeline:
                 continue
             if item.is_dir():
                 continue
-            blocked = dataset_block_message(part)
+            blocked = dataset_block_message(part, kind='dataset')
             if blocked:
                 raise PipelineError(blocked)
             report = validate_public_id(part)
@@ -665,9 +713,9 @@ class Pipeline:
             if carried.get(key) not in (None, ''):
                 preset[key] = carried[key]
         dataset = str(preset.get('dataset') or '')
-        if dataset and preset.get('source') == 'public':
+        if dataset and preset.get('source') == 'public' and ' ' not in dataset:
             try:
-                if Path(dataset).expanduser().exists():
+                if Path(dataset).expanduser().is_file():
                     preset['source'] = 'path'
             except OSError:
                 pass
@@ -930,8 +978,11 @@ class Pipeline:
                 merged['dataset'] = dataset
                 side['validation'] = report
                 if report.get('fetch_state') == '同步中':
-                    side['fetch_state'] = '同步中'
-                    side['fetch_repo'] = report.get('fetch_repo') or ''
+                    dataset_repo = report.get('fetch_repo') or ''
+                    self._rewrite_model(merged, run, side, strict)
+                    if side.get('fetch_state') != '同步中':
+                        side['fetch_state'] = '同步中'
+                        side['fetch_repo'] = dataset_repo
                     return merged, side
                 if strict and not report.get('ok'):
                     raise PipelineError(_format_errors(report))
@@ -1246,7 +1297,7 @@ class Pipeline:
         for kind, raw in (('model', body.get('model') or ''), ('dataset', body.get('dataset') or '')):
             if not raw or not is_repo_id(str(raw)):
                 continue
-            blocked = dataset_block_message(str(raw))
+            blocked = dataset_block_message(str(raw), kind=kind)
             if blocked:
                 raise PipelineError(blocked)
             jobs.append((kind, str(raw)))

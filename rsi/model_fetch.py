@@ -3,7 +3,8 @@
 
 ``rsi/configs/fetch.yaml`` sets the default source to hope. ``RSI_MODEL_SOURCE``
 still wins: ``modelscope`` leaves ids untouched, ``hf`` sets ``USE_HF=1``,
-and ``hope`` copies a Hugging Face repo locally before swift runs.
+and ``hope`` copies a Hugging Face model, or a ModelScope/Hugging Face dataset,
+locally before swift runs. Dataset clones use the same ``hope login`` as models.
 Credentials stay in the process environment.
 """
 import logging
@@ -15,6 +16,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -229,9 +231,54 @@ def hf_dataset_choices(extra_ids=()) -> list:
     return found
 
 
-def dataset_block_message(value: str) -> str:
+def split_dataset_sample(value: str) -> tuple:
+    """Split a swift sample suffix. ``org/name#500`` becomes ``(org/name, '500')``.
+
+    Anything after ``#`` that is not a decimal count stays on the original string
+    and the sample is ``None``.
+    """
+    raw = (value or '').strip()
+    if '#' not in raw:
+        return raw, None
+    base, sample = raw.rsplit('#', 1)
+    if base and sample.isdigit():
+        return base, sample
+    return raw, None
+
+
+def is_ms_dataset_id(value: str) -> bool:
+    """True for a ModelScope dataset id, including the Web-UI ``ms_dataset_id`` list."""
+    repo = repo_id_of(value)
+    if not is_repo_id(repo):
+        return False
+    if repo.split('/', 1)[0] in NOT_HF_ORGS:
+        return True
+    from rsi.webui_catalog import load_catalog
+    return repo in set(load_catalog().get('datasets') or ())
+
+
+def hope_dataset_cloneable(value: str) -> bool:
+    """A public dataset id hope can clone, ignoring a trailing ``#`` sample count."""
+    base, sample = split_dataset_sample(value)
+    if '#' in (value or '') and sample is None:
+        return False
+    if not is_repo_id(base):
+        return False
+    return is_ms_dataset_id(base) or hf_cloneable(base)
+
+
+def dataset_block_message(value: str, kind: str | None = None) -> str:
+    """Hub ids hope/local cannot download.
+
+    ``kind='dataset'`` under hope allows ModelScope dataset ids. Those are cloned
+    with the same ``hope login`` + ``hope clone`` path as models. Model ids such
+    as ``modelscope/Qwen2.5-7B-Instruct`` stay blocked. ``local`` still cannot
+    download either kind.
+    """
     raw = (value or '').strip()
     if not raw or model_source() not in {'hope', 'local'}:
+        return ''
+    if kind == 'dataset' and model_source() == 'hope' and hope_dataset_cloneable(raw):
         return ''
     if is_modelscope_id(raw) or '#' in raw:
         return f'{raw} 不能在当前网络下载，请改用本地文件'
@@ -249,24 +296,48 @@ def destination(root: Path, repo_id: str) -> Path:
     return Path(root) / org / name
 
 
+def _clone_relative(url: str) -> Path:
+    """Directory hope 3.6.6 writes under cwd: URL host plus path, without a trailing ``.git``."""
+    parsed = urlsplit(url)
+    path = parsed.path.strip('/')
+    if path.endswith('.git'):
+        path = path[:-4]
+    return Path(parsed.netloc) / path
+
+
 def hope_clone_dir(root: Path, kind: str, repo_id: str) -> Path:
     """Where hope 3.6.6 writes a clone: the URL host and path under cwd.
 
     ``hope clone https://huggingface.co/Qwen/Qwen2.5-7B-Instruct`` from ``model_root``
     lands in ``<model_root>/huggingface.co/Qwen/Qwen2.5-7B-Instruct``.
-    A dataset URL keeps the ``datasets`` segment:
+    A Hugging Face dataset keeps the ``datasets`` segment:
     ``<data_root>/huggingface.co/datasets/<org>/<name>``.
+    A ModelScope dataset is
+    ``hope clone https://www.modelscope.cn/datasets/<org>/<name>.git`` from
+    ``data_root``, which lands in
+    ``<data_root>/www.modelscope.cn/datasets/<org>/<name>``.
     """
-    org, name = _split_repo(repo_id)
-    root = Path(root)
-    if kind == 'dataset':
-        return root / 'huggingface.co' / 'datasets' / org / name
-    return root / 'huggingface.co' / org / name
+    url = dataset_url(repo_id) if kind == 'dataset' else model_url(repo_id)
+    return Path(root) / _clone_relative(url)
 
 
 def placed_paths(root: Path, kind: str, repo_id: str) -> list:
-    """Candidate directories, hope 3.6.6 layout first, then the older org/name layout."""
-    return [hope_clone_dir(root, kind, repo_id), destination(root, repo_id)]
+    """Candidate directories, hope 3.6.6 layout first, then the older org/name layout.
+
+    A ``.git`` suffix on the directory is also accepted. hope's layout follows the
+    URL path; git usually drops that suffix, and some builds keep it.
+    """
+    primary = hope_clone_dir(root, kind, repo_id)
+    paths = [primary]
+    url = dataset_url(repo_id) if kind == 'dataset' else model_url(repo_id)
+    if url.endswith('.git'):
+        literal = Path(str(primary) + '.git')
+        if literal != primary:
+            paths.append(literal)
+    legacy = destination(root, repo_id)
+    if legacy not in paths:
+        paths.append(legacy)
+    return paths
 
 
 def model_url(repo_id: str) -> str:
@@ -274,7 +345,12 @@ def model_url(repo_id: str) -> str:
 
 
 def dataset_url(repo_id: str) -> str:
-    return f'https://huggingface.co/datasets/{repo_id_of(repo_id)}'
+    """Clone URL. ModelScope dataset ids use modelscope.cn; other org/name stay on Hugging Face."""
+    repo = repo_id_of(repo_id)
+    if is_ms_dataset_id(repo):
+        org, name = _split_repo(repo)
+        return f'https://www.modelscope.cn/datasets/{org}/{name}.git'
+    return f'https://huggingface.co/datasets/{repo}'
 
 
 def public_clone_command(url: str) -> str:
@@ -615,6 +691,8 @@ class ModelFetcher:
                 argv, _public = clone_argv(self._url_for(kind, repo_id))
                 # hope clone writes under cwd. Do not cd into org/ first, and do not
                 # assume the older <org>/<name> layout is where the files land.
+                # Models and datasets both go through _run, which runs hope login
+                # before the clone. A repo that is already on disk never reaches here.
                 result = self._run(argv, cwd=root, target=path, repo_key=key, force_login=force_login)
                 if result == 'missing-tool':
                     with _LOCK:

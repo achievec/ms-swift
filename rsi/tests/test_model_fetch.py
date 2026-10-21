@@ -20,7 +20,9 @@ from rsi.model_fetch import (
     apply_runtime_env,
     clone_argv,
     dataset_block_message,
+    dataset_url,
     describe_startup,
+    hope_clone_dir,
     hope_login_succeeded,
     hope_needs_login,
     kick_hope_login,
@@ -33,6 +35,18 @@ from rsi.model_fetch import (
 TOKEN = 'super-secret-token'
 USER = 'rsi-hope-user'
 REPO = 'Qwen/Qwen2.5-7B-Instruct'
+MS_DATASET = 'AI-ModelScope/alpaca-gpt4-data-zh'
+MS_DATASET_URL = 'https://www.modelscope.cn/datasets/AI-ModelScope/alpaca-gpt4-data-zh.git'
+
+
+def _ready_ms_dataset(root: Path, repo=MS_DATASET) -> Path:
+    org, name = repo.split('/', 1)
+    dest = Path(root) / 'www.modelscope.cn' / 'datasets' / org / name
+    dest.mkdir(parents=True, exist_ok=True)
+    marker = dest / 'train.jsonl'
+    if not marker.is_file():
+        marker.write_text('{"instruction": "q", "output": "a"}\n', encoding='utf-8')
+    return dest
 
 
 class Completed:
@@ -89,6 +103,7 @@ def test_huggingface_co_layout_is_ready_and_used_as_model(tmp_path, hope_env):
     data_dir = tmp_path / 'datasets' / 'huggingface.co' / 'datasets' / 'openai' / 'gsm8k'
     data_dir.mkdir(parents=True)
     (data_dir / 'train.jsonl').write_text('{"instruction": "q", "output": "a"}\n', encoding='utf-8')
+    _ready_ms_dataset(tmp_path / 'datasets')
     legacy = tmp_path / 'models' / 'Qwen' / 'Qwen2.5-7B-Instruct'
 
     def refuse(*_args, **_kwargs):
@@ -410,18 +425,134 @@ def test_modelscope_ids_are_blocked_and_config_file_is_overridden_by_env(tmp_pat
     fetcher = ModelFetcher(tmp_path / 'home', runner=lambda *args, **kwargs: None)
     assert fetcher.model_root() == Path('/data/models')
     assert fetcher.data_root() == Path('/data/datasets')
-    assert '不能在当前网络下载，请改用本地文件' in dataset_block_message('modelscope/gsm8k')
-    assert '不能在当前网络下载，请改用本地文件' in dataset_block_message('AI-ModelScope/alpaca-gpt4-data-zh')
+    assert dataset_block_message('modelscope/gsm8k', kind='dataset') == ''
+    assert dataset_block_message(MS_DATASET, kind='dataset') == ''
+    assert dataset_block_message(MS_DATASET + '#500', kind='dataset') == ''
+    assert '不能在当前网络下载，请改用本地文件' in dataset_block_message('modelscope/Qwen2.5-7B-Instruct')
+    assert '不能在当前网络下载，请改用本地文件' in dataset_block_message(MS_DATASET)
     monkeypatch.setenv('RSI_MODEL_SOURCE', 'local')
     assert model_source() == 'local'
+    assert '不能在当前网络下载，请改用本地文件' in dataset_block_message(MS_DATASET, kind='dataset')
     monkeypatch.setenv('RSI_MODEL_SOURCE', 'nope')
     assert model_source() == 'modelscope'
     monkeypatch.setenv('RSI_MODEL_SOURCE', 'modelscope')
-    assert dataset_block_message('modelscope/gsm8k') == ''
+    assert dataset_block_message('modelscope/gsm8k', kind='dataset') == ''
     monkeypatch.delenv('RSI_MODEL_SOURCE', raising=False)
     monkeypatch.delenv('RSI_FETCH_CONFIG', raising=False)
     assert model_source() == 'hope'
-    assert '不能在当前网络下载，请改用本地文件' in dataset_block_message('modelscope/gsm8k')
+    assert dataset_block_message(MS_DATASET, kind='dataset') == ''
+    assert '不能在当前网络下载，请改用本地文件' in dataset_block_message('modelscope/Qwen2.5-7B-Instruct')
+
+
+def test_modelscope_dataset_url_uses_data_root_layout():
+    assert dataset_url(MS_DATASET) == MS_DATASET_URL
+    assert dataset_url('iic/ms_bench') == 'https://www.modelscope.cn/datasets/iic/ms_bench.git'
+    assert dataset_url('openai/gsm8k') == 'https://huggingface.co/datasets/openai/gsm8k'
+    root = Path('/data/datasets')
+    assert hope_clone_dir(root, 'dataset', MS_DATASET) == (
+        root / 'www.modelscope.cn' / 'datasets' / 'AI-ModelScope' / 'alpaca-gpt4-data-zh')
+    assert hope_clone_dir(root, 'dataset', 'openai/gsm8k') == (
+        root / 'huggingface.co' / 'datasets' / 'openai' / 'gsm8k')
+    assert hope_clone_dir(Path('/data/models'), 'model', REPO) == (
+        Path('/data/models') / 'huggingface.co' / 'Qwen' / 'Qwen2.5-7B-Instruct')
+
+
+def test_modelscope_dataset_logs_in_then_clones_and_skips_when_present(tmp_path, hope_env):
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append((list(argv), kwargs.get('cwd')))
+        if argv[1] == 'login':
+            return Completed(stdout='登录成功')
+        if argv[1] == 'clone' and argv[2] == MS_DATASET_URL:
+            dest = Path(kwargs['cwd']) / 'www.modelscope.cn' / 'datasets' / 'AI-ModelScope' / 'alpaca-gpt4-data-zh'
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / 'train.jsonl').write_text('{}\n', encoding='utf-8')
+            return Completed(stdout=f'数据存储在: {dest}')
+        raise AssertionError(argv)
+
+    fetcher = _fetcher(tmp_path, runner)
+    done = fetcher.ensure('dataset', MS_DATASET, background=False)
+    assert done.state == '就绪'
+    assert done.local_path == str(
+        tmp_path / 'datasets' / 'www.modelscope.cn' / 'datasets' / 'AI-ModelScope' / 'alpaca-gpt4-data-zh')
+    assert calls[0][0] == ['hope', 'login', USER]
+    assert calls[0][1] == str(tmp_path / 'datasets')
+    assert calls[1][0][:3] == ['hope', 'clone', MS_DATASET_URL]
+    assert calls[1][1] == str(tmp_path / 'datasets')
+    assert any(flag.startswith('--token=') for flag in calls[1][0])
+    calls.clear()
+    again = fetcher.ensure('dataset', MS_DATASET, background=False)
+    assert again.state == '就绪'
+    assert again.local_path == done.local_path
+    assert calls == []
+
+    git_name = tmp_path / 'datasets' / 'www.modelscope.cn' / 'datasets' / 'modelscope' / 'gsm8k.git'
+    git_name.mkdir(parents=True)
+    (git_name / 'dataset_info.json').write_text('{}', encoding='utf-8')
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError('a dataset that is already on disk must not log in or clone')
+
+    skipped = _fetcher(tmp_path, refuse).ensure('dataset', 'modelscope/gsm8k', background=False)
+    assert skipped.state == '就绪'
+    assert skipped.local_path == str(git_name)
+
+
+def test_dataset_clone_does_not_start_when_login_fails(tmp_path, hope_env):
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(list(argv))
+        if argv[1] == 'login':
+            return Completed(returncode=1, stdout='登录失败')
+        raise AssertionError('clone must wait for the same hope login as models')
+
+    status = _fetcher(tmp_path, runner).ensure('dataset', MS_DATASET, background=False)
+    assert calls == [['hope', 'login', USER]]
+    assert status.state == '失败'
+    assert status.message == f'hope 登录未确认：请点重新拉取再发一次，或在终端执行 hope login {USER}'
+
+
+def test_sft_uses_each_modelscope_dataset_and_skips_one_already_present(tmp_path, hope_env):
+    model_dir = tmp_path / 'models' / 'Qwen' / 'Qwen2.5-7B-Instruct'
+    model_dir.mkdir(parents=True)
+    (model_dir / 'config.json').write_text('{}', encoding='utf-8')
+    alpaca = _ready_ms_dataset(tmp_path / 'datasets')
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append((list(argv), kwargs.get('cwd')))
+        if argv[1] == 'login':
+            return Completed(stdout='登录成功')
+        return Completed(stdout='submitted, pending')
+
+    client, _app = _client(tmp_path, runner)
+    with client as api:
+        run_id = api.post('/api/runs', json={
+            'name': '多数据集',
+            'scenario': '每个公开 id 各自拉取',
+            'base_model': REPO,
+        }).json()['run']['id']
+        syncing = api.post(f'/api/runs/{run_id}/stages/sft/run', json={
+            'params': {'source': 'public', 'dataset': f'modelscope/gsm8k {MS_DATASET}'},
+        })
+        assert syncing.status_code == 200, syncing.text
+        assert '不能在当前网络下载' not in syncing.text
+        assert syncing.json()['status'] == 'syncing'
+        assert calls[0][0] == ['hope', 'login', USER]
+        clones = [item for item in calls if item[0][1] == 'clone']
+        assert [item[0][2] for item in clones] == ['https://www.modelscope.cn/datasets/modelscope/gsm8k.git']
+        assert clones[0][1] == str(tmp_path / 'datasets')
+        assert MS_DATASET_URL not in json.dumps(calls)
+        calls.clear()
+        loaded = api.post(f'/api/runs/{run_id}/stages/sft/run', json={
+            'params': {'source': 'public', 'dataset': MS_DATASET},
+        })
+        assert loaded.status_code == 200, loaded.text
+        assert loaded.json()['result']['dataset'] == str(alpaca)
+        assert f'--dataset {alpaca}' in loaded.json()['command']
+        assert calls == []
 
 
 def test_bundled_fetch_yaml_defaults_to_hope(monkeypatch):
@@ -507,6 +638,7 @@ def test_pipeline_uses_local_model_and_keeps_type(tmp_path, hope_env):
     dest = tmp_path / 'models' / 'Qwen' / 'Qwen2.5-7B-Instruct'
     dest.mkdir(parents=True)
     (dest / 'config.json').write_text('{}', encoding='utf-8')
+    _ready_ms_dataset(tmp_path / 'datasets')
     client, _app = _client(tmp_path, lambda *args, **kwargs: calls.append(args))
     with client as api:
         run_id = api.post('/api/runs', json={
@@ -550,11 +682,17 @@ def test_pipeline_syncing_audit_and_modelscope_error(tmp_path, hope_env):
             'base_model': REPO,
         }).json()['run']['id']
         blocked = api.post('/api/runs/' + run_id + '/stages/sft/run', json={
-            'params': {'source': 'public', 'dataset': 'modelscope/gsm8k'},
+            'params': {'source': 'public', 'dataset': MS_DATASET},
         })
-        assert blocked.status_code == 400
-        assert blocked.json()['detail'] == 'modelscope/gsm8k 不能在当前网络下载，请改用本地文件'
-        assert calls == []
+        assert blocked.status_code == 200, blocked.text
+        assert '不能在当前网络下载' not in blocked.text
+        assert blocked.json()['status'] == 'syncing'
+        assert calls[0][0] == ['hope', 'login', USER]
+        ms_clone = next(item for item in calls if item[0][1] == 'clone' and 'modelscope.cn/datasets/' in item[0][2])
+        assert ms_clone[0][:3] == ['hope', 'clone', MS_DATASET_URL]
+        assert ms_clone[1] == str(tmp_path / 'datasets')
+        assert calls.index(calls[0]) < calls.index(ms_clone)
+        before = len(calls)
         syncing = api.post(f'/api/runs/{run_id}/stages/sft/run', json={
             'params': {'source': 'public', 'dataset': 'openai/gsm8k'},
         })
@@ -567,15 +705,14 @@ def test_pipeline_syncing_audit_and_modelscope_error(tmp_path, hope_env):
         assert TOKEN not in blob
         assert USER not in blob
         assert 'huggingface.co' not in blob
-        clone = next(item for item in calls if item[0][1] == 'clone')
+        clone = next(item for item in calls[before:] if item[0][1] == 'clone' and item[0][2].endswith('openai/gsm8k'))
         assert clone[0][:3] == ['hope', 'clone', 'https://huggingface.co/datasets/openai/gsm8k']
         assert clone[1] == str(tmp_path / 'datasets')
         assert not (tmp_path / 'datasets' / 'openai').exists()
-        assert calls[0][0] == ['hope', 'login', USER]
         view = body['view']
         assert view['forms']['sft']['status'] == 'syncing'
-        assert view['fetches'][0]['state'] == '同步中'
-        assert view['fetches'][0]['repo_id'] == 'openai/gsm8k'
+        gsm = next(row for row in view['fetches'] if row['repo_id'] == 'openai/gsm8k')
+        assert gsm['state'] == '同步中'
 
 
 def test_eval_prefers_local_benchmark_and_keeps_general_qa(tmp_path, hope_env):
@@ -722,18 +859,25 @@ def test_refresh_endpoint_and_local_source(tmp_path, hope_env):
             'scenario': '检查同步是否完成',
             'base_model': REPO,
         }).json()['run']['id']
-        refreshed = api.post(f'/api/runs/{run_id}/fetch', json={'model': REPO, 'dataset': 'modelscope/gsm8k'})
+        refreshed = api.post(f'/api/runs/{run_id}/fetch', json={
+            'model': 'modelscope/Qwen2.5-7B-Instruct',
+            'dataset': 'openai/gsm8k',
+        })
         assert refreshed.status_code == 400
         assert calls == []
-        refreshed = api.post(f'/api/runs/{run_id}/fetch', json={'model': REPO, 'dataset': 'openai/gsm8k'})
+        refreshed = api.post(f'/api/runs/{run_id}/fetch', json={'model': REPO, 'dataset': MS_DATASET})
         assert refreshed.status_code == 200, refreshed.text
         rows = {row['kind']: row for row in refreshed.json()['fetches']}
         assert rows['model']['state'] == '就绪'
         assert rows['dataset']['state'] == '同步中'
+        assert rows['dataset']['repo_id'] == MS_DATASET
         blob = refreshed.text
         assert TOKEN not in blob
         assert 'https://huggingface.co' not in blob
-        assert any(item[1] == 'clone' for item in calls)
+        assert '不能在当前网络下载' not in blob
+        assert calls[0] == ['hope', 'login', USER]
+        assert [MS_DATASET_URL] == [item[2] for item in calls if item[1] == 'clone' and 'datasets' in item[2]]
+        assert any(item[1] == 'clone' and item[2] == 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct' for item in calls)
         assert all(item[1] != 'list' for item in calls)
 
     monkeypatch = pytest.MonkeyPatch()
