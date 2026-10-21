@@ -76,6 +76,10 @@ document.getElementById('pick-file').addEventListener('click', () => {
   document.getElementById('file').click();
 });
 
+document.getElementById('data-text').addEventListener('input', () => {
+  retryPath = '';
+});
+
 document.getElementById('file').addEventListener('change', async (event) => {
   const file = event.target.files && event.target.files[0];
   if (!file) return;
