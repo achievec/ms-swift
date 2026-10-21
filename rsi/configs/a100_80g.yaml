@@ -15,8 +15,15 @@
 #   and num_generations before trying it.
 # - 32B online RL is out of range for a single 80GB GPU.
 # - dataset_num_proc 8 and dataloader_num_workers 4 leave cores for vLLM.
-# - GRPO uses vLLM colocate + sleep_level 1 so training and rollout share the
-#   one GPU instead of reserving a second card.
+# - GRPO uses vLLM colocate so training and rollout share the one GPU instead
+#   of reserving a second card. With vllm_enable_lora only the adapter is synced
+#   each rollout, so the preset keeps base weights resident
+#   (sleep_level 0 / offload_model false / offload_optimizer false). The old
+#   sleep+offload triple copied the 7B weights through CPU RAM every rollout
+#   cycle and dominated step time (~8s/step on the documented box).
+# - One GPU does not use DeepSpeed, DDP, or sequence parallel. Those controls
+#   stay hidden until two GPUs are selected, and the command leaves them out.
+#   Tuner tabs other than the selected method are hidden the same way.
 
 hardware:
   gpu: "1x NVIDIA A100-80G"
@@ -25,18 +32,15 @@ hardware:
   label: "1× A100-80G · 18 核 CPU · 约 60GB 可用内存"
 
 data:
-  source: bundled
-  bundled: itops_mix
-  max_length: 2048
+  source: public
+  dataset: ""
+  max_length: 1024
   split_dataset_ratio: 0
-  dataset_num_proc: 8
-  dataloader_num_workers: 4
   padding_free: false
-  val_dataset: ""
 
 sft:
   template: qwen2_5
-  system: "你是企业内部 IT 运维助手。先给出判断，再给出可执行的排查步骤。不要编造未提供的系统状态。"
+  system: ""
   torch_dtype: bfloat16
   seed: 42
   tuner_type: lora
@@ -63,13 +67,11 @@ sft:
   neftune_noise_alpha: 0
   attn_impl: sdpa
   use_liger_kernel: false
-  deepspeed: ""
-  sequence_parallel_size: 1
   dataset_num_proc: 8
   dataloader_num_workers: 4
   load_from_cache_file: true
-  quant_method: ""
-  quant_bits: 4
+  # Quant/QLoRA is off by default. RSI SFT no longer exposes quant widgets;
+  # enable only via 额外 YAML / 更多参数 if needed (avoids sticky bnb drafts).
   split_dataset_ratio: 0
   padding_free: false
 
@@ -87,7 +89,7 @@ sft_eval:
 rl:
   rlhf_type: grpo
   template: qwen2_5
-  system: "你是企业内部 IT 运维助手。把处理要点写进回复，覆盖工单里的关键对象。"
+  system: ""
   torch_dtype: bfloat16
   seed: 42
   tuner_type: lora
@@ -98,6 +100,13 @@ rl:
   num_train_epochs: 1
   learning_rate: "1e-6"
   per_device_train_batch_size: 1
+  # Explicit: empty Gradio sliders otherwise submit the HTML range midpoint (≈129 / 10).
+  per_device_eval_batch_size: 1
+  neftune_noise_alpha: 0
+  # generation_batch_size = per_device_train_batch_size * world_size * gradient_accumulation_steps
+  # must be divisible by num_generations (4). 8 keeps G=4 on one GPU.
+  # Swift's "Valid values" are legal num_generations (divisors of that batch), not a reason to change G.
+  # The RL form uses step=1 here: Gradio's min=1 step=2 slider snaps 8 to 9.
   gradient_accumulation_steps: 8
   gradient_checkpointing: true
   warmup_ratio: 0.05
@@ -128,14 +137,16 @@ rl:
   vllm_max_model_len: 4096
   vllm_enable_lora: true
   vllm_max_lora_rank: 8
-  sleep_level: 1
-  offload_model: true
-  offload_optimizer: true
+  # LoRA + vllm_enable_lora keeps the base weights resident on both sides; the
+  # sleep/offload round trip only cost step time. Reset with 恢复预设.
+  sleep_level: 0
+  offload_model: false
+  offload_optimizer: false
   log_completions: true
-  deepspeed: ""
-  quant_method: ""
-  quant_bits: 4
+  # LoRA GRPO must not pass --ref_model (ms-swift rejects it). Keep empty so sticky
+  # Gradio <select> first-option junk (e.g. Yi-1.5-34B / aya) is not the preset.
   ref_model: ""
+  ref_model_type: ""
   loss_scale: ""
 
 rl_eval:
@@ -150,16 +161,20 @@ rl_eval:
   custom_eval_config: rsi/examples/itops_eval.jsonl
 
 serve:
-  infer_backend: vllm
+  infer_backend: transformers
   host: 127.0.0.1
   port: 8000
   api_key: ""
   template: qwen2_5
-  torch_dtype: bfloat16
-  max_new_tokens: 512
+  adapters: ""
+  merge_lora: false
+  system: ""
+  max_new_tokens: 2048
   temperature: 0.3
-  vllm_gpu_memory_utilization: 0.9
-  vllm_max_model_len: 8192
+  top_k: 20
+  top_p: 0.7
+  repetition_penalty: 1.05
+  more_params: ""
 
 next_round:
   reuse_dataset: true

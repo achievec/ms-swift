@@ -73,6 +73,8 @@
 - **模型量化**：支持AWQ、GPTQ、FP8和BNB的量化导出，导出的模型支持使用vLLM/SGLang/LmDeploy推理加速。
 
 ## 🎉 新闻
+- 🔥 2026.10.19: 支持 [EmbeddingGemma-2](https://www.modelscope.cn/models/google/embeddinggemma-2)（740M，多模态嵌入模型，支持文本/图像/视频/音频统一向量空间），推理与训练已验证，支持 infonce loss 微调。
+- 🔥 2026.10.15: Day-0 支持 [NVIDIA-Nemotron-3.5-Super-VL-120B-A12B](https://www.modelscope.cn/models/nv-community/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16)，训练示例参考 [SFT示例](examples/models/nemotron_super_vl).
 - 🔥 2026.10.01: 支持 [Xing4.0-29B-A4B](https://www.modelscope.cn/models/XingChen-AGI/Xing4.0-29B-A4B)：transformers 后端的训练与推理，支持单/多卡（DDP 与 DeepSpeed ZeRO-3）的 LoRA 与全参数 SFT，以及 grouped_mm 专家加速（~3.7x），示例参考 [这里](examples/models/xing4_0)。
 - 🔥 2026.09.21: 支持 [DeepSeek-V4.1-Flash](https://www.modelscope.cn/models/deepseek-ai/DeepSeek-V4.1-Flash)：Megatron-SWIFT 全参数训练（SFT 与 GRPO）以及 vLLM 推理，示例参考 [这里](examples/models/deepseek_v41)。
 - 🔥 2026.09.01: 支持腾讯混元多模态嵌入模型 [WeMM-Embedding](https://www.modelscope.cn/models/Tencent-Hunyuan/WeMM-Embedding-2B)（2B/4B/9B）的推理与训练，支持图文混合输入的向量表征，训练示例参考 [embedding 示例](examples/train/embedding)。
@@ -247,12 +249,16 @@ swift web-ui
 
 ### RSI 闭环界面
 
-递归自改进闭环（数据 → SFT → 评测 → 在线 RL → 评测 → 晋级 → 下一轮 → OpenAI 兼容推理）在 [`rsi/`](rsi/README.md)。参数名与 ms-swift 命令行一致，默认 Mock，没有 GPU 也能把主流程走完。放到 A100 上时设置 `RSI_BACKEND=swift`，即可改为调用真实 `swift` 命令。
+递归自改进闭环在 [`rsi/`](rsi/README.md)。SFT 评测通过后可以进入 RL、下一轮数据或完成；未通过只能进入下一轮数据。RL 评测通过后可以完成或进入下一轮数据，未通过只能进入下一轮数据。参数名与 ms-swift 命令行一致。默认在 GPU 0 上调用本仓库的 `swift sft` / `eval` / `rlhf` / `deploy` / `export`。「模型导出」跟 Web-UI 的 LLM导出同一套字段。没有 GPU 时设置 `RSI_BACKEND=mock`。
 
 ```shell
 pip install -r rsi/requirements.txt
-python -m rsi
+./run.sh
 ```
+
+默认监听 `0.0.0.0:8418`。本机打开 http://127.0.0.1:8418/。`./run.sh` 不带参数等于重启；也可以 `start` / `stop` / `restart`。前台运行用 `python -m rsi`。
+
+`rsi/configs/fetch.yaml` 默认用 hope 同步模型。Mac 上要走 ModelScope 时设置 `RSI_MODEL_SOURCE=modelscope`。Linux 上 `./run.sh` 用 `fetch.yaml` 的 `train_python`（`/usr/local/conda/envs/model-train/bin/python`）启动 RSI，并 `conda activate model-train`。这个文件存在时不用 `rsi/.venv`。macOS 仍用 `rsi/.venv`。没有 `hope` 命令时 `./run.sh` 会提示安装并退出。说明见 [`rsi/README.md`](rsi/README.md) 的「内网部署」。
 
 ### 使用Python
 ms-swift也支持使用python的方式进行训练和推理。下面给出训练和推理的**伪代码**，具体可以查看[这里](https://github.com/modelscope/ms-swift/blob/main/examples/notebook/qwen2_5-self-cognition/self-cognition-sft.ipynb)。

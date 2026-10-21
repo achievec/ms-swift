@@ -136,6 +136,8 @@ class LLMTemplateType:
     olmoe_0924 = 'olmoe_0924'
     spark2_5 = 'spark2_5'
 
+    generic_decision = 'generic_decision'
+
 
 class RMTemplateType:
     internlm2_reward = 'internlm2_reward'
@@ -159,6 +161,10 @@ class MLLMTemplateType:
     qwen3_8 = 'qwen3_8'
     qwen3_5_emb = 'qwen3_5_emb'
     wemm_embedding = 'wemm_embedding'
+
+    jev = 'jev'
+    clef = 'clef'
+    omnijev = 'omnijev'
 
     qwen2_gme = 'qwen2_gme'
     qvq = 'qvq'
@@ -232,6 +238,7 @@ class MLLMTemplateType:
     minicpmv4 = 'minicpmv4'
     minicpmv4_5 = 'minicpmv4_5'
     minicpmv4_6 = 'minicpmv4_6'
+    minicpmv4_7 = 'minicpmv4_7'
     minicpmo = 'minicpmo'
     minicpmo4_5 = 'minicpmo4_5'
 
@@ -290,6 +297,8 @@ class MLLMTemplateType:
     minimax_m3_vl = 'minimax_m3_vl'
     muse_glimmer = 'muse_glimmer'
     monkeyocrv2 = 'monkeyocrv2'
+
+    nemotron_h_omni = 'nemotron_h_omni'
 
 
 class TemplateType(LLMTemplateType, MLLMTemplateType, RMTemplateType):

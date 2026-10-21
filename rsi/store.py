@@ -1,11 +1,48 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 """SQLite audit log for RSI runs, rounds, steps, checkpoints, and servers."""
 import json
+import logging
 import sqlite3
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+
+from rsi.logtail import TAIL_BYTES, truncate_log_text
+
+logger = logging.getLogger(__name__)
+# Wait for a lock instead of failing at once. The journal stays one reused file
+# (TRUNCATE) so a shared filesystem is not asked for a new -wal/-shm pair.
+_CONNECT_TIMEOUT_SECONDS = 30.0
+# Cap step.logs in list queries so a bloated historical row cannot load tens of MB
+# into every /api/runs/{id} response. Full text stays in swift.log on disk.
+_LOG_LIST_CHARS = TAIL_BYTES
+_STEP_LIST_SQL = (
+    'id, run_id, round_index, stage, status, params_json, result_json, '
+    f'CASE WHEN length(logs) > {_LOG_LIST_CHARS} '
+    f'THEN substr(logs, length(logs) - {_LOG_LIST_CHARS} + 1) ELSE logs END AS logs, '
+    'command, backend, started_at, ended_at'
+)
+
+
+class StoreError(Exception):
+    """The audit database could not be opened or written."""
+
+
+def db_error_message(db_path: Path, exc: BaseException) -> str:
+    """Chinese operator message. Includes the absolute database path."""
+    path = Path(db_path).expanduser()
+    try:
+        path = path.resolve()
+    except OSError:
+        path = Path(db_path)
+    reason = str(exc).strip() or 'unable to open database file'
+    return (
+        f'实验记录库无法写入：{path}。'
+        '目录不可写，或磁盘满。可设置 RSI_HOME 改到别的目录；'
+        '模型目录和数据目录可以留在 dolphinfs。'
+        f'（{reason}）'
+    )
 
 
 def utcnow() -> str:
@@ -19,7 +56,11 @@ def _dumps(value) -> str:
 class Store:
 
     def __init__(self, db_path: Path):
-        self.db_path = Path(db_path)
+        self.db_path = Path(db_path).expanduser()
+        try:
+            self.db_path = self.db_path.resolve()
+        except OSError:
+            pass
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         with self.transaction() as conn:
@@ -89,20 +130,72 @@ class Store:
                     started_at TEXT,
                     ended_at TEXT
                 );
+                CREATE TABLE IF NOT EXISTS fetches (
+                    kind TEXT NOT NULL,
+                    repo_id TEXT NOT NULL,
+                    local_path TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (kind, repo_id)
+                );
+                CREATE TABLE IF NOT EXISTS drafts (
+                    run_id TEXT NOT NULL,
+                    round_index INTEGER NOT NULL,
+                    stage TEXT NOT NULL,
+                    params_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (run_id, round_index, stage)
+                );
                 CREATE INDEX IF NOT EXISTS idx_steps_run ON steps(run_id, round_index, id);
                 CREATE INDEX IF NOT EXISTS idx_rounds_run ON rounds(run_id, round_index);
                 """)
+            columns = {row[1] for row in conn.execute('PRAGMA table_info(runs)')}
+            if 'model_type' not in columns:
+                conn.execute('ALTER TABLE runs ADD COLUMN model_type TEXT')
+            if 'template' not in columns:
+                conn.execute('ALTER TABLE runs ADD COLUMN template TEXT')
+
+    def _connect(self) -> sqlite3.Connection:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.db_path, timeout=_CONNECT_TIMEOUT_SECONDS)
+        conn.row_factory = sqlite3.Row
+        self._apply_pragmas(conn)
+        return conn
+
+    @staticmethod
+    def _apply_pragmas(conn: sqlite3.Connection) -> None:
+        """Avoid WAL sidecars. TRUNCATE reuses one journal file instead of deleting it."""
+        conn.execute('PRAGMA temp_store=MEMORY')
+        conn.execute(f'PRAGMA busy_timeout={int(_CONNECT_TIMEOUT_SECONDS * 1000)}')
+        conn.execute('PRAGMA journal_mode=TRUNCATE')
+
+    def _fail(self, exc: sqlite3.OperationalError) -> StoreError:
+        message = db_error_message(self.db_path, exc)
+        logger.error('%s', message)
+        return StoreError(message)
 
     @contextmanager
     def transaction(self):
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
+            try:
+                conn = self._connect()
+            except sqlite3.OperationalError as exc:
+                raise self._fail(exc) from exc
             try:
                 yield conn
                 conn.commit()
+            except sqlite3.OperationalError as exc:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                raise self._fail(exc) from exc
             except Exception:
-                conn.rollback()
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
                 raise
             finally:
                 conn.close()
@@ -117,13 +210,13 @@ class Store:
             conn.execute("UPDATE services SET status='stopped', ended_at = COALESCE(ended_at, ?) WHERE status='running'",
                          (now, ))
 
-    def create_run(self, run_id, name, scenario, base_model) -> None:
+    def create_run(self, run_id, name, scenario, base_model, model_type='', template='') -> None:
         now = utcnow()
         with self.transaction() as conn:
             conn.execute(
-                'INSERT INTO runs (id, name, scenario, base_model, round_index, current_stage, status, created_at, updated_at) '
-                'VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)',
-                (run_id, name, scenario, base_model, 'data', 'active', now, now))
+                'INSERT INTO runs (id, name, scenario, base_model, model_type, template, round_index, current_stage, '
+                'status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)',
+                (run_id, name, scenario, base_model, model_type or '', template or '', 'sft', 'active', now, now))
             conn.execute(
                 'INSERT INTO rounds (run_id, round_index, base_model, status, created_at) VALUES (?, 1, ?, ?, ?)',
                 (run_id, base_model, 'active', now))
@@ -135,6 +228,19 @@ class Store:
         with self.transaction() as conn:
             rows = conn.execute('SELECT * FROM runs ORDER BY updated_at DESC').fetchall()
         return [dict(row) for row in rows]
+
+    def delete_run(self, run_id) -> bool:
+        with self.transaction() as conn:
+            row = conn.execute('SELECT id FROM runs WHERE id=?', (run_id, )).fetchone()
+            if not row:
+                return False
+            conn.execute('DELETE FROM services WHERE run_id=?', (run_id, ))
+            conn.execute('DELETE FROM drafts WHERE run_id=?', (run_id, ))
+            conn.execute('DELETE FROM checkpoints WHERE run_id=?', (run_id, ))
+            conn.execute('DELETE FROM steps WHERE run_id=?', (run_id, ))
+            conn.execute('DELETE FROM rounds WHERE run_id=?', (run_id, ))
+            conn.execute('DELETE FROM runs WHERE id=?', (run_id, ))
+        return True
 
     def get_run(self, run_id) -> dict | None:
         with self.transaction() as conn:
@@ -155,10 +261,18 @@ class Store:
     def list_steps(self, run_id, round_index=None) -> list:
         with self.transaction() as conn:
             if round_index is None:
-                rows = conn.execute('SELECT * FROM steps WHERE run_id=? ORDER BY id', (run_id, )).fetchall()
+                rows = conn.execute(
+                    f'SELECT {_STEP_LIST_SQL} FROM steps WHERE run_id=? ORDER BY id', (run_id, )).fetchall()
             else:
-                rows = conn.execute('SELECT * FROM steps WHERE run_id=? AND round_index=? ORDER BY id',
-                                    (run_id, round_index)).fetchall()
+                rows = conn.execute(
+                    f'SELECT {_STEP_LIST_SQL} FROM steps WHERE run_id=? AND round_index=? ORDER BY id',
+                    (run_id, round_index)).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_steps_with_status(self, status: str) -> list:
+        with self.transaction() as conn:
+            rows = conn.execute(
+                f'SELECT {_STEP_LIST_SQL} FROM steps WHERE status=? ORDER BY id', (status, )).fetchall()
         return [dict(row) for row in rows]
 
     def latest_active_steps(self, run_id, round_index) -> dict:
@@ -195,9 +309,10 @@ class Store:
         return int(cursor.lastrowid)
 
     def finish_step(self, conn, step_id, status, result, logs, command):
+        # Store a short tail only; stage_log reads the full swift.log from disk.
         conn.execute(
             'UPDATE steps SET status=?, result_json=?, logs=?, command=?, ended_at=? WHERE id=?',
-            (status, _dumps(result or {}), logs or '', command or '', utcnow(), step_id))
+            (status, _dumps(result or {}), truncate_log_text(logs or ''), command or '', utcnow(), step_id))
 
     def add_checkpoint(self, conn, run_id, round_index, kind, path, metrics):
         conn.execute(
@@ -219,6 +334,14 @@ class Store:
     def set_current_stage(self, conn, run_id, stage):
         conn.execute('UPDATE runs SET current_stage=?, updated_at=? WHERE id=?', (stage, utcnow(), run_id))
 
+    def set_run_status(self, conn, run_id, status):
+        conn.execute('UPDATE runs SET status=?, updated_at=? WHERE id=?', (status, utcnow(), run_id))
+
+    def close_round(self, conn, run_id, round_index, note):
+        conn.execute(
+            'UPDATE rounds SET status=?, note=?, closed_at=? WHERE run_id=? AND round_index=? AND status=?',
+            ('closed', note, utcnow(), run_id, round_index, 'active'))
+
     def clear_promotion(self, conn, run_id, round_index):
         conn.execute(
             'UPDATE rounds SET promoted_checkpoint=NULL, promoted_kind=NULL, promoted_score=NULL '
@@ -238,7 +361,7 @@ class Store:
             'INSERT INTO rounds (run_id, round_index, base_model, status, created_at) VALUES (?, ?, ?, ?, ?)',
             (run_id, next_index, next_base, 'active', now))
         conn.execute('UPDATE runs SET round_index=?, current_stage=?, updated_at=? WHERE id=?',
-                     (next_index, 'data', now, run_id))
+                     (next_index, 'sft', now, run_id))
         return next_index
 
     def latest_promotion(self, run_id) -> dict | None:
@@ -286,7 +409,66 @@ class Store:
             conn.execute("UPDATE services SET status='stopped', ended_at=?, logs=? WHERE id=?",
                          (utcnow(), logs, service_id))
 
+    def upsert_fetch(self, row: dict) -> None:
+        # Update-or-insert. ``INSERT ... ON CONFLICT`` is SQLite 3.24+ and older
+        # intranet builds reject it with ``near "ON": syntax error``. The row key
+        # is the existing primary key (kind, repo_id).
+        kind = row['kind']
+        repo_id = row['repo_id']
+        local_path = row.get('local_path') or ''
+        state = row['state']
+        message = row.get('message') or ''
+        updated_at = utcnow()
+        with self.transaction() as conn:
+            found = conn.execute('SELECT 1 FROM fetches WHERE kind=? AND repo_id=?', (kind, repo_id)).fetchone()
+            if found:
+                conn.execute(
+                    'UPDATE fetches SET local_path=?, state=?, message=?, updated_at=? WHERE kind=? AND repo_id=?',
+                    (local_path, state, message, updated_at, kind, repo_id))
+            else:
+                conn.execute(
+                    'INSERT INTO fetches (kind, repo_id, local_path, state, message, updated_at) '
+                    'VALUES (?, ?, ?, ?, ?, ?)',
+                    (kind, repo_id, local_path, state, message, updated_at))
+
+    def list_fetches(self) -> list:
+        with self.transaction() as conn:
+            rows = conn.execute('SELECT * FROM fetches ORDER BY updated_at DESC').fetchall()
+        return [dict(row) for row in rows]
+
     def list_services(self, run_id) -> list:
         with self.transaction() as conn:
             rows = conn.execute('SELECT * FROM services WHERE run_id=? ORDER BY id', (run_id, )).fetchall()
         return [dict(row) for row in rows]
+
+    def upsert_draft(self, run_id, round_index, stage, params: dict) -> None:
+        """Replace one stage snapshot. Update-or-insert, same as fetch rows."""
+        payload = _dumps(params or {})
+        now = utcnow()
+        round_index = int(round_index)
+        with self.transaction() as conn:
+            found = conn.execute(
+                'SELECT 1 FROM drafts WHERE run_id=? AND round_index=? AND stage=?',
+                (run_id, round_index, stage)).fetchone()
+            if found:
+                conn.execute(
+                    'UPDATE drafts SET params_json=?, updated_at=? WHERE run_id=? AND round_index=? AND stage=?',
+                    (payload, now, run_id, round_index, stage))
+            else:
+                conn.execute(
+                    'INSERT INTO drafts (run_id, round_index, stage, params_json, updated_at) '
+                    'VALUES (?, ?, ?, ?, ?)',
+                    (run_id, round_index, stage, payload, now))
+
+    def list_drafts(self, run_id, round_index) -> dict:
+        with self.transaction() as conn:
+            rows = conn.execute(
+                'SELECT stage, params_json FROM drafts WHERE run_id=? AND round_index=?',
+                (run_id, int(round_index))).fetchall()
+        found = {}
+        for row in rows:
+            try:
+                found[row['stage']] = json.loads(row['params_json'] or '{}')
+            except json.JSONDecodeError:
+                found[row['stage']] = {}
+        return found

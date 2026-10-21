@@ -1,0 +1,50 @@
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：袁野负责会议室 B。问：谁负责会议室 B？"}, {"role": "assistant", "content": "袁野。"}], "solution": "袁野"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：航班 CA1504 预计 10:00 起飞。问：预计几点起飞？"}, {"role": "assistant", "content": "10:00。"}], "solution": "10:00"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：会议室 B的少儿阅览室占全年读者的 25%。问：少儿阅览室大约占多少？"}, {"role": "assistant", "content": "25%。"}], "solution": "25%"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：研发开放区的展览免费，周一闭馆。问：周几闭馆？"}, {"role": "assistant", "content": "周一。"}], "solution": "周一"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：蔡文负责会议室 B。问：谁负责会议室 B？"}, {"role": "assistant", "content": "蔡文。"}], "solution": "蔡文"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：航班 CA1504 预计 10:30 起飞。问：预计几点起飞？"}, {"role": "assistant", "content": "10:30。"}], "solution": "10:30"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：会议室 B的少儿阅览室占全年读者的 26%。问：少儿阅览室大约占多少？"}, {"role": "assistant", "content": "26%。"}], "solution": "26%"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：研发开放区的展览免费，周二闭馆。问：周几闭馆？"}, {"role": "assistant", "content": "周二。"}], "solution": "周二"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：贾亮负责会议室 B。问：谁负责会议室 B？"}, {"role": "assistant", "content": "贾亮。"}], "solution": "贾亮"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：航班 CA1504 预计 11:15 起飞。问：预计几点起飞？"}, {"role": "assistant", "content": "11:15。"}], "solution": "11:15"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：会议室 B的少儿阅览室占全年读者的 27%。问：少儿阅览室大约占多少？"}, {"role": "assistant", "content": "27%。"}], "solution": "27%"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：研发开放区的展览免费，周三闭馆。问：周几闭馆？"}, {"role": "assistant", "content": "周三。"}], "solution": "周三"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：魏兰负责会议室 B。问：谁负责会议室 B？"}, {"role": "assistant", "content": "魏兰。"}], "solution": "魏兰"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：航班 CA1504 预计 13:20 起飞。问：预计几点起飞？"}, {"role": "assistant", "content": "13:20。"}], "solution": "13:20"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：会议室 B的少儿阅览室占全年读者的 28%。问：少儿阅览室大约占多少？"}, {"role": "assistant", "content": "28%。"}], "solution": "28%"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：研发开放区的展览免费，周四闭馆。问：周几闭馆？"}, {"role": "assistant", "content": "周四。"}], "solution": "周四"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：薛明负责会议室 B。问：谁负责会议室 B？"}, {"role": "assistant", "content": "薛明。"}], "solution": "薛明"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：航班 CA1504 预计 14:00 起飞。问：预计几点起飞？"}, {"role": "assistant", "content": "14:00。"}], "solution": "14:00"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：会议室 B的少儿阅览室占全年读者的 29%。问：少儿阅览室大约占多少？"}, {"role": "assistant", "content": "29%。"}], "solution": "29%"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：研发开放区的展览免费，周五闭馆。问：周几闭馆？"}, {"role": "assistant", "content": "周五。"}], "solution": "周五"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：叶青负责会议室 B。问：谁负责会议室 B？"}, {"role": "assistant", "content": "叶青。"}], "solution": "叶青"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：航班 CA1504 预计 15:00 起飞。问：预计几点起飞？"}, {"role": "assistant", "content": "15:00。"}], "solution": "15:00"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：会议室 B的少儿阅览室占全年读者的 30%。问：少儿阅览室大约占多少？"}, {"role": "assistant", "content": "30%。"}], "solution": "30%"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：研发开放区的展览免费，周六闭馆。问：周几闭馆？"}, {"role": "assistant", "content": "周六。"}], "solution": "周六"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：阎冬负责会议室 B。问：谁负责会议室 B？"}, {"role": "assistant", "content": "阎冬。"}], "solution": "阎冬"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：航班 CA1504 预计 16:00 起飞。问：预计几点起飞？"}, {"role": "assistant", "content": "16:00。"}], "solution": "16:00"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：会议室 B的少儿阅览室占全年读者的 31%。问：少儿阅览室大约占多少？"}, {"role": "assistant", "content": "31%。"}], "solution": "31%"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：研发开放区的展览免费，下周一闭馆。问：周几闭馆？"}, {"role": "assistant", "content": "下周一。"}], "solution": "下周一"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：余静负责会议室 B。问：谁负责会议室 B？"}, {"role": "assistant", "content": "余静。"}], "solution": "余静"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：航班 CA1504 预计 16:40 起飞。问：预计几点起飞？"}, {"role": "assistant", "content": "16:40。"}], "solution": "16:40"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：会议室 B的少儿阅览室占全年读者的 32%。问：少儿阅览室大约占多少？"}, {"role": "assistant", "content": "32%。"}], "solution": "32%"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：研发开放区的展览免费，下周二闭馆。问：周几闭馆？"}, {"role": "assistant", "content": "下周二。"}], "solution": "下周二"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：杜鹃负责会议室 B。问：谁负责会议室 B？"}, {"role": "assistant", "content": "杜鹃。"}], "solution": "杜鹃"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：航班 CA1504 预计 18:00 起飞。问：预计几点起飞？"}, {"role": "assistant", "content": "18:00。"}], "solution": "18:00"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：会议室 B的少儿阅览室占全年读者的 33%。问：少儿阅览室大约占多少？"}, {"role": "assistant", "content": "33%。"}], "solution": "33%"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：研发开放区的展览免费，下周三闭馆。问：周几闭馆？"}, {"role": "assistant", "content": "下周三。"}], "solution": "下周三"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：苏航负责会议室 B。问：谁负责会议室 B？"}, {"role": "assistant", "content": "苏航。"}], "solution": "苏航"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：航班 CA1504 预计 18:46 起飞。问：预计几点起飞？"}, {"role": "assistant", "content": "18:46。"}], "solution": "18:46"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：会议室 B的少儿阅览室占全年读者的 34%。问：少儿阅览室大约占多少？"}, {"role": "assistant", "content": "34%。"}], "solution": "34%"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：研发开放区的展览免费，下周四闭馆。问：周几闭馆？"}, {"role": "assistant", "content": "下周四。"}], "solution": "下周四"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：林倩负责三楼培训室。问：谁负责三楼培训室？"}, {"role": "assistant", "content": "林倩。"}], "solution": "林倩"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：航班 CA1505 预计 09:12 起飞。问：预计几点起飞？"}, {"role": "assistant", "content": "09:12。"}], "solution": "09:12"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：三楼培训室的少儿阅览室占全年读者的 5%。问：少儿阅览室大约占多少？"}, {"role": "assistant", "content": "5%。"}], "solution": "5%"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：陈默负责三楼培训室。问：谁负责三楼培训室？"}, {"role": "assistant", "content": "陈默。"}], "solution": "陈默"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：航班 CA1505 预计 09:40 起飞。问：预计几点起飞？"}, {"role": "assistant", "content": "09:40。"}], "solution": "09:40"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：三楼培训室的少儿阅览室占全年读者的 6%。问：少儿阅览室大约占多少？"}, {"role": "assistant", "content": "6%。"}], "solution": "6%"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：周凯负责三楼培训室。问：谁负责三楼培训室？"}, {"role": "assistant", "content": "周凯。"}], "solution": "周凯"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：航班 CA1505 预计 10:00 起飞。问：预计几点起飞？"}, {"role": "assistant", "content": "10:00。"}], "solution": "10:00"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：三楼培训室的少儿阅览室占全年读者的 7%。问：少儿阅览室大约占多少？"}, {"role": "assistant", "content": "7%。"}], "solution": "7%"}
+{"messages": [{"role": "system", "content": "你是阅读理解助手。只根据短文回答，用文中的原词。"}, {"role": "user", "content": "短文：王磊负责三楼培训室。问：谁负责三楼培训室？"}, {"role": "assistant", "content": "王磊。"}], "solution": "王磊"}

@@ -104,7 +104,7 @@ def classify_row(row: dict):
     if row.get('query') and (row.get('response') is not None or row.get('solution') is not None
                              or row.get('answer') is not None):
         return 'query', None
-    return '', '无法识别为 ms-swift 数据（需要 messages / conversation / instruction+output / query+response）'
+    return '', '无法识别数据格式（需要 messages / conversation / instruction+output / query+response）'
 
 
 def validate_rows(rows: list) -> dict:
@@ -122,7 +122,7 @@ def validate_rows(rows: list) -> dict:
         if kind == 'messages-prompt':
             prompt_only += 1
     if prompt_only and prompt_only == len(rows) - len(errors):
-        warnings.append('全部样本都没有 assistant / solution。SFT 无法计算回答部分的 loss，只适合纯 prompt 或另行提供 solution。')
+        warnings.append('全部样本都没有 assistant / solution。')
     preview = []
     for row in rows[:2]:
         try:
@@ -236,10 +236,10 @@ def validate_public_id(dataset_id: str) -> dict:
     return {
         'ok': True,
         'num_rows': None,
-        'formats': {'ms-swift-ref': 1},
+        'formats': {'dataset': 1},
         'errors': [],
         'error_count': 0,
-        'warnings': ['公开数据集不在本地解析。真实训练时由 ms-swift AutoPreprocessor 下载并转换。Mock 模式不会下载数据。'],
+        'warnings': ['公开数据集 id 已记录，训练时再下载。'],
         'preview': [],
         'dataset': dataset_id,
     }

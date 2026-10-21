@@ -77,6 +77,8 @@ You can contact us and communicate with us by adding our group:
 
 
 ## 🎉 News
+- 🔥 2026.10.19: Support for [EmbeddingGemma-2](https://www.modelscope.cn/models/google/embeddinggemma-2) (740M, multimodal embedding model, unifying text/image/video/audio in a single 768d vector space). Inference and training verified with infonce loss fine-tuning.
+- 🔥 2026.10.15: Day-0 Support for [NVIDIA-Nemotron-3.5-Super-VL-120B-A12B](https://www.modelscope.cn/models/nv-community/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16), Refer to the [SFT examples](examples/models/nemotron_super_vl).
 - 🔥 2026.10.01: Support for [Xing4.0-29B-A4B](https://www.modelscope.cn/models/XingChen-AGI/Xing4.0-29B-A4B): transformers-backend training and inference, with LoRA & full-parameter SFT on single/multi-GPU (DDP & DeepSpeed ZeRO-3) and grouped_mm expert acceleration (~3.7x). Refer to the [examples](examples/models/xing4_0).
 - 🔥 2026.09.21: Support for [DeepSeek-V4.1-Flash](https://www.modelscope.cn/models/deepseek-ai/DeepSeek-V4.1-Flash): Megatron-SWIFT full-parameter training (SFT and GRPO) plus vLLM inference. Refer to the [examples](examples/models/deepseek_v41).
 - 🔥 2026.09.01: Support inference and training for the Tencent Hunyuan multimodal embedding model [WeMM-Embedding](https://www.modelscope.cn/models/Tencent-Hunyuan/WeMM-Embedding-2B) (2B/4B/9B), supporting image-text mixed input for vector representation. Refer to [embedding example](examples/train/embedding).
@@ -256,12 +258,16 @@ SWIFT_UI_LANG=en swift web-ui
 
 ### RSI closed-loop UI
 
-A click-through recursive self-improvement loop (data → SFT → eval → online RL → eval → promote → next round → OpenAI-compatible serve) lives in [`rsi/`](rsi/README.md). It reuses ms-swift parameter names and defaults to a mock backend so the full loop runs without a GPU. Set `RSI_BACKEND=swift` on a machine with an A100 to call the real `swift` CLIs.
+A click-through recursive self-improvement loop lives in [`rsi/`](rsi/README.md). After a passed SFT eval you can run online RL, open the next round of data, or finish. A failed eval can only open the next round. RL eval can finish or open the next round, and does not offer RL again. It reuses ms-swift parameter names and, by default, runs `swift sft` / `eval` / `rlhf` / `deploy` / `export` from this checkout on GPU 0. The 模型导出 tab follows the Web-UI LLM导出 form. Set `RSI_BACKEND=mock` to walk the loop without a GPU.
 
 ```shell
 pip install -r rsi/requirements.txt
-python -m rsi
+./run.sh
 ```
+
+The server listens on `0.0.0.0:8418`. On this machine open http://127.0.0.1:8418/. `./run.sh` restarts; `start` / `stop` / `restart` are explicit. `python -m rsi` runs the same server in the foreground.
+
+`rsi/configs/fetch.yaml` defaults the model source to hope. Set `RSI_MODEL_SOURCE=modelscope` on a Mac that should keep using ModelScope. On Linux, `./run.sh` starts RSI with `train_python` (`/usr/local/conda/envs/model-train/bin/python`) when that file exists, and activates `conda_env` (`model-train`). `rsi/.venv` is only used when `train_python` is missing. macOS keeps `rsi/.venv`. `./run.sh` does not install the hope client; if `hope` is missing it prints the install hint and exits. See [`rsi/README.md`](rsi/README.md) under「内网部署」.
 
 ### Using Python
 

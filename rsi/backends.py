@@ -1,11 +1,17 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
-"""Training backends. MockBackend is the default. MsSwiftBackend shells out to swift."""
+"""Training backends. MsSwiftBackend is the default and shells out to this repo's swift CLI."""
 import os
 import re
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
-from rsi.commands import build_argv, format_shell
+from rsi.commands import apply_process_env, build_argv, stage_shell
+from rsi.logtail import announce_log, normalize_log, run_and_tee, truncate_log_text
+from rsi.model_fetch import apply_runtime_env, configured_train_python
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class BackendError(Exception):
@@ -17,24 +23,141 @@ class BackendError(Exception):
 
 def parse_metrics(text: str) -> dict:
     metrics = {}
-    for match in re.finditer(r'["\'](accuracy|train_loss|eval_loss|reward|kl|token_acc)["\']\s*:\s*([0-9.]+)', text):
-        metrics[match.group(1)] = float(match.group(2))
+    for match in re.finditer(
+            r'["\'](accuracy|train_loss|eval_loss|reward|kl|token_acc|rouge-l-f)["\']\s*:\s*([0-9.]+)', text):
+        key = 'accuracy' if match.group(1) == 'rouge-l-f' else match.group(1)
+        metrics[key] = float(match.group(2))
+        if match.group(1) == 'rouge-l-f':
+            metrics['score_name'] = 'rouge-l-f'
     losses = re.findall(r'["\']loss["\']\s*:\s*([0-9.]+)', text)
     if losses and 'train_loss' not in metrics:
         metrics['train_loss'] = float(losses[-1])
     return metrics
 
 
-def find_checkpoint(output_dir: Path):
+def detect_gpu() -> dict:
+    """Report NVIDIA devices without importing torch. Empty when this machine has no GPU."""
+    if not shutil.which('nvidia-smi'):
+        return {'available': False, 'devices': []}
+    try:
+        completed = subprocess.run(['nvidia-smi', '-L'], check=False, capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return {'available': False, 'devices': []}
+    devices = [line.strip() for line in (completed.stdout or '').splitlines() if line.strip().startswith('GPU')]
+    return {'available': bool(devices), 'devices': devices}
+
+
+def training_python() -> str:
+    """Interpreter for ``python -m swift.cli.main``.
+
+    ``RSI_TRAIN_PYTHON`` wins. Otherwise ``train_python`` in fetch.yaml when that
+    file exists and is executable. Otherwise the current interpreter.
+    """
+    explicit = os.environ.get('RSI_TRAIN_PYTHON', '').strip()
+    if explicit:
+        return explicit
+    return configured_train_python() or sys.executable
+
+
+def swift_launch(argv: list) -> tuple:
+    """Turn a logical `swift <cmd> ...` argv into a process that runs this checkout on GPU 0.
+
+    `RSI_SWIFT_BIN` replaces the launcher (used by tests). Otherwise the command is
+    ``<training python> -m swift.cli.main``.
+    """
+    if not argv:
+        return [], os.environ.copy()
+    override = os.environ.get('RSI_SWIFT_BIN', '').strip()
+    if override:
+        command = [override, *argv[1:]]
+    else:
+        command = [training_python(), '-m', 'swift.cli.main', *argv[1:]]
+    env = os.environ.copy()
+    env.setdefault('CUDA_VISIBLE_DEVICES', '0')
+    root = str(REPO_ROOT)
+    current = env.get('PYTHONPATH', '')
+    parts = [part for part in current.split(':') if part]
+    if root not in parts:
+        env['PYTHONPATH'] = ':'.join([root, *parts]) if parts else root
+    apply_runtime_env(env)
+    return command, env
+
+
+_VERSION_DIR = re.compile(r'^v(\d+)-(\d{8}-\d{6})$')
+_LAST_CHECKPOINT = re.compile(r'last_model_checkpoint:\s*(\S+)')
+
+
+def _checkpoint_step(path: Path) -> int:
+    match = re.search(r'(\d+)$', path.name)
+    return int(match.group(1)) if match else -1
+
+
+def _version_sort_key(name: str):
+    match = _VERSION_DIR.match(name)
+    if match:
+        return (1, int(match.group(1)), match.group(2))
+    return (0, 0, name)
+
+
+def _checkpoints_under(output_dir: Path):
+    """checkpoint-* in output_dir and in Swift version folders such as v1-20261020-122840."""
     if not output_dir.is_dir():
+        return
+    for path in output_dir.glob('checkpoint-*'):
+        if path.is_dir():
+            yield path
+    try:
+        children = list(output_dir.iterdir())
+    except OSError:
+        return
+    for child in children:
+        if not child.is_dir() or not re.match(r'^v\d+-', child.name):
+            continue
+        for path in child.glob('checkpoint-*'):
+            if path.is_dir():
+                yield path
+
+
+def _checkpoint_from_log(logs: str, output_dir: Path):
+    found = _LAST_CHECKPOINT.findall(logs or '')
+    if not found:
         return None
-    candidates = [path for path in output_dir.glob('checkpoint-*') if path.is_dir()]
+    raw = found[-1].strip().strip('\'"')
+    if raw in {'', 'None'}:
+        return None
+    path = Path(raw)
+    try:
+        if path.exists() or path.is_symlink():
+            path = path.resolve()
+    except OSError:
+        return None
+    if not path.is_dir():
+        return None
+    try:
+        path.resolve().relative_to(output_dir.resolve())
+    except (OSError, ValueError):
+        return None
+    return path
+
+
+def find_checkpoint(output_dir: Path, logs: str = ''):
+    """Latest checkpoint under output_dir, including ``v<n>-<timestamp>/checkpoint-*``.
+
+    ``last_model_checkpoint`` in the swift log wins when that directory exists
+    inside output_dir. Otherwise the highest step in the newest version folder.
+    """
+    output_dir = Path(output_dir)
+    logged = _checkpoint_from_log(logs, output_dir)
+    if logged is not None:
+        return logged
+    candidates = list(_checkpoints_under(output_dir))
     if not candidates:
         return None
 
     def sort_key(path: Path):
-        match = re.search(r'(\d+)$', path.name)
-        return int(match.group(1)) if match else -1
+        parent = path.parent
+        version = _version_sort_key(parent.name) if parent != output_dir else (0, 0, '')
+        return (version[0], version[1], version[2], _checkpoint_step(path))
 
     return sorted(candidates, key=sort_key)[-1]
 
@@ -57,6 +180,86 @@ def _mock_metrics(stage: str, round_index: int) -> dict:
         accuracy = round(0.58 + bump, 4)
         return {'accuracy': accuracy, 'mock_score': accuracy}
     return {}
+
+
+def resolve_log_dir(context: dict, params: dict) -> Path:
+    """Absolute directory for this stage's swift.log.
+
+    A missing path, ``.``, or any relative path is refused. Training output must
+    not land in the process working directory.
+    """
+    for raw in (context.get('workdir'), params.get('output_dir'), params.get('eval_output_dir')):
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if text in {'', '.'}:
+            continue
+        path = Path(text).expanduser()
+        if path.is_absolute():
+            return path
+    raise BackendError('缺少实验目录，训练日志不会写到当前工作目录')
+
+
+def _append_after_fetch(path: Path) -> bool:
+    """True when swift.log already holds hope text that the stage command should follow.
+
+    A previous training-only log starts with ``swift `` / ``exec:`` and has no hope
+    section markers; that file is replaced. Hope login/clone lines are kept, and
+    training is appended under them.
+    """
+    try:
+        from rsi.model_fetch import stage_log_is_active
+        if stage_log_is_active(path):
+            return True
+    except Exception:
+        pass
+    try:
+        if not path.is_file() or path.stat().st_size == 0:
+            return False
+        head = path.read_bytes()[:4096]
+    except OSError:
+        return False
+    sample = head.lstrip()
+    if not sample:
+        return False
+    hope_markers = ('[模型]'.encode('utf-8'), '[数据集]'.encode('utf-8'), '登录'.encode('utf-8'), b'hope ')
+    if any(marker in head for marker in hope_markers):
+        return True
+    if sample.startswith(b'swift ') or b'\nexec:' in head:
+        return False
+    return True
+
+
+def _write_stage_log(path: Path, logs: str) -> str:
+    """Write this run's text. Keep a fetch preamble that is already in the file."""
+    if _append_after_fetch(path):
+        existing = path.read_bytes()
+        prefix = b'' if existing.endswith(b'\n') else b'\n'
+        with path.open('ab') as handle:
+            handle.write(prefix)
+            handle.write(logs.encode('utf-8'))
+        return path.read_text(encoding='utf-8', errors='replace')
+    path.write_text(logs, encoding='utf-8')
+    return logs
+
+
+def _absolute_output(raw, fallback: Path) -> Path:
+    text = str(raw or '').strip()
+    if text in {'', '.'}:
+        return fallback
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        return fallback
+    return path
+
+
+def _pin_output_params(stage: str, params: dict, workdir: Path) -> dict:
+    pinned = dict(params)
+    if stage in {'sft', 'rl'}:
+        pinned['output_dir'] = str(_absolute_output(pinned.get('output_dir'), workdir))
+    if stage in {'sft_eval', 'rl_eval'}:
+        pinned['eval_output_dir'] = str(_absolute_output(pinned.get('eval_output_dir'), workdir))
+    return pinned
 
 
 def _write_mock_checkpoint(output_dir: Path, params: dict, stage: str, round_index: int, metrics: dict) -> Path:
@@ -88,14 +291,12 @@ class MockBackend:
     name = 'mock'
 
     def execute(self, stage: str, params: dict, context: dict) -> dict:
-        command = format_shell(build_argv(stage, params))
+        log_dir = resolve_log_dir(context, params)
+        params = _pin_output_params(stage, params, log_dir)
+        command = stage_shell(stage, params)
         round_index = int(context.get('round_index') or 1)
         metrics = _mock_metrics(stage, round_index)
-        lines = [
-            '[mock] RSI_BACKEND=mock。没有加载模型，也没有占用 GPU。',
-            '[mock] 下面是切到真实后端时会执行的命令：',
-            command,
-        ]
+        lines = [command] if command else []
         checkpoint = None
         if stage in {'sft', 'rl'}:
             output_dir = Path(params['output_dir'])
@@ -114,23 +315,27 @@ class MockBackend:
                     )
             checkpoint_path = _write_mock_checkpoint(output_dir, params, stage, round_index, metrics)
             checkpoint = str(checkpoint_path)
-            lines.append(f'[mock] checkpoint saved to {checkpoint}')
+            lines.append(f'检查点：{checkpoint}')
         elif stage in {'sft_eval', 'rl_eval'}:
             rows = context.get('eval_rows')
-            lines.append(f"[mock] eval_dataset={params.get('eval_dataset')} eval_limit={params.get('eval_limit')} "
+            lines.append(f"eval_dataset={params.get('eval_dataset')} eval_limit={params.get('eval_limit')} "
                          f'heldout_rows={rows}')
-            lines.append('[mock] 分数是按轮次生成的确定性 mock_score，不是 EvalScope 的真实准确率。')
             lines.append(str({'accuracy': metrics.get('accuracy')}))
             if rows is not None:
                 metrics = dict(metrics)
                 metrics['eval_rows'] = rows
         logs = '\n'.join(lines) + '\n'
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / 'swift.log'
+        logs = _write_stage_log(log_path, logs)
+        announce_log(f'[{stage} {context.get("run_id") or "-"}]', log_path)
         return {
             'ok': True,
             'logs': logs,
             'command': command,
             'metrics': metrics,
             'checkpoint': checkpoint,
+            'log_path': str(log_path),
             'mock': True,
         }
 
@@ -141,30 +346,52 @@ class MsSwiftBackend:
     name = 'swift'
 
     def execute(self, stage: str, params: dict, context: dict) -> dict:
-        argv = build_argv(stage, params)
-        if not argv:
+        workdir = resolve_log_dir(context, params)
+        params = _pin_output_params(stage, params, workdir)
+        logical = build_argv(stage, params)
+        if not logical:
             raise BackendError(f'{stage} 没有对应的 swift 子命令')
-        binary = os.environ.get('RSI_SWIFT_BIN', 'swift')
-        argv = [binary, *argv[1:]]
-        env = os.environ.copy()
-        env.setdefault('CUDA_VISIBLE_DEVICES', '0')
-        workdir = Path(context.get('workdir') or params.get('output_dir') or '.')
+        argv, env = swift_launch(logical)
+        try:
+            apply_process_env(env, params)
+        except ValueError as exc:
+            raise BackendError(str(exc)) from exc
         workdir.mkdir(parents=True, exist_ok=True)
-        command = format_shell(argv)
+        command = stage_shell(stage, params)
         log_path = workdir / 'swift.log'
-        with log_path.open('w', encoding='utf-8') as log_file:
-            log_file.write(command + '\n')
+        prefix = f'[{stage} {context.get("run_id") or "-"}]'
+        announce_log(prefix, log_path)
+        append = _append_after_fetch(log_path)
+        needs_nl = False
+        if append:
+            try:
+                with log_path.open('rb') as existing:
+                    existing.seek(0, os.SEEK_END)
+                    if existing.tell():
+                        existing.seek(-1, os.SEEK_END)
+                        needs_nl = existing.read(1) != b'\n'
+            except OSError:
+                needs_nl = False
+        with log_path.open('ab' if append else 'wb') as log_file:
+            if needs_nl:
+                log_file.write(b'\n')
+            log_file.write((command + '\nexec: ' + ' '.join(argv) + '\n').encode('utf-8'))
             log_file.flush()
-            completed = subprocess.run(argv, stdout=log_file, stderr=subprocess.STDOUT, env=env, check=False)
-        logs = log_path.read_text(encoding='utf-8', errors='replace')
-        if completed.returncode != 0:
-            raise BackendError(f'swift 退出码 {completed.returncode}', logs=logs)
-        metrics = parse_metrics(logs)
+            returncode = run_and_tee(
+                argv, env, log_file, prefix, echo=False,
+                on_start=context.get('on_proc'), new_session=True)
+        # Parse metrics from the full file; only a short tail is stored/returned in
+        # the step row so /api/runs/{id} stays small. Live UI tails swift.log itself.
+        full = normalize_log(log_path.read_text(encoding='utf-8', errors='replace'))
+        logs = truncate_log_text(full)
+        if returncode != 0:
+            raise BackendError(f'swift 退出码 {returncode}', logs=logs)
+        metrics = parse_metrics(full)
         checkpoint = None
         if stage in {'sft', 'rl'}:
-            found = find_checkpoint(Path(params['output_dir']))
+            found = find_checkpoint(Path(params['output_dir']), full)
             if found is None:
-                raise BackendError('swift 已结束，但 output_dir 里没有 checkpoint-*', logs=logs)
+                raise BackendError('swift 已结束，但 output_dir 里没有 checkpoint-*（也查了 v*-* 版本目录）', logs=logs)
             checkpoint = str(found)
         if stage in {'sft_eval', 'rl_eval'} and context.get('eval_rows') is not None:
             metrics = dict(metrics)
@@ -180,9 +407,9 @@ class MsSwiftBackend:
 
 
 def build_backend():
-    kind = os.environ.get('RSI_BACKEND', 'mock').strip().lower()
-    if kind in {'', 'mock'}:
+    kind = os.environ.get('RSI_BACKEND', 'swift').strip().lower() or 'swift'
+    if kind == 'mock':
         return MockBackend()
     if kind == 'swift':
         return MsSwiftBackend()
-    raise RuntimeError(f'未知 RSI_BACKEND={kind}，可选 mock 或 swift')
+    raise RuntimeError(f'未知 RSI_BACKEND={kind}，可选 swift 或 mock')

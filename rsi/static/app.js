@@ -2,18 +2,94 @@ const state = {
   schema: null,
   runs: [],
   view: null,
-  stage: 'data',
+  stage: 'sft',
   tab: 'flow',
   round: null,
   expanded: null,
   chat: [],
   busy: false,
+  liveTimer: null,
+  liveBusy: false,
+  serveDraft: null,
+  serveDraftRun: null,
+  inferLog: '',
+  inferLogTimer: null,
+  inferRuntimeOpen: false,
+  exportDraft: null,
+  exportDraftRun: null,
+  exportLog: '',
+  exportLogTimer: null,
+  exportRuntimeOpen: false,
+  draftTimer: null,
+  mediaTab: 'image',
+  mediaFiles: { image: null, video: null, audio: null },
+  metricsCache: {},
 };
+
+// Same keys as swift.ui Runtime.sft_plot / grpo_plot (placeholder until TB arrives).
+const STAGE_METRIC_KEYS = {
+  sft: ['train/loss', 'train/acc', 'train/learning_rate', 'eval/loss', 'eval/acc'],
+  rl: ['train/loss', 'train/reward', 'train/learning_rate', 'train/completions/mean_length', 'train/kl'],
+};
+
+function evalReportLink(stage, result, roundIndex) {
+  if (stage !== 'sft_eval' && stage !== 'rl_eval') return '';
+  const metrics = (result && result.metrics) || {};
+  const path = (result && result.report_path) || metrics.report_html || '';
+  if (!path || !state.view) return '';
+  const round = roundIndex || state.view.round.round_index;
+  const href = `/api/runs/${encodeURIComponent(state.view.run.id)}/stages/${encodeURIComponent(stage)}/report?round=${round}`;
+  return `<a class="ghost" href="${href}" target="_blank" rel="noopener">查看完整报告</a>`;
+}
+
+function scoreHeadline(metrics) {
+  if (!metrics) return '';
+  const bits = [];
+  if (metrics.bleu_1 != null && metrics.bleu_1 !== '') bits.push(`BLEU-1 ${metrics.bleu_1}`);
+  if (metrics.rouge_l_f != null && metrics.rouge_l_f !== '') bits.push(`ROUGE-L F1 ${metrics.rouge_l_f}`);
+  return bits.length ? `<p>${escapeHtml(bits.join(' · '))}</p>` : '';
+}
+
+function scoreTable(metrics) {
+  const scores = metrics && metrics.scores;
+  if (!scores || typeof scores !== 'object') return '';
+  const rows = Object.keys(scores).map((key) => `<tr><td>${escapeHtml(key)}</td><td>${escapeHtml(scores[key])}</td></tr>`).join('');
+  return rows ? `<table class="score-table"><tbody>${rows}</tbody></table>` : '';
+}
+
+function visibleResult(result) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
+  const copy = { ...result };
+  delete copy.mock;
+  delete copy.backend;
+  return copy;
+}
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[ch]));
+}
+
+function normalizeBase(value) {
+  let text = String(value == null ? '' : value).trim().replace(/\\/g, '/');
+  while (text.indexOf('//') !== -1) text = text.replace('//', '/');
+  while (text.endsWith('/')) text = text.slice(0, -1);
+  return text;
+}
+
+function sameBase(left, right) {
+  return normalizeBase(left) === normalizeBase(right);
+}
+
+function baseCaption(initial, current) {
+  const first = initial == null ? '' : String(initial);
+  const round = current == null ? '' : String(current);
+  if (sameBase(first, round)) {
+    const shown = normalizeBase(round) ? round : (normalizeBase(first) ? first : '');
+    return `基座 <span class="mono">${escapeHtml(shown)}</span>`;
+  }
+  return `最初基座 <span class="mono">${escapeHtml(first)}</span><br/>本轮基座 <span class="mono">${escapeHtml(round)}</span>`;
 }
 
 function toast(message) {
@@ -22,6 +98,15 @@ function toast(message) {
   el.textContent = message;
   clearTimeout(toast._timer);
   toast._timer = setTimeout(() => { el.hidden = true; }, 4200);
+}
+
+function setBusy(on) {
+  state.busy = Boolean(on);
+  document.body.classList.toggle('is-busy', state.busy);
+}
+
+function tipAttr(text) {
+  return text ? ` title="${escapeHtml(text)}"` : '';
 }
 
 async function api(url, options = {}) {
@@ -48,7 +133,15 @@ function labelOf(stage) {
   if (found) return found.label;
   if (stage === 'serve') return '推理服务';
   if (stage === 'serve_stop') return '停止推理';
+  if (stage === 'export') return '模型导出';
+  if (stage === 'decide') return '选择';
+  if (stage === 'finish') return '完成';
   return stage;
+}
+
+function runStatusLabel(run) {
+  if (run.status === 'completed') return '已完成';
+  return labelOf(run.current_stage);
 }
 
 function statusText(status) {
@@ -59,7 +152,29 @@ function statusText(status) {
     failed: '失败',
     running: '运行中',
     superseded: '已作废',
+    syncing: '同步中',
   }[status] || status;
+}
+
+function formatElapsed(startedAt) {
+  const start = Date.parse(startedAt || '');
+  if (!startedAt || Number.isNaN(start)) return '';
+  let secs = Math.max(0, Math.floor((Date.now() - start) / 1000));
+  const hours = Math.floor(secs / 3600);
+  secs -= hours * 3600;
+  const mins = Math.floor(secs / 60);
+  const rem = secs - mins * 60;
+  const clock = `${String(mins).padStart(2, '0')}:${String(rem).padStart(2, '0')}`;
+  return hours > 0 ? `${hours}:${clock}` : clock;
+}
+
+function elapsedLabel(startedAt) {
+  const clock = formatElapsed(startedAt);
+  return clock ? `运行中 · ${clock}` : '运行中';
+}
+
+function runningMarkup(startedAt) {
+  return `<i class="spin" aria-hidden="true"></i><span data-started="${escapeHtml(startedAt || '')}">${escapeHtml(elapsedLabel(startedAt))}</span>`;
 }
 
 async function refreshRuns(selectId) {
@@ -78,18 +193,95 @@ function renderRuns() {
     return;
   }
   root.innerHTML = state.runs.map((run) => `
-    <button type="button" class="run-card ${state.view && state.view.run.id === run.id ? 'active' : ''}" data-run="${run.id}">
-      <b>${escapeHtml(run.name)}</b>
-      <small>第 ${run.round_index} 轮 · ${escapeHtml(labelOf(run.current_stage))}</small>
-    </button>`).join('');
+    <div class="run-card ${state.view && state.view.run.id === run.id ? 'active' : ''}">
+      <button type="button" class="run-open" data-run="${run.id}">
+        <b>${escapeHtml(run.name)}</b>
+        <small>第 ${run.round_index} 轮 · ${escapeHtml(runStatusLabel(run))}</small>
+      </button>
+      <button type="button" class="run-delete" data-delete-run="${run.id}" title="删除实验" aria-label="删除 ${escapeHtml(run.name)}">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M6.2 2.2h3.6l.4.8H13v1.3H3V3h2.8l.4-.8zM4.2 5.2h7.6l-.5 8.1a1 1 0 0 1-1 .9H5.7a1 1 0 0 1-1-.9l-.5-8.1z"/></svg>
+      </button>
+    </div>`).join('');
+}
+
+function askConfirm({ title, name = '', body, okLabel = '确定', danger = false }) {
+  const dialog = document.getElementById('confirm-dialog');
+  document.getElementById('confirm-title').textContent = title;
+  const nameEl = document.getElementById('confirm-name');
+  nameEl.textContent = name;
+  nameEl.hidden = !name;
+  document.getElementById('confirm-body').textContent = body;
+  const ok = document.getElementById('confirm-ok');
+  const cancel = document.getElementById('confirm-cancel');
+  ok.textContent = okLabel;
+  ok.className = danger ? 'danger' : 'primary';
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      ok.removeEventListener('click', onOk);
+      cancel.removeEventListener('click', onCancel);
+      dialog.removeEventListener('cancel', onEscape);
+      if (dialog.open) dialog.close();
+      resolve(value);
+    };
+    const onOk = () => finish(true);
+    const onCancel = () => finish(false);
+    const onEscape = (event) => {
+      event.preventDefault();
+      finish(false);
+    };
+    ok.addEventListener('click', onOk);
+    cancel.addEventListener('click', onCancel);
+    dialog.addEventListener('cancel', onEscape);
+    dialog.showModal();
+  });
+}
+
+async function deleteRun(id) {
+  const run = state.runs.find((item) => item.id === id);
+  const name = run ? run.name : id;
+  const index = state.runs.findIndex((item) => item.id === id);
+  const confirmed = await askConfirm({
+    title: '删除实验',
+    name,
+    body: '实验记录里的轮次、阶段和检查点会去掉，该实验目录下的阶段产物也会清理。上传的数据文件会保留。',
+    okLabel: '删除',
+    danger: true,
+  });
+  if (!confirmed) return;
+  await api(`/api/runs/${id}`, { method: 'DELETE' });
+  const wasCurrent = state.view && state.view.run.id === id;
+  const neighbor = state.runs[index + 1] || state.runs[index - 1];
+  if (wasCurrent) {
+    state.chat = [];
+    state.view = null;
+    if (neighbor) await refreshRuns(neighbor.id);
+    else {
+      await refreshRuns();
+      render();
+    }
+  } else {
+    await refreshRuns();
+    render();
+  }
+  toast('实验已删除');
 }
 
 async function openRun(id, round, keepStage) {
+  await flushDraft();
   const query = round ? `?round=${round}` : '';
   state.view = await api(`/api/runs/${id}${query}`);
+  state.serveDraft = null;
+  state.serveDraftRun = null;
+  state.exportDraft = null;
+  state.exportDraftRun = null;
+  state.exportLog = '';
   state.round = state.view.round.round_index;
   if (!keepStage) {
-    state.stage = state.view.mutable ? state.view.run.current_stage : 'data';
+    const current = state.view.run.current_stage;
+    state.stage = state.view.mutable || current === 'finish' ? current : 'sft';
     state.tab = 'flow';
   }
   render();
@@ -102,28 +294,59 @@ function fieldValue(field, values) {
   return raw;
 }
 
+function choiceEntries(field) {
+  if (field.choices && field.choices.length) {
+    return field.choices.map((choice) => {
+      if (typeof choice === 'string') return { value: choice, label: choice || '（空）' };
+      return { value: String(choice.value), label: choice.label };
+    });
+  }
+  const raw = field.choices_from && state.schema.catalog ? state.schema.catalog[field.choices_from] : [];
+  return (raw || []).map((item) => ({ value: String(item), label: String(item) }));
+}
+
 function renderField(field, values) {
   const value = fieldValue(field, values);
-  const help = `${escapeHtml(field.help || '')} ${field.arg ? `<code>${escapeHtml(field.arg)}</code>` : ''}`;
+  const lockTitle = field.locked ? ' title="由实验创建时决定，不能在这里修改"' : '';
+  if (field.locked && (field.type === 'combo' || field.type === 'multicombo' || field.type === 'text' || field.type === 'number' || field.type === 'textarea')) {
+    const control = field.type === 'textarea'
+      ? `<textarea data-field="${field.key}" rows="3" readonly${lockTitle}>${escapeHtml(value)}</textarea>`
+      : `<input type="text" data-field="${field.key}" value="${escapeHtml(value)}" readonly${lockTitle}/>`;
+    return `<label class="field locked" data-key="${field.key}">${inferCaption(field)}${control}</label>`;
+  }
   if (field.type === 'checkbox') {
     const checked = value === true || value === 'true' ? 'checked' : '';
-    return `<div class="field" data-key="${field.key}"><label class="check"><input type="checkbox" data-field="${field.key}" ${checked}/> ${escapeHtml(field.label)}</label><small>${help}</small></div>`;
+    const disabled = field.locked ? 'disabled' : '';
+    return `<div class="field${field.locked ? ' locked' : ''}" data-key="${field.key}"${lockTitle}><label class="check"><input type="checkbox" data-field="${field.key}" ${checked} ${disabled}/> ${escapeHtml(field.label)}</label></div>`;
   }
-  if (field.type === 'select') {
-    const options = (field.choices || []).map((choice) => {
-      const optionValue = typeof choice === 'string' ? choice : choice.value;
-      const optionLabel = typeof choice === 'string' ? (choice || '（空）') : choice.label;
-      const selected = String(value) === String(optionValue) ? 'selected' : '';
-      return `<option value="${escapeHtml(optionValue)}" ${selected}>${escapeHtml(optionLabel)}</option>`;
+  if (field.type === 'select' || field.type === 'multiselect') {
+    const multiple = field.type === 'multiselect';
+    const selected = new Set(multiple ? String(value ?? '').split(/\s+/).filter(Boolean) : [String(value)]);
+    const entries = choiceEntries(field);
+    if (multiple) {
+      selected.forEach((token) => {
+        if (token && !entries.some((item) => item.value === token)) entries.push({ value: token, label: token });
+      });
+    }
+    const options = entries.map((choice) => {
+      const mark = selected.has(String(choice.value)) ? 'selected' : '';
+      return `<option value="${escapeHtml(choice.value)}" ${mark}>${escapeHtml(choice.label)}</option>`;
     }).join('');
-    return `<label class="field" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><select data-field="${field.key}">${options}</select><small>${help}</small></label>`;
+    const multi = multiple ? 'multiple data-multi size="5"' : '';
+    const disabled = field.locked ? 'disabled' : '';
+    return `<label class="field${field.locked ? ' locked' : ''}" data-key="${field.key}"${lockTitle}><span>${escapeHtml(field.label)}</span><select data-field="${field.key}" ${multi} ${disabled}>${options}</select></label>`;
+  }
+  if (field.type === 'combo' || field.type === 'multicombo') {
+    const source = field.choices_from ? `data-choices-from="${escapeHtml(field.choices_from)}"` : '';
+    const multi = field.type === 'multicombo' ? 'data-multi="1"' : '';
+    return `<label class="field combo" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><div class="combo-anchor"><input type="text" data-field="${field.key}" data-combo="1" ${multi} ${source} value="${escapeHtml(value)}" autocomplete="off" /><div class="combo-list" hidden></div></div></label>`;
   }
   if (field.type === 'textarea') {
-    return `<label class="field" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><textarea data-field="${field.key}" rows="4">${escapeHtml(value)}</textarea><small>${help}</small></label>`;
+    return `<label class="field" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><textarea data-field="${field.key}" rows="4">${escapeHtml(value)}</textarea></label>`;
   }
   const inputType = field.type === 'number' ? 'number' : 'text';
   const step = field.step ? `step="${field.step}"` : '';
-  return `<label class="field" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><input type="${inputType}" data-field="${field.key}" value="${escapeHtml(value)}" ${step}/><small>${help}</small></label>`;
+  return `<label class="field" data-key="${field.key}"><span>${escapeHtml(field.label)}</span><input type="${inputType}" data-field="${field.key}" value="${escapeHtml(value)}" ${step}/></label>`;
 }
 
 function renderGroups(fields, values) {
@@ -135,12 +358,23 @@ function renderGroups(fields, values) {
     if (!last || last.name !== field.group) groups.push({ name: field.group, fields: [] });
     groups[groups.length - 1].fields.push(field);
   }
-  const blocks = groups.map((group) => `
-    <h3>${escapeHtml(group.name)}</h3>
-    <div class="grid">${group.fields.map((field) => renderField(field, values)).join('')}</div>`).join('');
+  const blocks = groups.map((group) => {
+    const head = group.fields.slice(0, 3);
+    const modelRow = head.length === 3
+      && head.every((field) => field.type === 'combo')
+      && head.map((field) => field.key).join(',') === 'model,model_type,template';
+    const body = modelRow ? group.fields.slice(3) : group.fields;
+    const modelHtml = modelRow
+      ? `<div class="grid model-grid">${head.map((field) => renderField(field, values)).join('')}</div>`
+      : '';
+    const bodyHtml = body.length
+      ? `<div class="grid">${body.map((field) => renderField(field, values)).join('')}</div>`
+      : '';
+    return `<h3>${escapeHtml(group.name)}</h3>${modelHtml}${bodyHtml}`;
+  }).join('');
   const extra = advanced.length ? `
     <details>
-      <summary>更多参数（与 swift Web-UI / 命令行同名）</summary>
+      <summary>更多参数</summary>
       <div class="grid">${advanced.map((field) => renderField(field, values)).join('')}</div>
     </details>` : '';
   return blocks + extra;
@@ -148,16 +382,21 @@ function renderGroups(fields, values) {
 
 function collectParams() {
   const params = {};
-  document.querySelectorAll('[data-field]').forEach((el) => {
+  document.querySelectorAll('#main [data-field]').forEach((el) => {
+    if (el.closest('[hidden]')) return;
     if (el.type === 'radio') {
       if (el.checked) params[el.dataset.field] = el.value;
+      return;
+    }
+    if (el.multiple) {
+      params[el.dataset.field] = Array.from(el.selectedOptions).map((option) => option.value).filter(Boolean).join(' ');
       return;
     }
     if (el.type === 'checkbox') {
       params[el.dataset.field] = el.checked;
       return;
     }
-    if (el.type === 'number') {
+    if (el.type === 'number' || el.type === 'range') {
       params[el.dataset.field] = el.value === '' ? null : Number(el.value);
       return;
     }
@@ -172,29 +411,234 @@ function syncSource() {
   const source = document.querySelector('[data-field="source"]');
   if (!source) return;
   const value = source.value;
-  document.querySelectorAll('[data-key="bundled"]').forEach((el) => { el.hidden = value !== 'bundled'; });
-  document.querySelectorAll('[data-key="dataset"]').forEach((el) => { el.hidden = value === 'bundled'; });
-  const upload = document.getElementById('upload-row');
-  if (upload) upload.hidden = value !== 'upload';
+  document.querySelectorAll('[data-dataset-mode]').forEach((el) => {
+    el.hidden = el.dataset.datasetMode !== value;
+  });
+}
+
+function datasetTokens(value) {
+  return String(value ?? '').trim().split(/\s+/).filter(Boolean);
+}
+
+function paintDatasetChips(box) {
+  if (!box) return;
+  const hidden = chipField(box);
+  const tokens = datasetTokens(hidden && hidden.value);
+  box.querySelectorAll('.chip').forEach((el) => el.remove());
+  const query = box.querySelector('.chip-query');
+  if (!query) return;
+  const html = tokens.map((token) => `<span class="chip"><span>${escapeHtml(token)}</span><button type="button" data-chip-remove="${escapeHtml(token)}" aria-label="移除">×</button></span>`).join('');
+  query.insertAdjacentHTML('beforebegin', html);
+  const clear = box.querySelector('[data-action="chip-clear"], [data-action="dataset-clear"]');
+  if (clear) clear.hidden = tokens.length === 0;
+}
+
+function shownDataSource(value, dataset) {
+  if (value === 'public' || value === 'upload' || value === 'path') return value;
+  const text = String(dataset || '');
+  if (text.startsWith('/') || text.includes('\\') || text.startsWith('.')) return 'path';
+  return 'public';
+}
+
+function renderLockedModelRow(fields, values) {
+  const labels = {
+    model: '模型id或路径(--model)',
+    model_type: '模型类型(--model_type)',
+    template: '模型Prompt模板类型(--template)',
+  };
+  const byKey = {};
+  (fields || []).forEach((field) => { byKey[field.key] = field; });
+  const cells = ['model', 'model_type', 'template'].map((key) => {
+    const field = byKey[key] || { key, label: labels[key], info: '' };
+    const value = values && values[key] != null ? values[key] : '';
+    return `<div class="field locked" data-key="${key}">${inferCaption(field)}<div class="control"><input type="text" data-field="${key}" value="${escapeHtml(value)}" readonly title="由实验创建时决定，不能在这里修改"/></div><div class="extra"></div></div>`;
+  }).join('');
+  return `<div class="infer-row infer-grid model-lock"><div class="infer-group" style="--cols:3">${cells}</div></div>`;
+}
+
+function renderDatasetSlider(field, values) {
+  const min = field.minimum == null ? 0 : field.minimum;
+  const max = field.maximum == null ? 1 : field.maximum;
+  const step = field.step == null ? 'any' : field.step;
+  let value = fieldValue(field, values);
+  if (value === '' && field.default != null) value = field.default;
+  return `<div class="field infer-slider" data-key="${field.key}">${inferCaption(field)}<div class="control slider-head"><input type="number" class="slider-num" data-slider-num="${field.key}" min="${min}" max="${max}" step="${step}" value="${escapeHtml(value)}" /><button type="button" class="ghost icon" data-action="slider-reset" data-reset="${field.key}" title="恢复初始值">↺</button></div><div class="extra"><input type="range" data-field="${field.key}" min="${min}" max="${max}" step="${step}" value="${escapeHtml(value)}" /><div class="slider-ends"><span>${escapeHtml(min)}</span><span>${escapeHtml(max)}</span></div></div></div>`;
+}
+
+function renderDatasetSettings(fields, values) {
+  const byKey = {};
+  fields.forEach((field) => { byKey[field.key] = field; });
+  const source = byKey.source;
+  const dataset = byKey.dataset || { key: 'dataset', label: '数据集名称(--dataset)', info: '选择训练的数据集，支持复选/本地路径' };
+  const datasetValue = fieldValue(dataset, values);
+  const sourceValue = shownDataSource(fieldValue(source, values), datasetValue);
+  const options = choiceEntries(source).map((choice) => {
+    const mark = String(choice.value) === sourceValue ? 'selected' : '';
+    return `<option value="${escapeHtml(choice.value)}" ${mark}>${escapeHtml(choice.label)}</option>`;
+  }).join('');
+  const tokens = datasetTokens(datasetValue);
+  const chips = tokens.map((token) => `<span class="chip"><span>${escapeHtml(token)}</span><button type="button" data-chip-remove="${escapeHtml(token)}" aria-label="移除">×</button></span>`).join('');
+  const clearHidden = tokens.length ? '' : 'hidden';
+  const hide = (mode) => (mode === sourceValue ? '' : 'hidden');
+  const sourceField = `<div class="field" data-key="source">${inferCaption(source)}<div class="control"><select data-field="source">${options}</select></div><div class="extra"></div></div>`;
+  const datasetField = `<div class="field" data-key="dataset">${inferCaption(dataset)}<div class="control">
+      <div data-dataset-mode="public" ${hide('public')}><div class="combo chip-combo"><div class="combo-anchor chip-box">${chips}<input class="chip-query" data-combo="1" data-chip="1" data-choices-from="datasets" value="" autocomplete="off" placeholder="选择或输入数据集" /><button type="button" class="chip-clear" data-action="dataset-clear" aria-label="清空" ${clearHidden}>×</button><button type="button" class="chip-caret" data-action="dataset-menu" aria-label="展开数据集">▾</button><input type="hidden" data-field="dataset" value="${escapeHtml(tokens.join(' '))}" /><div class="combo-list" hidden></div></div></div></div>
+      <div data-dataset-mode="upload" ${hide('upload')}><input id="file-input" type="file" accept=".jsonl,.json,.txt" /><input class="dataset-path" type="text" data-field="dataset" value="${escapeHtml(datasetValue)}" readonly placeholder="上传后显示文件路径" /></div>
+      <div data-dataset-mode="path" ${hide('path')}><input type="text" data-field="dataset" value="${escapeHtml(datasetValue)}" placeholder="服务器上的文件或目录路径" /></div>
+    </div><div class="extra"></div></div>`;
+  const split = byKey.split_dataset_ratio ? renderDatasetSlider(byKey.split_dataset_ratio, values) : '';
+  const length = byKey.max_length ? renderDatasetSlider(byKey.max_length, values) : '';
+  const padding = byKey.padding_free ? (() => {
+    const checked = fieldValue(byKey.padding_free, values) === true || fieldValue(byKey.padding_free, values) === 'true' ? 'checked' : '';
+    return `<div class="field check" data-key="padding_free">${inferCaption(byKey.padding_free)}<div class="control"><label class="check"><input type="checkbox" data-field="padding_free" ${checked}/></label></div><div class="extra"></div></div>`;
+  })() : '';
+  return `<details class="infer-runtime dataset-settings" open><summary>数据集设置</summary><div class="body"><div class="infer-row infer-grid"><div class="infer-group dataset-grid">${sourceField}${datasetField}${split}${length}${padding}</div></div></div></details>`;
 }
 
 function renderPromote(values) {
   const candidates = state.view.candidates || [];
-  const selected = values.choice || state.view.recommendation;
+  let selected = values.choice || state.view.recommendation;
+  const selectedRow = candidates.find((cand) => cand.kind === selected);
+  if (!selectedRow || !selectedRow.path) {
+    const fallback = candidates.find((cand) => cand.path);
+    selected = fallback ? fallback.kind : '';
+  }
   const cards = candidates.map((cand) => {
     const disabled = cand.path ? '' : 'disabled';
     const checked = selected === cand.kind ? 'checked' : '';
     const best = cand.kind === state.view.recommendation ? 'best' : '';
     const score = cand.score === null || cand.score === undefined ? '—' : cand.score;
-    return `<label class="candidate ${best}">
-      <input type="radio" name="choice" data-field="choice" value="${cand.kind}" ${checked} ${disabled}/>
+    const tip = cand.path ? '' : ' title="还没有检查点，不能选"';
+    return `<label class="candidate ${best}"${tip}>
+      <input type="radio" name="choice" data-field="choice" value="${cand.kind}" ${checked} ${disabled}${tip}/>
       <b>${escapeHtml(cand.label)}</b>
       ${cand.kind === state.view.recommendation ? '<span class="badge succeeded">建议</span>' : ''}
       <div class="score">${escapeHtml(score)}</div>
       <small class="mono">${escapeHtml(cand.path || '尚无检查点')}</small>
     </label>`;
   }).join('');
-  return `<div class="candidates">${cards}</div>`;
+  const missing = candidates.filter((cand) => !cand.path).map((cand) => cand.label);
+  const hint = missing.length
+    ? `<p class="muted run-reason">${escapeHtml(missing.join('、'))} 还没有检查点，${missing.length > 1 ? '这些选项不能选。' : '这个选项不能选。'}</p>`
+    : '';
+  return `<div class="candidates">${cards}</div>${hint}`;
+}
+
+function liveLogSeed(stage, formLogs) {
+  // Full render replaces the <pre>. Prefer text already painted by pollLive over an
+  // empty/stale step snapshot (syncing→running often has form.logs === '').
+  const existing = [...document.querySelectorAll('[data-live-log]')].find(
+    (el) => el.dataset.liveStage === String(stage) && el.isConnected);
+  const shown = existing ? (existing.textContent || '') : '';
+  const fromForm = formLogs || '';
+  if (shown && (!fromForm || shown.length >= fromForm.length)) return shown;
+  return fromForm;
+}
+
+function logPanel(text, liveAttrs, title) {
+  return `<div class="log-panel">
+    <div class="log-head"><h3>${escapeHtml(title || '日志')}</h3>${logTools()}</div>
+    <pre class="log live-log" data-pinned="1"${liveAttrs || ''}>${escapeHtml(text || '')}</pre>
+  </div>`;
+}
+
+function outputPanel(title, text, kind) {
+  const cls = kind === 'command' ? 'command' : 'log';
+  return `<div class="log-panel"><div class="log-head"><h3>${escapeHtml(title)}</h3>${logTools()}</div><pre class="${cls}">${escapeHtml(text || '')}</pre></div>`;
+}
+
+function metricEmptySvg() {
+  return `<svg viewBox="0 0 48 48" aria-hidden="true"><path fill="currentColor" d="M8 36V12h4v20h28v4H8zm6-6 8-10 6 7 8-12 4 3-11 16-6-7-5 6z"/><path fill="currentColor" opacity=".45" d="M10 10 38 38l-2.1 2.1L7.9 12.1z"/></svg>`;
+}
+
+function metricLineSvg(series) {
+  const steps = (series && series.steps) || [];
+  const values = (series && series.values) || [];
+  const smoothed = (series && series.smoothed) || null;
+  if (!steps.length || !values.length) {
+    return `<div class="metric-empty">${metricEmptySvg()}</div>`;
+  }
+  const w = 240;
+  const h = 110;
+  const pad = 8;
+  const xs = steps;
+  const ys = smoothed && smoothed.length === values.length
+    ? values.concat(smoothed)
+    : values;
+  let minX = xs[0];
+  let maxX = xs[0];
+  let minY = ys[0];
+  let maxY = ys[0];
+  xs.forEach((x) => { if (x < minX) minX = x; if (x > maxX) maxX = x; });
+  ys.forEach((y) => { if (y < minY) minY = y; if (y > maxY) maxY = y; });
+  if (minX === maxX) { minX -= 1; maxX += 1; }
+  if (minY === maxY) { minY -= 1; maxY += 1; }
+  const sx = (x) => pad + ((x - minX) / (maxX - minX)) * (w - pad * 2);
+  const sy = (y) => h - pad - ((y - minY) / (maxY - minY)) * (h - pad * 2);
+  const pathFor = (vals, color, width) => {
+    if (vals.length === 1) {
+      const cx = sx(xs[0]);
+      const cy = sy(vals[0]);
+      return `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="3" fill="${color}"/>`;
+    }
+    const d = vals.map((v, i) => `${i ? 'L' : 'M'}${sx(xs[i]).toFixed(1)},${sy(v).toFixed(1)}`).join(' ');
+    return `<path d="${d}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linejoin="round" stroke-linecap="round"/>`;
+  };
+  const raw = smoothed ? pathFor(values, '#FFE2D9', 1.5) : '';
+  const main = pathFor(smoothed || values, '#FF7043', 2);
+  return `<svg class="metric-plot" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml((series && series.name) || '')}">${raw}${main}</svg>`;
+}
+
+function metricsCacheKey(stage, round) {
+  return `${stage}|${round || ''}`;
+}
+
+function metricsPanel(stage, round, live) {
+  const keys = STAGE_METRIC_KEYS[stage];
+  if (!keys) return '';
+  const cached = state.metricsCache[metricsCacheKey(stage, round)];
+  const byName = {};
+  ((cached && cached.series) || []).forEach((item) => { byName[item.name] = item; });
+  const cards = keys.map((name) => {
+    const series = byName[name] || { name, steps: [], values: [] };
+    return `<div class="metric-card" data-metric="${escapeHtml(name)}">
+      <div class="metric-head"><svg class="icon" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M1 13h14v1H1zm2-1 3-4 2.5 3L12 5l2 2.5-.9.7L12 7.2 8.4 12 5.8 9 3 12.5z"/></svg><span>${escapeHtml(name)}</span></div>
+      ${metricLineSvg(series)}
+    </div>`;
+  }).join('');
+  const liveAttrs = live
+    ? ` data-live-metrics="1" data-live-stage="${escapeHtml(stage)}" data-live-round="${escapeHtml(String(round || ''))}"`
+    : ` data-metrics-once="1" data-live-stage="${escapeHtml(stage)}" data-live-round="${escapeHtml(String(round || ''))}"`;
+  return `<div class="metric-charts"${liveAttrs}>${cards}</div>`;
+}
+
+function paintMetrics(el, payload) {
+  if (!el || !el.isConnected || !payload) return;
+  const stage = el.dataset.liveStage || payload.stage;
+  const round = el.dataset.liveRound || payload.round;
+  state.metricsCache[metricsCacheKey(stage, round)] = payload;
+  const byName = {};
+  (payload.series || []).forEach((item) => { byName[item.name] = item; });
+  el.querySelectorAll('.metric-card').forEach((card) => {
+    const name = card.dataset.metric;
+    const series = byName[name] || { name, steps: [], values: [] };
+    const head = card.querySelector('.metric-head');
+    const next = metricLineSvg(series);
+    const old = card.querySelector('.metric-plot, .metric-empty');
+    if (old) old.outerHTML = next;
+    else if (head) head.insertAdjacentHTML('afterend', next);
+  });
+}
+
+async function fetchStageMetrics(stage, round) {
+  if (!state.view || !STAGE_METRIC_KEYS[stage]) return null;
+  const query = new URLSearchParams();
+  if (round) query.set('round', round);
+  try {
+    return await api(`/api/runs/${state.view.run.id}/stages/${encodeURIComponent(stage)}/metrics?${query}`);
+  } catch (_err) {
+    return null;
+  }
 }
 
 function renderStage(stage) {
@@ -203,6 +647,9 @@ function renderStage(stage) {
   const fields = state.schema.fields[stage] || [];
   const meta = state.schema.stages.find((item) => item.id === stage);
   const mutable = view.mutable && form.status !== 'locked' && form.status !== 'running';
+  const blockReason = !view.mutable
+    ? '历史轮次只能查看'
+    : (form.status === 'running' ? '运行中' : (form.status === 'locked' ? '请先完成上一阶段' : ''));
   const buttonLabel = {
     ready: '运行本阶段',
     failed: '重试本阶段',
@@ -210,51 +657,175 @@ function renderStage(stage) {
     running: '运行中',
     locked: '请先完成上一阶段',
   }[form.status] || '运行本阶段';
-  const promote = stage === 'promote' ? renderPromote(form.values || {}) : '';
-  const upload = stage === 'data' ? `
-    <div id="upload-row" class="field">
-      <span>上传 jsonl / json</span>
-      <input id="file-input" type="file" accept=".jsonl,.json,.txt" />
-      <small>上传后会立刻校验，并把路径填进数据集字段。</small>
-    </div>` : '';
-  const validate = stage === 'data' ? '<button type="button" class="ghost" data-action="validate">校验格式</button>' : '';
-  const result = form.result ? `<h3>结果</h3><pre class="log">${escapeHtml(JSON.stringify(form.result, null, 2))}</pre>` : '';
-  const logs = form.logs ? `<h3>日志</h3><pre class="log">${escapeHtml(form.logs)}</pre>` : '';
-  const command = form.command ? `<h3>将执行 / 已记录的命令</h3><pre class="command">${escapeHtml(form.command)}</pre>` : '';
+  const values = form.values || {};
+  const promote = stage === 'promote' ? renderPromote(values) : '';
+  const viewTip = tipAttr(view.mutable ? '' : '历史轮次只能查看');
+  const validate = stage === 'sft'
+    ? `<button type="button" class="ghost" data-action="validate"${viewTip} ${view.mutable ? '' : 'disabled'}>校验格式</button>`
+    : '';
+  const reportLink = form.result ? evalReportLink(stage, form.result) : '';
+  const result = form.result ? `${scoreHeadline(form.result.metrics)}${scoreTable(form.result.metrics)}${reportLink ? `<p class="row-actions">${reportLink}</p>` : ''}${outputPanel('结果', JSON.stringify(visibleResult(form.result), null, 2))}` : '';
+  const streaming = form.status === 'running' || form.status === 'syncing';
+  const liveAttrs = streaming ? ` data-live-log="1" data-live-stage="${escapeHtml(stage)}" data-live-round="${view.round.round_index}"` : '';
+  const logText = streaming ? liveLogSeed(stage, form.logs || '') : (form.logs || '');
+  const logs = (logText || streaming) ? logPanel(logText, liveAttrs) : '';
+  const charts = STAGE_METRIC_KEYS[stage]
+    ? metricsPanel(stage, view.round.round_index, streaming || form.status === 'succeeded' || form.status === 'failed')
+    : '';
+  const command = form.command ? outputPanel('命令', form.command, 'command') : '';
+  const stop = form.status === 'running'
+    ? '<button type="button" class="danger" data-action="stage-stop">停止</button>'
+    : '';
+  const kicker = form.status === 'running'
+    ? `${escapeHtml(meta.label)} · ${runningMarkup(form.started_at)}`
+    : `${escapeHtml(meta.label)} · ${escapeHtml(statusText(form.status))}`;
   return `
     <section class="panel">
-      <p class="kicker">${escapeHtml(meta.label)} · ${escapeHtml(statusText(form.status))}</p>
+      <p class="kicker">${kicker}</p>
       <h2>${escapeHtml(meta.summary)}</h2>
       ${view.mutable ? '' : '<p class="muted">这是历史轮次，只能查看。</p>'}
       ${promote}
-      ${renderGroups(fields, form.values || {})}
-      ${upload}
-      <details class="yaml">
+      ${state.schema.stage_layouts && state.schema.stage_layouts[stage]
+        ? `<div class="infer-form stage-form">${renderBlocks(state.schema.stage_layouts[stage].blocks, values)}</div>`
+        : renderGroups(fields, values)}
+      ${state.schema.stage_layouts && state.schema.stage_layouts[stage] ? '' : `<details class="yaml">
         <summary>高级参数 YAML</summary>
-        <p class="muted">键名就是 swift 的命令行参数。同名键会覆盖上面的表单。</p>
-        <textarea id="extra-yaml">${escapeHtml((form.values && form.values.extra_yaml) || '')}</textarea>
-      </details>
+        <textarea id="extra-yaml">${escapeHtml((values && values.extra_yaml) || '')}</textarea>
+      </details>`}
+      ${fetchNote()}
       <div class="row-actions">
-        <button type="button" class="primary" data-action="run" ${mutable ? '' : 'disabled'}>${buttonLabel}</button>
+        <button type="button" class="primary" data-action="run"${tipAttr(mutable ? '' : blockReason)} ${mutable ? '' : 'disabled'}>${buttonLabel}</button>
+        ${stop}
+        ${refetchButton()}
         ${validate}
-        <button type="button" class="ghost" data-action="preview" ${view.mutable ? '' : 'disabled'}>预览命令</button>
-        <button type="button" class="ghost" data-action="preset" ${view.mutable ? '' : 'disabled'}>恢复 A100 预设</button>
+        <button type="button" class="ghost" data-action="preview"${viewTip} ${view.mutable ? '' : 'disabled'}>预览命令</button>
+        <button type="button" class="ghost" data-action="preset"${viewTip} ${view.mutable ? '' : 'disabled'}>恢复预设</button>
       </div>
+      ${blockReason ? `<p class="muted run-reason">${escapeHtml(blockReason)}</p>` : ''}
       <div id="live-command"></div>
       ${result}
       ${command}
+      ${charts}
       ${logs}
     </section>`;
 }
 
+function flowEdgeGeometry(edge, from, to) {
+  if (edge.points && edge.points.length) {
+    const d = edge.points.map((pt, index) => `${index ? 'L' : 'M'} ${pt[0]} ${pt[1]}`).join(' ');
+    return { d, x: edge.label_x, y: edge.label_y, anchor: edge.label_anchor || 'middle' };
+  }
+  if (edge.kind === 'down') {
+    const x1 = from.x + from.w / 2;
+    const y1 = from.y + from.h;
+    const x2 = to.x + to.w / 2;
+    const y2 = to.y;
+    if (Math.abs(x1 - x2) < 6) {
+      return { d: `M ${x1} ${y1} L ${x2} ${y2}`, x: x1 + 10, y: (y1 + y2) / 2, anchor: 'start' };
+    }
+    const mid = Math.round((y1 + y2) / 2);
+    return {
+      d: `M ${x1} ${y1} L ${x1} ${mid} L ${x2} ${mid} L ${x2} ${y2}`,
+      x: (x1 + x2) / 2,
+      y: mid - 7,
+      anchor: 'middle',
+    };
+  }
+  const y = from.y + from.h / 2;
+  const x1 = from.x + from.w;
+  const x2 = to.x;
+  return { d: `M ${x1} ${y} L ${x2} ${y}`, x: (x1 + x2) / 2, y: y - 8, anchor: 'middle' };
+}
+
+function flowNodeTitle(node) {
+  if (node.status === 'locked') return '未解锁';
+  if (node.status === 'failed') return '这一步只展示结果';
+  if (node.status === 'running') return '运行中';
+  return '当前不能点开';
+}
+
+function flowNodeSelected(node) {
+  const choosingNext = state.stage === 'promote' || state.stage === 'next_round';
+  if (node.id === 'promote') return choosingNext;
+  if (node.id === 'sft_next' || node.id === 'rl_next' || node.id === 'next_data') {
+    return choosingNext && node.status !== 'locked';
+  }
+  if (node.id === 'sft_finish' || node.id === 'rl_finish' || node.id === 'finish') return state.stage === 'finish';
+  return state.stage === node.id;
+}
+
+function renderGraph() {
+  const flow = state.view.flow || { canvas: { width: 860, height: 108 }, nodes: [], edges: [], actions: [], prompt: '' };
+  const byId = {};
+  flow.nodes.forEach((node) => { byId[node.id] = node; });
+  const paths = flow.edges.map((edge) => {
+    const from = byId[edge.from];
+    const to = byId[edge.to];
+    if (!from || !to) return '';
+    const geom = flowEdgeGeometry(edge, from, to);
+    const marker = edge.live ? 'url(#flow-arrow-live)' : 'url(#flow-arrow)';
+    const label = edge.label && edge.show_label !== false
+      ? `<text class="flow-edge-label ${edge.live ? 'live' : ''}" x="${geom.x}" y="${geom.y}" text-anchor="${geom.anchor}">${escapeHtml(edge.label)}</text>`
+      : '';
+    const taken = edge.taken ? ' taken' : '';
+    const flowing = to.status === 'running' ? ' flowing' : '';
+    return `<path class="flow-edge ${edge.live ? 'live' : ''}${taken}${flowing}" d="${geom.d}" marker-end="${marker}"/>${label}`;
+  }).join('');
+  const nodes = flow.nodes.map((node) => {
+    const form = (state.view.forms || {})[node.id] || {};
+    const caption = node.status === 'running'
+      ? runningMarkup(form.started_at)
+      : escapeHtml(node.verdict || statusText(node.status));
+    const disabled = node.clickable ? '' : 'disabled';
+    const selected = flowNodeSelected(node) ? 'selected' : '';
+    const minor = node.minor ? 'minor' : '';
+    const busy = node.status === 'running' ? ' aria-busy="true"' : '';
+    const tip = node.clickable ? '' : tipAttr(flowNodeTitle(node));
+    return `<button type="button" class="flow-node ${node.status} ${selected} ${minor}" data-stage="${node.id}"${tip} ${disabled}${busy} style="left:${node.x}px;top:${node.y}px;width:${node.w}px;height:${node.h}px"><b>${escapeHtml(node.label)}</b><small>${caption}</small></button>`;
+  }).join('');
+  const actions = (flow.actions || []).map((action) => `<button type="button" class="${action.danger ? 'danger' : 'primary'}" data-decision="${action.id}">${escapeHtml(action.label)}</button>`).join('');
+  const actionBar = actions
+    ? `<div class="flow-actions">${flow.prompt ? `<p class="muted">${escapeHtml(flow.prompt)}</p>` : ''}<div class="row-actions">${actions}</div></div>`
+    : '';
+  const canvas = flow.canvas || { width: 860, height: 236 };
+  return `<div class="flow-scroll"><div class="flow-canvas" style="width:${canvas.width}px;height:${canvas.height}px">
+    <svg viewBox="0 0 ${canvas.width} ${canvas.height}" aria-hidden="true">
+      <defs>
+        <marker id="flow-arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#d1d5db"/></marker>
+        <marker id="flow-arrow-live" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6366f1"/></marker>
+      </defs>
+      ${paths}
+    </svg>
+    ${nodes}
+  </div></div>${actionBar}`;
+}
+
+function renderTerminal() {
+  const completed = state.view.run.status === 'completed';
+  const run = state.view.run || {};
+  const round = state.view.round || {};
+  const values = {
+    model: round.base_model || run.base_model || '',
+    model_type: run.model_type || '',
+    template: run.template || '',
+  };
+  return `<section class="panel"><h2>${completed ? '实验已完成' : '实验已结束'}</h2><p>本轮到此结束。已有检查点仍留在记录里。</p>
+    <div class="infer-form">${renderLockedModelRow([], values)}</div>
+    <div class="row-actions"><button type="button" class="primary" data-action="open-serve">去部署推理服务</button><button type="button" class="ghost" data-action="open-export">去模型导出</button></div>
+  </section>`;
+}
+
 function renderFlow() {
-  const view = state.view;
-  const rail = view.board.map((item) => `
-    <button type="button" data-stage="${item.id}" class="${item.status} ${state.stage === item.id ? 'selected' : ''}">
-      <b>${escapeHtml(item.label)}</b>
-      <small>${escapeHtml(statusText(item.status))}${item.metric ? ' · ' + escapeHtml(item.metric) : ''}</small>
-    </button>`).join('');
-  return `<div class="rail">${rail}</div>${renderStage(state.stage)}`;
+  const graph = renderGraph();
+  if (state.stage === 'finish') return graph + renderTerminal();
+  if (!state.view.forms[state.stage]) state.stage = 'sft';
+  return graph + renderStage(state.stage);
+}
+
+function durationCell(step) {
+  const text = formatDurationZh(step.started_at, step.ended_at);
+  if (!step.started_at || step.ended_at) return escapeHtml(text);
+  return `<span data-duration-start="${escapeHtml(step.started_at)}">${escapeHtml(text)}</span>`;
 }
 
 function renderAudit() {
@@ -262,105 +833,507 @@ function renderAudit() {
   const rows = steps.map((step) => {
     const open = state.expanded === step.id;
     const detail = open ? `<tr class="expand"><td colspan="7">
-      <p><b>开始</b> ${escapeHtml(step.started_at)} · <b>结束</b> ${escapeHtml(step.ended_at || '')}</p>
-      <h3>参数</h3><pre class="log">${escapeHtml(JSON.stringify(step.params, null, 2))}</pre>
-      <h3>结果</h3><pre class="log">${escapeHtml(JSON.stringify(step.result, null, 2))}</pre>
-      <h3>日志</h3><pre class="log">${escapeHtml(step.logs || '')}</pre>
-      ${step.command ? `<h3>命令</h3><pre class="command">${escapeHtml(step.command)}</pre>` : ''}
+      <p><b>开始</b> ${escapeHtml(formatShanghai(step.started_at))} · <b>结束</b> ${escapeHtml(formatShanghai(step.ended_at || ''))} · <b>耗时</b> ${escapeHtml(formatDurationZh(step.started_at, step.ended_at))}</p>
+      ${outputPanel('参数', JSON.stringify(step.params, null, 2))}
+      ${scoreHeadline((step.result || {}).metrics)}${scoreTable((step.result || {}).metrics)}${evalReportLink(step.stage, step.result, step.round_index) ? `<p class="row-actions">${evalReportLink(step.stage, step.result, step.round_index)}</p>` : ''}${outputPanel('结果', JSON.stringify(visibleResult(step.result), null, 2))}
+      ${logPanel(
+        (step.status === 'running' || step.status === 'syncing') ? liveLogSeed(step.stage, step.logs || '') : (step.logs || ''),
+        (step.status === 'running' || step.status === 'syncing') ? ` data-live-log="1" data-live-stage="${escapeHtml(step.stage)}" data-live-round="${step.round_index}"` : '')}
+      ${step.command ? outputPanel('命令', step.command, 'command') : ''}
     </td></tr>` : '';
     return `<tr data-step="${step.id}">
       <td>${step.id}</td>
       <td>${step.round_index}</td>
       <td>${escapeHtml(labelOf(step.stage))}</td>
       <td><span class="badge ${step.status}">${escapeHtml(statusText(step.status))}</span></td>
-      <td>${escapeHtml(step.backend)}</td>
-      <td>${escapeHtml(step.started_at || '')}</td>
-      <td>${escapeHtml(step.ended_at || '')}</td>
+      <td>${escapeHtml(formatShanghai(step.started_at || ''))}</td>
+      <td>${escapeHtml(formatShanghai(step.ended_at || ''))}</td>
+      <td>${durationCell(step)}</td>
     </tr>${detail}`;
   }).join('');
   return `<section class="panel">
-    <h2>审计</h2>
-    <p class="muted">每次运行都会留下开始时间、参数、结束时间、结果和日志。重新运行不会删旧记录，只把后续步骤标成已作废。</p>
+    <h2>实验记录</h2>
     <table>
-      <thead><tr><th>ID</th><th>轮</th><th>阶段</th><th>状态</th><th>后端</th><th>开始</th><th>结束</th></tr></thead>
+      <thead><tr><th>ID</th><th>轮</th><th>阶段</th><th>状态</th><th>开始</th><th>结束</th><th>耗时</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="7">还没有步骤。</td></tr>'}</tbody>
     </table>
   </section>`;
 }
 
+function serveFormValues(view) {
+  const base = state.serveDraft && state.serveDraftRun === view.run.id
+    ? { ...state.serveDraft }
+    : { ...(view.serve_form || {}) };
+  const fill = view.serve_fill || {};
+  ['model', 'model_type', 'template', 'adapters'].forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(fill, key)) base[key] = fill[key] == null ? '' : fill[key];
+  });
+  return base;
+}
+
+function inferItemValue(item, values) {
+  const raw = values ? values[item.id] : undefined;
+  if (raw === false || raw === 0) return raw;
+  if (item.locked) return raw == null ? '' : raw;
+  if (raw !== undefined && raw !== null && raw !== '') return raw;
+  if (item.default !== undefined && item.default !== null) return item.default;
+  return '';
+}
+
+function inferChoices(item, value) {
+  let entries = (item.choices || []).map((choice) => String(choice));
+  if (!entries.length && item.choices_from && state.schema.catalog) {
+    entries = (state.schema.catalog[item.choices_from] || []).map((choice) => String(choice));
+  }
+  const tokens = item.multiselect ? String(value ?? '').split(/[\s,]+/).filter(Boolean) : [String(value ?? '')];
+  const selected = new Set(tokens);
+  selected.forEach((token) => {
+    if (token && !entries.includes(token)) entries.unshift(token);
+  });
+  return { entries, selected };
+}
+
+function chatCanSend() {
+  const input = document.getElementById('chat-input');
+  const text = input ? input.value.trim() : '';
+  const files = state.mediaFiles || {};
+  return Boolean(text || files.image || files.video || files.audio);
+}
+
+function syncSendButton() {
+  const button = document.querySelector('[data-action="chat"]');
+  if (!button) return;
+  const ready = chatCanSend();
+  button.disabled = !ready;
+  button.classList.toggle('primary', ready);
+  button.classList.toggle('ghost', !ready);
+}
+
+function runningTaskText(service) {
+  const cmd = String(service.command || '').replace(/\s+/g, ' ').trim();
+  const where = service.port ? `${service.host || '127.0.0.1'}:${service.port}` : '';
+  const bits = ['运行中', service.served_model_name || '', where, cmd];
+  return bits.filter(Boolean).join(' · ');
+}
+
+function inferAction(id) {
+  if (state.tab === 'export') {
+    return {
+      export: 'export-run',
+      export_preview: 'export-preview',
+      refresh_tasks: 'export-refresh',
+      kill_task: 'export-stop',
+    }[id] || id;
+  }
+  return {
+    reset: 'reset-infer',
+    load_checkpoint: 'serve',
+    refresh_tasks: 'serve-refresh',
+    kill_task: 'serve-stop',
+    clear_history: 'clear-chat',
+    submit: 'chat',
+  }[id] || id;
+}
+
+function inferLabelParts(item) {
+  const raw = String(item.label || '');
+  const match = raw.match(/^(.*?)\(--([A-Za-z0-9_]+)\)\s*$/);
+  if (!match) return { name: raw, flag: '' };
+  return { name: match[1].trim(), flag: `--${match[2]}` };
+}
+
+function inferCaption(item) {
+  const parts = inferLabelParts(item);
+  const hint = item.info || '';
+  const flag = parts.flag
+    ? `<span class="flag" title="${escapeHtml(parts.flag)}">${escapeHtml(parts.flag)}</span>`
+    : '<span class="flag"></span>';
+  return `<span class="lab" title="${escapeHtml(parts.name)}">${escapeHtml(parts.name)}</span>${flag}<small title="${escapeHtml(hint)}">${escapeHtml(hint)}</small>`;
+}
+
+function inferPathControl(item, value) {
+  const text = value == null ? '' : String(value);
+  const read = item.locked ? 'readonly' : '';
+  return `<textarea class="path" data-field="${item.id}" rows="2" title="${escapeHtml(text)}" ${read}>${escapeHtml(text)}</textarea>`;
+}
+
+function chipField(box) {
+  return box ? box.querySelector('input[type="hidden"][data-field]') : null;
+}
+
+function renderChipBox(item, value) {
+  const tokens = datasetTokens(value);
+  const chips = tokens.map((token) => `<span class="chip"><span>${escapeHtml(token)}</span><button type="button" data-chip-remove="${escapeHtml(token)}" aria-label="移除">×</button></span>`).join('');
+  const clearHidden = tokens.length ? '' : 'hidden';
+  const from = item.choices_from ? ` data-choices-from="${escapeHtml(item.choices_from)}"` : '';
+  const inline = !item.choices_from && item.choices && item.choices.length
+    ? ` data-choice-list="${escapeHtml(JSON.stringify(item.choices.map((choice) => String(choice))))}"` : '';
+  const custom = item.allow_custom ? '' : ' data-allow-custom="0"';
+  const read = item.locked ? 'readonly' : '';
+  const placeholder = item.allow_custom ? '选择或输入' : '选择';
+  return `<div class="combo chip-combo"><div class="combo-anchor chip-box">${chips}<input class="chip-query" data-combo="1" data-chip="1"${from}${inline}${custom} value="" autocomplete="off" placeholder="${placeholder}" ${read}/><button type="button" class="chip-clear" data-action="chip-clear" aria-label="清空" ${clearHidden}>×</button><button type="button" class="chip-caret" data-action="chip-menu" aria-label="展开">▾</button><input type="hidden" data-field="${escapeHtml(item.id)}" value="${escapeHtml(tokens.join(' '))}" /><div class="combo-list" hidden></div></div></div>`;
+}
+
+function renderInferControl(item, values, running, fill) {
+  const value = inferItemValue(item, values);
+  const locked = item.locked ? 'disabled' : '';
+  const lockTitle = item.locked ? ' title="由本轮实验决定，不能在这里修改"' : '';
+  const info = item.info ? `<small>${escapeHtml(item.info)}</small>` : '';
+  if (item.widget === 'Button') {
+    const action = inferAction(item.id);
+    let disabled = '';
+    let why = '';
+    if (item.id === 'load_checkpoint' && !(values.model || values.adapters)) {
+      disabled = 'disabled';
+      why = '还没有可部署的模型';
+    }
+    if (item.id === 'export' && !(values.model || values.adapters)) {
+      disabled = 'disabled';
+      why = '还没有可导出的模型';
+    }
+    if (item.id === 'export' && running) {
+      disabled = 'disabled';
+      why = '导出进行中';
+    }
+    if (item.id === 'kill_task' && !running) {
+      disabled = 'disabled';
+      why = state.tab === 'export' ? '当前没有导出任务' : '当前没有运行中的推理';
+    }
+    if (item.id === 'submit' && !chatCanSend()) {
+      disabled = 'disabled';
+      why = '请先输入内容';
+    }
+    let klass = item.primary ? 'primary' : (item.id === 'kill_task' ? 'danger' : 'ghost');
+    if (item.id === 'submit') klass = chatCanSend() ? 'primary' : 'ghost';
+    const tip = why ? ` title="${escapeHtml(why)}"` : '';
+    return `<div class="infer-action"><button type="button" class="${klass}" data-action="${action}" ${disabled}${tip}>${escapeHtml(item.label)}</button></div>`;
+  }
+  if (item.id === 'log') {
+    const logText = state.tab === 'export' ? (state.exportLog || '') : (state.inferLog || '');
+    return `<div class="log-panel infer-log" data-key="log"><div class="log-head"><div class="log-title"><span>${escapeHtml(item.label)}</span>${info}</div>${logTools()}</div><textarea class="log" readonly rows="18">${escapeHtml(logText)}</textarea></div>`;
+  }
+  const caption = inferCaption(item);
+  if (item.widget === 'Checkbox') {
+    const checked = value === true || value === 'true' ? 'checked' : '';
+    return `<div class="field check" data-key="${item.id}"${lockTitle}>${caption}<div class="control"><label class="check"><input type="checkbox" data-field="${item.id}" ${checked} ${locked}/></label></div><div class="extra"></div></div>`;
+  }
+  if (item.widget === 'Slider') {
+    const min = item.minimum == null ? 0 : item.minimum;
+    const max = item.maximum == null ? 1 : item.maximum;
+    const step = item.step == null ? 'any' : item.step;
+    // Empty value on <input type="range"> becomes the browser midpoint (e.g. 129 / 10).
+    // Prefer Gradio default, else the slider minimum (ms-swift-safe for batch / NEFTune).
+    let shown = value;
+    if (shown === '' || shown === undefined || shown === null) {
+      shown = item.default != null ? item.default : min;
+    }
+    return `<div class="field infer-slider" data-key="${item.id}">${caption}<div class="control slider-head"><input type="number" class="slider-num" data-slider-num="${item.id}" min="${min}" max="${max}" step="${step}" value="${escapeHtml(shown)}" /><button type="button" class="ghost icon" data-action="slider-reset" data-reset="${item.id}" title="恢复初始值">↺</button></div><div class="extra"><input type="range" data-field="${item.id}" min="${min}" max="${max}" step="${step}" value="${escapeHtml(shown)}" /><div class="slider-ends"><span>${escapeHtml(min)}</span><span>${escapeHtml(max)}</span></div></div></div>`;
+  }
+  if (item.id === 'running_tasks' && state.tab === 'export') {
+    const job = (state.view && state.view.export_job) || {};
+    const active = job.status === 'running';
+    const label = active ? `导出进行中 · ${job.output_dir || ''}`.trim() : '';
+    const options = active
+      ? `<option value="export" selected>${escapeHtml(label)}</option>`
+      : '<option value="">没有导出任务</option>';
+    return `<div class="field" data-key="running_tasks">${caption}<div class="control"><select>${options}</select></div><div class="extra"></div></div>`;
+  }
+  if (item.id === 'running_tasks') {
+    const services = ((state.view && state.view.services) || []).filter((service) => service.status === 'running');
+    const current = services[services.length - 1];
+    const options = services.map((service) => {
+      const mark = service === current ? 'selected' : '';
+      return `<option value="${escapeHtml(String(service.id))}" ${mark}>${escapeHtml(runningTaskText(service))}</option>`;
+    }).join('');
+    const empty = '<option value="">没有部署</option>';
+    return `<div class="field" data-key="running_tasks">${caption}<div class="control"><select>${options || empty}</select></div><div class="extra"></div></div>`;
+  }
+  if (item.id === 'model' || item.id === 'adapters') {
+    const fillAction = state.tab === 'export' ? 'fill-export' : 'fill-serve';
+    const fillText = state.tab === 'export' ? '填入本轮权重' : '填入本轮晋级 checkpoint';
+    const extra = item.id === 'adapters' && fill && fill.checkpoint
+      ? `<button type="button" class="ghost fill-serve" data-action="${fillAction}">${fillText}</button>`
+      : '';
+    return `<div class="field" data-key="${item.id}"${lockTitle}>${caption}<div class="control">${inferPathControl(item, value)}</div><div class="extra">${extra}</div></div>`;
+  }
+  if (item.widget === 'Dropdown' && item.multiselect) {
+    return `<div class="field" data-key="${item.id}"${lockTitle}>${caption}<div class="control">${renderChipBox(item, value)}</div><div class="extra"></div></div>`;
+  }
+  if (item.widget === 'Dropdown') {
+    const choice = inferChoices(item, value);
+    if (item.locked) {
+      const current = String(value ?? '');
+      choice.entries = current ? [current] : [];
+      choice.selected = new Set(current ? [current] : []);
+    } else if (item.default == null) {
+      // Gradio value=None: keep an empty first option so the browser does not
+      // submit the first catalog id (e.g. ref_model → 01ai/Yi-1.5-34B).
+      if (!choice.entries.includes('')) {
+        choice.entries = ['', ...choice.entries];
+      }
+      const current = value === false || value === 0 ? String(value) : String(value ?? '').trim();
+      if (!current) {
+        choice.selected = new Set(['']);
+      }
+    }
+    const options = choice.entries.map((entry) => {
+      const mark = choice.selected.has(entry) ? 'selected' : '';
+      return `<option value="${escapeHtml(entry)}" ${mark}>${escapeHtml(entry || '（空）')}</option>`;
+    }).join('');
+    const multi = item.multiselect ? 'multiple data-multi size="4"' : '';
+    return `<div class="field" data-key="${item.id}"${lockTitle}>${caption}<div class="control"><select data-field="${item.id}" ${multi} ${locked}>${options}</select></div><div class="extra"></div></div>`;
+  }
+  const long = Number(item.lines) >= 4;
+  const control = long
+    ? `<textarea class="tall" data-field="${item.id}" rows="${item.lines}" ${item.locked ? 'readonly' : ''}>${escapeHtml(value)}</textarea>`
+    : `<input type="text" data-field="${item.id}" value="${escapeHtml(value)}" title="${escapeHtml(value == null ? '' : String(value))}" ${item.locked ? 'readonly' : ''}/>`;
+  return `<div class="field" data-key="${item.id}"${lockTitle}>${caption}<div class="control">${control}</div><div class="extra"></div></div>`;
+}
+
+function renderBlocks(blocks, values) {
+  return (blocks || []).map((block) => renderBlock(block, values)).join('');
+}
+
+function renderBlock(block, values) {
+  if (!block) return '';
+  if (block.kind === 'row') return renderInferRow(block.widgets || [], values, false, null);
+  if (block.kind === 'accordion' || block.kind === 'tab') {
+    if (block.dataset_panel) {
+      const layout = state.schema.stage_layouts && state.schema.stage_layouts[state.stage];
+      return renderDatasetSettings((layout && layout.dataset_fields) || [], values);
+    }
+    const open = block.open ? ' open' : '';
+    return `<details class="infer-runtime"${open}><summary>${escapeHtml(block.label || '设置')}</summary><div class="body">${renderBlocks(block.blocks, values)}</div></details>`;
+  }
+  if (block.kind === 'tabs') {
+    let opened = false;
+    return (block.tabs || []).map((tab) => {
+      const visible = tabVisible(tab, values);
+      const open = visible && !opened ? ' open' : '';
+      if (visible) opened = true;
+      const gate = tab.show_key
+        ? ` data-show-key="${escapeHtml(tab.show_key)}" data-show-values="${escapeHtml((tab.show_values || []).join(','))}"`
+        : '';
+      const hidden = visible ? '' : ' hidden';
+      return `<details class="infer-runtime"${open}${gate}${hidden}><summary>${escapeHtml(tab.label || '参数')}</summary><div class="body">${renderBlocks(tab.blocks, values)}</div></details>`;
+    }).join('');
+  }
+  return '';
+}
+
+function gpuCountFrom(raw) {
+  if (raw == null || raw === '') return 1;
+  const items = Array.isArray(raw) ? raw : String(raw).split(/[\s,]+/);
+  return items.map((item) => String(item).trim()).filter((item) => item && item !== 'cpu').length;
+}
+
+function withGpuGate(html, item, values) {
+  if (!html || !item || !item.min_gpus) return html;
+  const hidden = gpuCountFrom(values ? values.gpu_id : '') < Number(item.min_gpus) ? ' hidden' : '';
+  return html.replace('>', ` data-min-gpus="${Number(item.min_gpus)}"${hidden}>`);
+}
+
+function stageFieldValue(key, fallback) {
+  const el = document.querySelector(`#main [data-field="${key}"]`);
+  if (!el) return fallback == null ? '' : fallback;
+  if (el.type === 'checkbox') return el.checked ? 'true' : 'false';
+  return el.value;
+}
+
+function stageChoice(key, raw) {
+  const value = raw == null ? '' : String(raw);
+  if (value) return value;
+  if (key === 'tuner_type') return 'lora';
+  if (key === 'task_type') return 'causal_lm';
+  if (key === 'vllm_mode') return 'colocate';
+  return '';
+}
+
+function tabVisible(tab, values) {
+  if (!tab || !tab.show_key) return true;
+  const current = stageChoice(tab.show_key, values ? values[tab.show_key] : '');
+  return (tab.show_values || []).map(String).includes(current);
+}
+
+function syncStageFields() {
+  const gpus = gpuCountFrom(stageFieldValue('gpu_id', ''));
+  document.querySelectorAll('#main [data-min-gpus]').forEach((el) => {
+    el.hidden = gpus < Number(el.dataset.minGpus);
+  });
+  document.querySelectorAll('#main [data-show-key]').forEach((el) => {
+    const allowed = (el.dataset.showValues || '').split(',').filter(Boolean);
+    el.hidden = !allowed.includes(stageChoice(el.dataset.showKey, stageFieldValue(el.dataset.showKey, '')));
+  });
+}
+
+function renderInferRow(row, values, running, fill) {
+  if (row.length === 1 && row[0].id === 'log' && !running && !(state.tab === 'export' && state.exportLog)) return '';
+  const fields = [];
+  const sides = [];
+  row.forEach((item) => {
+    const control = withGpuGate(renderInferControl(item, values, running, fill), item, values);
+    if (item.widget === 'Button') sides.push(control);
+    else fields.push(control);
+  });
+  const grid = fields.length && !row.some((item) => item.id === 'log') ? ' infer-grid' : '';
+  const group = fields.length ? `<div class="infer-group" style="--cols:${fields.length}">${fields.join('')}</div>` : '';
+  const side = sides.length ? `<div class="infer-sides">${sides.join('')}</div>` : '';
+  const onlyButtons = fields.length === 0 ? ' actions' : '';
+  return `<div class="infer-row${grid}${onlyButtons}${sides.length ? ' has-side' : ''}">${group}${side}</div>`;
+}
+
+function renderMediaTabs() {
+  const tabs = ['image', 'video', 'audio'];
+  const labels = { image: 'Image', video: 'Video', audio: 'Audio' };
+  const accept = { image: 'image/*', video: 'video/*', audio: 'audio/*' };
+  const bar = tabs.map((tab) => `<button type="button" data-media-tab="${tab}" class="${state.mediaTab === tab ? 'active' : ''}">${labels[tab]}</button>`).join('');
+  const files = state.mediaFiles || {};
+  const panels = tabs.map((tab) => {
+    const file = files[tab];
+    const name = file ? escapeHtml(file.name) : '';
+    return `<label class="drop" data-drop="${tab}" ${state.mediaTab === tab ? '' : 'hidden'}><input type="file" data-media="${tab}" accept="${accept[tab]}" /><span class="drop-copy"><b>↑</b><br/>Drop ${labels[tab]} Here<br/>- or -<br/>Click to Upload</span><span class="drop-name">${name}</span></label>`;
+  }).join('');
+  return `<div class="media-tabs"><div class="media-tabbar">${bar}</div>${panels}</div>`;
+}
+
+function renderChatbot(label) {
+  const bubbles = state.chat.map((item) => `<div class="bubble ${item.role}">${escapeHtml(item.content)}</div>`).join('');
+  return `<div class="infer-group infer-chat-wrap"><span class="chat-label">${escapeHtml(label || 'Chatbot')}</span><div class="infer-chat">${bubbles}</div></div>`;
+}
+
 function renderServe() {
   const view = state.view;
-  const fields = state.schema.fields.serve;
-  const values = view.serve_form || {};
-  const service = view.service;
-  const promoted = (view.rounds || []).some((round) => round.promoted_checkpoint);
-  const running = service && service.status === 'running';
-  const bubbles = state.chat.map((item) => `<div class="bubble ${item.role}">${escapeHtml(item.content)}</div>`).join('');
-  const endpoint = running ? `http://${service.host === '0.0.0.0' ? '127.0.0.1' : service.host}:${service.port}/v1` : '';
-  return `<section class="panel">
-    <h2>OpenAI 兼容推理</h2>
-    <p class="muted">晋级之后可以启动服务。Mock 会在本机拉起 <code>/v1/models</code> 和 <code>/v1/chat/completions</code>，不加载权重。真实 GPU 上把 <code>RSI_SERVE_BACKEND=swift</code>，同一张表单会变成 <code>swift deploy</code>。</p>
-    ${promoted ? '' : '<p>还没有晋级检查点，部署按钮会保持关闭。</p>'}
-    ${renderGroups(fields, values)}
-    <div class="row-actions">
-      <button type="button" class="primary" data-action="serve" ${promoted ? '' : 'disabled'}>${running ? '重新启动服务' : '启动推理 API'}</button>
-      <button type="button" class="danger" data-action="serve-stop" ${running ? '' : 'disabled'}>停止</button>
-    </div>
-    ${running ? `<p>服务中：<code>${escapeHtml(endpoint)}</code> · 模型名 <code>${escapeHtml(service.served_model_name)}</code> · 检查点 <span class="mono">${escapeHtml(service.checkpoint)}</span></p>
-      <pre class="command">curl ${escapeHtml(endpoint)}/chat/completions \\
-  -H 'Content-Type: application/json' \\
-  -d '{"model":"${escapeHtml(service.served_model_name)}","messages":[{"role":"user","content":"VPN 连不上"}]}'</pre>` : ''}
-    <h3>试一句</h3>
-    <div class="chat-log">${bubbles}</div>
-    <div class="row-actions">
-      <input id="chat-input" type="text" placeholder="例如：会议室 Wi-Fi 门户证书不受信任" ${running ? '' : 'disabled'} />
-      <button type="button" class="primary" data-action="chat" ${running ? '' : 'disabled'}>发送</button>
-    </div>
-  </section>`;
+  const layout = state.schema.llm_infer;
+  const values = serveFormValues(view);
+  const fill = view.serve_fill || {};
+  const running = Boolean(view.service && view.service.status === 'running');
+  if (!layout) {
+    return '<section class="panel infer-form"><p>推理服务布局还没加载。</p></section>';
+  }
+  const chunks = layout.sections.map((section) => {
+    if (section.kind === 'rows') {
+      return (section.rows || []).map((row) => renderInferRow(row, values, running, fill)).join('');
+    }
+    if (section.kind === 'accordion') {
+      const body = (section.rows || []).map((row) => renderInferRow(row, values, running, fill)).join('');
+      if (running) state.inferRuntimeOpen = true;
+      const open = state.inferRuntimeOpen ? ' open' : '';
+      return `<details class="infer-runtime"${open}><summary>${escapeHtml(section.label || '运行时')}</summary><div class="body">${body}</div></details>`;
+    }
+    if (section.kind === 'chatbot') {
+      return renderChatbot(section.item && section.item.label);
+    }
+    if (section.kind === 'prompt') {
+      const prompt = section.prompt || { label: '请输入：' };
+      return `<div class="infer-row prompt-row"><div class="infer-group"><label class="field"><span>${escapeHtml(prompt.label)}</span><textarea id="chat-input" rows="4"></textarea></label></div>${renderMediaTabs()}</div>`;
+    }
+    if (section.kind === 'actions') {
+      return `<div class="infer-row actions">${(section.items || []).map((item) => renderInferControl(item, values, running)).join('')}</div>`;
+    }
+    return '';
+  }).join('');
+  return `<section class="panel infer-form">${chunks}${fetchNote()}</section>`;
+}
+
+function exportFormValues(view) {
+  const drafted = state.exportDraft && state.exportDraftRun === view.run.id;
+  const base = drafted ? { ...state.exportDraft } : { ...(view.export_form || {}) };
+  const fill = view.export_fill || {};
+  ['model', 'model_type', 'template'].forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(fill, key)) base[key] = fill[key] == null ? '' : fill[key];
+  });
+  return base;
+}
+
+function renderExport() {
+  const view = state.view;
+  const layout = state.schema.llm_export;
+  const values = exportFormValues(view);
+  const fill = view.export_fill || {};
+  const job = view.export_job || {};
+  const running = job.status === 'running';
+  if (!layout) {
+    return '<section class="panel infer-form"><p>模型导出布局还没加载。</p></section>';
+  }
+  if (running) state.exportRuntimeOpen = true;
+  const chunks = (layout.sections || []).map((section) => {
+    if (section.kind === 'rows') {
+      return (section.rows || []).map((row) => renderInferRow(row, values, running, fill)).join('');
+    }
+    if (section.kind === 'accordion') {
+      const body = (section.rows || []).map((row) => renderInferRow(row, values, running, fill)).join('');
+      const open = state.exportRuntimeOpen ? ' open' : '';
+      return `<details class="infer-runtime" data-runtime="export"${open}><summary>${escapeHtml(section.label || '运行时')}</summary><div class="body">${body}</div></details>`;
+    }
+    return '';
+  }).join('');
+  const reason = running ? '导出进行中' : (!(values.model || values.adapters) ? '还没有可导出的模型' : '');
+  const note = reason ? `<p class="muted run-reason">${escapeHtml(reason)}</p>` : '';
+  return `<section class="panel infer-form export-form">${chunks}${note}<div id="export-command"></div></section>`;
 }
 
 function render() {
+  syncLogScrollLock();
   renderRuns();
   const main = document.getElementById('main');
   if (!state.view) {
     main.innerHTML = `<div class="empty"><h1>从一轮可点击的后训练闭环开始</h1>
-      <p>行业里常见的迭代是：场景 SFT 建立行为，评测做门禁，在线 RL（这里默认 GRPO）用奖励把策略从 SFT 上再推进一步，只有胜出的检查点才能当下一轮基座，最后用 OpenAI 兼容接口接走。</p>
-      <p>左边新建实验。没有 GPU 时全程走 Mock，SQLite 里仍能看到每一步的参数和日志。</p></div>`;
+      <p>从左边新建实验开始。</p></div>`;
+    syncLive();
+    syncLogScrollLock();
     return;
   }
   const view = state.view;
   const rounds = (view.rounds || []).map((round) => `
     <button type="button" data-round="${round.round_index}" class="${round.round_index === view.round.round_index ? 'active' : ''}">第 ${round.round_index} 轮${round.promoted_kind ? ' · ' + round.promoted_kind : ''}</button>`).join('');
-  const body = state.tab === 'audit' ? renderAudit() : state.tab === 'serve' ? renderServe() : renderFlow();
+  const body = state.tab === 'audit' ? renderAudit() : state.tab === 'serve' ? renderServe() : state.tab === 'export' ? renderExport() : renderFlow();
   main.innerHTML = `
-    <p class="kicker">Round ${view.round.round_index} · ${escapeHtml(view.backend)}</p>
+    <p class="kicker">第 ${view.round.round_index} 轮</p>
     <h1>${escapeHtml(view.run.name)}</h1>
     <p>${escapeHtml(view.run.scenario)}</p>
-    <p class="muted">最初基座 <span class="mono">${escapeHtml(view.run.base_model)}</span><br/>本轮基座 <span class="mono">${escapeHtml(view.round.base_model)}</span></p>
+    <p class="muted">${baseCaption(view.run.base_model, view.round.base_model)}</p>
     <div class="rounds">${rounds}</div>
     <div class="tabs">
       <button type="button" data-tab="flow" class="${state.tab === 'flow' ? 'active' : ''}">流程</button>
-      <button type="button" data-tab="audit" class="${state.tab === 'audit' ? 'active' : ''}">审计</button>
+      <button type="button" data-tab="audit" class="${state.tab === 'audit' ? 'active' : ''}">实验记录</button>
       <button type="button" data-tab="serve" class="${state.tab === 'serve' ? 'active' : ''}">推理服务</button>
+      <button type="button" data-tab="export" class="${state.tab === 'export' ? 'active' : ''}">模型导出</button>
     </div>
     ${body}`;
   syncSource();
+  syncStageFields();
+  syncLive();
+  syncLogScrollLock();
+  syncSendButton();
+  if (inferDeployRunning()) ensureInferLogPoll();
+  else stopInferLogPoll();
+  if (exportJobRunning()) ensureExportLogPoll();
+  else stopExportLogPoll();
+  if (state.tab === 'export' && !state.exportLog && state.view.export_job && state.view.export_job.status && state.view.export_job.status !== 'idle') {
+    refreshExportLog().catch(() => {});
+  }
 }
 
 async function runCurrent() {
   const stage = state.stage;
   const params = collectParams();
-  const payload = await api(`/api/runs/${state.view.run.id}/stages/${stage}/run`, {
-    method: 'POST',
-    body: JSON.stringify({ params }),
-  });
-  state.view = payload.view;
-  state.round = payload.view.round.round_index;
-  if (payload.status === 'succeeded' && payload.view.mutable) {
-    state.stage = payload.view.run.current_stage;
+  setBusy(true);
+  try {
+    const payload = await api(`/api/runs/${state.view.run.id}/stages/${stage}/run`, {
+      method: 'POST',
+      body: JSON.stringify({ params }),
+    });
+    state.view = payload.view;
+    state.round = payload.view.round.round_index;
+    if (payload.status === 'succeeded' && payload.view.mutable) {
+      state.stage = payload.view.run.current_stage;
+    }
+    const outcome = payload.status === 'syncing' ? '模型同步中' : payload.status === 'running' ? '已在后台启动' : '已完成';
+    toast(`${labelOf(stage)} ${outcome}`);
+    render();
+  } finally {
+    setBusy(false);
   }
-  toast(`${labelOf(stage)} ${payload.status === 'running' ? '已在后台启动' : '已完成'}`);
-  render();
 }
 
 async function previewCurrent() {
@@ -370,7 +1343,7 @@ async function previewCurrent() {
     body: JSON.stringify({ params }),
   });
   const slot = document.getElementById('live-command');
-  slot.innerHTML = `<h3>命令预览</h3><pre class="command">${escapeHtml(payload.command || '这一阶段不调用 swift。')}</pre>`;
+  slot.innerHTML = outputPanel('命令预览', payload.command || '这一阶段没有可预览的命令。', 'command');
 }
 
 async function validateCurrent() {
@@ -380,7 +1353,7 @@ async function validateCurrent() {
     body: JSON.stringify({ params }),
   });
   const slot = document.getElementById('live-command');
-  slot.innerHTML = `<h3>校验结果</h3><pre class="log">${escapeHtml(JSON.stringify(report, null, 2))}</pre>`;
+  slot.innerHTML = outputPanel('校验结果', JSON.stringify(report, null, 2));
   toast(report.ok ? `格式通过，${report.num_rows ?? '公开'} 条` : '格式未通过');
 }
 
@@ -395,8 +1368,14 @@ function applyPreset() {
   });
   const yaml = document.getElementById('extra-yaml');
   if (yaml) yaml.value = preset.extra_yaml || '';
+  document.querySelectorAll('[data-slider-num]').forEach((num) => {
+    const range = document.querySelector(`[data-field="${num.dataset.sliderNum}"]`);
+    if (range) num.value = range.value;
+  });
+  document.querySelectorAll('.chip-box').forEach((box) => paintDatasetChips(box));
   syncSource();
-  toast('已恢复本阶段的 A100 预设');
+  flushDraft();
+  toast('已恢复本阶段预设');
 }
 
 async function uploadFile(file) {
@@ -405,14 +1384,128 @@ async function uploadFile(file) {
   const response = await fetch('/api/datasets/upload', { method: 'POST', body });
   const data = await response.json();
   if (!response.ok) throw new Error(data.detail || '上传失败');
-  const dataset = document.querySelector('[data-field="dataset"]');
+  const dataset = document.querySelector('[data-dataset-mode="upload"] [data-field="dataset"]');
   if (dataset) dataset.value = data.path;
   const source = document.querySelector('[data-field="source"]');
   if (source) source.value = 'upload';
   syncSource();
   const slot = document.getElementById('live-command');
-  if (slot) slot.innerHTML = `<h3>上传校验</h3><pre class="log">${escapeHtml(JSON.stringify(data.validation, null, 2))}</pre>`;
+  if (slot) slot.innerHTML = outputPanel('上传校验', JSON.stringify(data.validation, null, 2));
+  scheduleDraftSave();
   toast(data.validation.ok ? '上传通过校验' : '上传文件格式未通过');
+}
+
+function stopInferLogPoll() {
+  if (!state.inferLogTimer) return;
+  clearInterval(state.inferLogTimer);
+  state.inferLogTimer = null;
+}
+
+function inferDeployRunning() {
+  const view = state.view;
+  if (!view || state.tab !== 'serve') return false;
+  if (view.service && view.service.status === 'running') return true;
+  return (view.services || []).some((service) => service.status === 'running');
+}
+
+async function refreshInferLog() {
+  if (!inferDeployRunning()) return;
+  const payload = await api(`/api/runs/${state.view.run.id}/serve/log`);
+  state.inferLog = payload.log || '';
+  const box = document.querySelector('[data-key="log"] textarea');
+  if (box && box.value !== state.inferLog) {
+    const follow = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    box.value = state.inferLog;
+    if (follow) box.scrollTop = box.scrollHeight;
+  }
+}
+
+function ensureInferLogPoll() {
+  if (state.inferLogTimer || !inferDeployRunning()) return;
+  refreshInferLog().catch(() => {});
+  state.inferLogTimer = setInterval(() => {
+    refreshInferLog().catch(() => {});
+  }, 1000);
+}
+
+function stopExportLogPoll() {
+  if (!state.exportLogTimer) return;
+  clearInterval(state.exportLogTimer);
+  state.exportLogTimer = null;
+}
+
+function exportJobRunning() {
+  const view = state.view;
+  if (!view || state.tab !== 'export') return false;
+  return Boolean(view.export_job && view.export_job.status === 'running');
+}
+
+async function refreshExportLog() {
+  if (!state.view || state.tab !== 'export') return;
+  const payload = await api(`/api/runs/${state.view.run.id}/export/log`);
+  const was = state.view.export_job && state.view.export_job.status;
+  state.exportLog = payload.log || '';
+  if (state.view.export_job) state.view.export_job.status = payload.status || state.view.export_job.status;
+  const box = document.querySelector('[data-key="log"] textarea');
+  if (box && box.value !== state.exportLog) {
+    const follow = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    box.value = state.exportLog;
+    if (follow) box.scrollTop = box.scrollHeight;
+  }
+  if (was === 'running' && payload.status && payload.status !== 'running') {
+    stopExportLogPoll();
+    await flushDraft();
+    render();
+  }
+}
+
+function ensureExportLogPoll() {
+  if (state.exportLogTimer || !exportJobRunning()) return;
+  refreshExportLog().catch(() => {});
+  state.exportLogTimer = setInterval(() => {
+    refreshExportLog().catch(() => {});
+  }, 1000);
+}
+
+async function previewExport() {
+  const params = collectParams();
+  const payload = await api(`/api/runs/${state.view.run.id}/export/preview`, {
+    method: 'POST',
+    body: JSON.stringify({ params }),
+  });
+  const slot = document.getElementById('export-command');
+  if (slot) slot.innerHTML = outputPanel('命令预览', payload.command || '没有可预览的命令。', 'command');
+}
+
+async function startExport() {
+  const params = collectParams();
+  const payload = await api(`/api/runs/${state.view.run.id}/export/run`, {
+    method: 'POST',
+    body: JSON.stringify({ params }),
+  });
+  state.view = payload.view;
+  state.exportDraft = null;
+  state.exportDraftRun = null;
+  state.exportLog = payload.log || '';
+  state.exportRuntimeOpen = true;
+  toast(payload.status === 'running' ? '导出已开始' : '导出已完成');
+  render();
+}
+
+async function stopStage() {
+  const stage = state.stage;
+  const payload = await api(`/api/runs/${state.view.run.id}/stages/${stage}/stop`, { method: 'POST', body: '{}' });
+  state.view = payload.view;
+  toast('本阶段已停止');
+  render();
+}
+
+async function stopExport() {
+  const payload = await api(`/api/runs/${state.view.run.id}/export/stop`, { method: 'POST', body: '{}' });
+  state.view = payload.view;
+  state.exportRuntimeOpen = true;
+  toast('导出已停止');
+  render();
 }
 
 async function startServe() {
@@ -422,45 +1515,180 @@ async function startServe() {
     body: JSON.stringify({ params }),
   });
   state.view = payload.view;
-  toast('推理服务已启动');
+  state.serveDraft = null;
+  state.serveDraftRun = null;
+  state.inferRuntimeOpen = true;
+  const alerts = (state.schema.llm_infer && state.schema.llm_infer.alerts) || {};
+  toast(alerts.loaded_alert || '模型加载完成');
   render();
 }
 
 async function stopServe() {
-  const payload = await api(`/api/runs/${state.view.run.id}/serve/stop`, { method: 'POST' });
+  const payload = await api(`/api/runs/${state.view.run.id}/serve/stop`, { method: 'POST', body: '{}' });
   state.view = payload.view;
   toast('推理服务已停止');
   render();
 }
 
-async function sendChat() {
-  const input = document.getElementById('chat-input');
-  const content = input.value.trim();
-  if (!content) return;
-  state.chat.push({ role: 'user', content });
-  input.value = '';
-  render();
-  const payload = await api(`/api/runs/${state.view.run.id}/chat`, {
-    method: 'POST',
-    body: JSON.stringify({ messages: [{ role: 'user', content }] }),
+function readDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
   });
-  const reply = payload.choices && payload.choices[0] && payload.choices[0].message
-    ? payload.choices[0].message.content
-    : JSON.stringify(payload);
-  state.chat.push({ role: 'assistant', content: reply });
-  render();
 }
 
+async function buildUserContent(text, files) {
+  const parts = [];
+  if (text) parts.push({ type: 'text', text });
+  if (files.image) parts.push({ type: 'image_url', image_url: { url: await readDataUrl(files.image) } });
+  if (files.video) parts.push({ type: 'video_url', video_url: { url: await readDataUrl(files.video) } });
+  if (files.audio) parts.push({ type: 'input_audio', input_audio: { data: await readDataUrl(files.audio) } });
+  if (parts.length === 1 && parts[0].type === 'text') return text;
+  return parts.length ? parts : text;
+}
+
+async function sendChat() {
+  const alerts = (state.schema.llm_infer && state.schema.llm_infer.alerts) || {};
+  const running = state.view.service && state.view.service.status === 'running';
+  if (!running) {
+    toast(alerts.generate_alert || '请先部署模型');
+    return;
+  }
+  const input = document.getElementById('chat-input');
+  const content = input.value.trim();
+  const files = state.mediaFiles || {};
+  if (!content && !files.image && !files.video && !files.audio) return;
+  const params = collectParams();
+  const userContent = await buildUserContent(content, files);
+  const history = state.chat.map((item) => ({ role: item.role, content: item.content }));
+  history.push({ role: 'user', content: userContent });
+  state.chat.push({ role: 'user', content: content || '（多媒体）' });
+  state.chat.push({ role: 'assistant', content: '' });
+  input.value = '';
+  captureDraft();
+  render();
+  const response = await fetch(`/api/runs/${state.view.run.id}/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messages: history,
+      stream: true,
+      system: params.system || '',
+      temperature: params.temperature,
+      top_k: params.top_k,
+      top_p: params.top_p,
+      repetition_penalty: params.repetition_penalty,
+      max_new_tokens: params.max_new_tokens,
+      infer_model_type: params.infer_model_type || '',
+    }),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.detail || '发送失败');
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const step = await reader.read();
+    if (step.done) break;
+    buffer += decoder.decode(step.value, { stream: true });
+    const pieces = buffer.split('\n\n');
+    buffer = pieces.pop();
+    pieces.forEach((piece) => {
+      const data = piece.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n');
+      if (!data || data === '[DONE]') return;
+      let payload;
+      try {
+        payload = JSON.parse(data);
+      } catch (err) {
+        return;
+      }
+      const choice = (payload.choices || [])[0] || {};
+      const delta = (choice.delta && choice.delta.content) || (choice.message && choice.message.content) || '';
+      if (!delta) return;
+      const last = state.chat[state.chat.length - 1];
+      last.content += delta;
+      const node = document.querySelector('.infer-chat .bubble.assistant:last-child');
+      if (node) node.textContent = last.content;
+    });
+  }
+}
+
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter') return;
+  const input = event.target;
+  if (!input.dataset || input.dataset.chip !== '1') return;
+  if (input.dataset.allowCustom === '0') return;
+  event.preventDefault();
+  const text = input.value.trim();
+  if (!text) return;
+  const box = input.closest('.chip-box');
+  const hidden = chipField(box);
+  const tokens = datasetTokens(hidden.value);
+  if (!tokens.includes(text)) tokens.push(text);
+  hidden.value = tokens.join(' ');
+  input.value = '';
+  paintDatasetChips(box);
+  showCombo(input, true);
+  scheduleDraftSave();
+  syncStageFields();
+});
+
 document.addEventListener('click', async (event) => {
+  const chip = event.target.closest('[data-chip-remove]');
+  if (chip) {
+    event.preventDefault();
+    const box = chip.closest('.chip-box');
+    const hidden = chipField(box);
+    const drop = chip.dataset.chipRemove;
+    hidden.value = datasetTokens(hidden.value).filter((item) => item !== drop).join(' ');
+    paintDatasetChips(box);
+    scheduleDraftSave();
+    syncStageFields();
+    return;
+  }
+  const clearAll = event.target.closest('[data-action="chip-clear"], [data-action="dataset-clear"]');
+  if (clearAll) {
+    event.preventDefault();
+    const box = clearAll.closest('.chip-box');
+    const hidden = chipField(box);
+    hidden.value = '';
+    const query = box.querySelector('.chip-query');
+    if (query) query.value = '';
+    paintDatasetChips(box);
+    scheduleDraftSave();
+    syncStageFields();
+    return;
+  }
+  const caret = event.target.closest('[data-action="chip-menu"], [data-action="dataset-menu"]');
+  if (caret) {
+    event.preventDefault();
+    const input = caret.closest('.chip-box').querySelector('.chip-query');
+    if (input) {
+      input.focus();
+      showCombo(input, true);
+    }
+    return;
+  }
   const target = event.target.closest('button');
-  if (!target || state.busy) return;
+  if (!target || target.disabled || state.busy) return;
   try {
     if (target.id === 'new-run') {
+      const form = document.getElementById('create-form');
+      form.name.value = '';
+      form.scenario.value = '';
       document.getElementById('create-dialog').showModal();
       return;
     }
     if (target.id === 'create-cancel') {
       document.getElementById('create-dialog').close();
+      return;
+    }
+    if (target.dataset.deleteRun) {
+      await deleteRun(target.dataset.deleteRun);
       return;
     }
     if (target.dataset.run) {
@@ -472,18 +1700,76 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (target.dataset.tab) {
+      await flushDraft();
       state.tab = target.dataset.tab;
       render();
       return;
     }
+    if (target.dataset.decision) {
+      await flushDraft();
+      const payload = await api(`/api/runs/${state.view.run.id}/decide`, {
+        method: 'POST',
+        body: JSON.stringify({ action: target.dataset.decision }),
+      });
+      state.view = payload.view;
+      state.stage = payload.stage || state.stage;
+      state.tab = 'flow';
+      toast(payload.view.flow && payload.view.flow.prompt ? payload.view.flow.prompt : '已记录');
+      render();
+      return;
+    }
     if (target.dataset.stage) {
-      state.stage = target.dataset.stage;
+      if (target.disabled) return;
+      await flushDraft();
+      let stage = target.dataset.stage;
+      if (stage === 'sft_finish' || stage === 'rl_finish' || stage === 'finish') {
+        if (state.view.run.status !== 'completed') {
+          const payload = await api(`/api/runs/${state.view.run.id}/decide`, {
+            method: 'POST',
+            body: JSON.stringify({ action: 'finish' }),
+          });
+          state.view = payload.view;
+          state.stage = payload.stage || 'finish';
+          state.tab = 'flow';
+          render();
+          return;
+        }
+        stage = 'finish';
+      }
+      if (stage === 'next_data' || stage === 'sft_next' || stage === 'rl_next' || stage === 'promote') {
+        const promoted = state.view.round && state.view.round.promoted_checkpoint;
+        stage = promoted ? 'next_round' : 'promote';
+      }
+      state.stage = stage;
       state.tab = 'flow';
       render();
       return;
     }
+    if (target.dataset.action === 'stage-stop') {
+      const meta = (state.schema.stages || []).find((item) => item.id === state.stage);
+      const name = meta ? meta.label : '当前阶段';
+      const confirmed = await askConfirm({
+        title: '停止本阶段',
+        body: `${name} 会停掉。已经写到一半的日志会保留，这一步记为失败，可以再重试。`,
+        okLabel: '停止',
+        danger: true,
+      });
+      if (!confirmed) return;
+      await stopStage();
+      return;
+    }
     if (target.dataset.action === 'run') {
-      state.busy = true;
+      const form = (state.view.forms || {})[state.stage] || {};
+      if (form.status === 'succeeded') {
+        const confirmed = await askConfirm({
+          title: '重新运行并作废后续阶段',
+          body: '这一阶段会重跑。本轮后面已经完成的阶段和晋级结果会作废，需要重新再跑。',
+          okLabel: '重新运行',
+          danger: true,
+        });
+        if (!confirmed) return;
+      }
+      setBusy(true);
       await runCurrent();
       return;
     }
@@ -499,23 +1785,181 @@ document.addEventListener('click', async (event) => {
       applyPreset();
       return;
     }
+    if (target.dataset.action === 'refetch') {
+      await flushDraft();
+      const params = collectParams();
+      const payload = await api(`/api/runs/${state.view.run.id}/fetch`, {
+        method: 'POST',
+        body: JSON.stringify({
+          model: params.model || state.view.run.base_model,
+          dataset: params.dataset || '',
+        }),
+      });
+      state.view = payload.view;
+      toast(fetchNotice() || '已提交检查');
+      render();
+      return;
+    }
+    if (target.dataset.action === 'open-serve') {
+      await flushDraft();
+      state.tab = 'serve';
+      render();
+      return;
+    }
+    if (target.dataset.action === 'open-export') {
+      await flushDraft();
+      state.tab = 'export';
+      render();
+      return;
+    }
+    if (target.dataset.action === 'fill-export') {
+      const fill = (state.view && state.view.export_fill) || {};
+      const current = collectParams();
+      state.exportDraft = {
+        ...current,
+        model: fill.model || '',
+        model_type: fill.model_type || '',
+        template: fill.template || '',
+        adapters: fill.adapters || '',
+        output_dir: fill.output_dir || current.output_dir || '',
+        merge_lora: Boolean(fill.merge_lora),
+      };
+      state.exportDraftRun = state.view.run.id;
+      await saveDraftSnapshot('export', state.exportDraft);
+      render();
+      toast('已填入本轮权重');
+      return;
+    }
+    if (target.dataset.action === 'fill-serve') {
+      const fill = (state.view && state.view.serve_fill) || {};
+      const current = collectParams();
+      state.serveDraft = {
+        ...current,
+        model: fill.model || current.model || '',
+        adapters: fill.adapters || '',
+        model_type: fill.model_type || current.model_type || '',
+        template: fill.template || current.template || '',
+      };
+      state.serveDraftRun = state.view.run.id;
+      await saveDraftSnapshot('serve', state.serveDraft);
+      render();
+      toast('已填入本轮 checkpoint');
+      return;
+    }
+    if (target.dataset.action === 'reset-infer') {
+      const layout = state.schema.llm_infer;
+      const current = collectParams();
+      const locked = new Set((layout && layout.locked) || []);
+      const next = { ...current };
+      Object.values((layout && layout.by_id) || {}).forEach((item) => {
+        if (!item || item.widget === 'Button' || locked.has(item.id)) return;
+        next[item.id] = item.default == null ? '' : item.default;
+      });
+      state.serveDraft = next;
+      state.serveDraftRun = state.view.run.id;
+      await saveDraftSnapshot('serve', state.serveDraft);
+      render();
+      toast('已恢复初始值');
+      return;
+    }
+    if (target.dataset.action === 'slider-reset') {
+      const key = target.dataset.reset;
+      const stageLayout = state.schema.stage_layouts && state.schema.stage_layouts[state.stage];
+      const item = state.tab === 'serve'
+        ? (state.schema.llm_infer && state.schema.llm_infer.by_id[key])
+        : state.tab === 'export'
+          ? (state.schema.llm_export && state.schema.llm_export.by_id[key])
+          : ((stageLayout && stageLayout.by_id && stageLayout.by_id[key])
+            || (state.schema.llm_infer && state.schema.llm_infer.by_id[key]));
+      let fallback = item && item.default;
+      if (fallback == null && state.schema && state.schema.fields) {
+        const field = (state.schema.fields[state.stage] || []).find((row) => row.key === key);
+        if (field && field.default != null) fallback = field.default;
+      }
+      const input = document.querySelector(`[data-field="${key}"]`);
+      const num = document.querySelector(`[data-slider-num="${key}"]`);
+      if (input && fallback != null) {
+        input.value = fallback;
+        if (num) num.value = fallback;
+        rememberServeDraft({ target: input });
+        scheduleDraftSave();
+      }
+      return;
+    }
+    if (target.dataset.mediaTab) {
+      captureDraft();
+      state.mediaTab = target.dataset.mediaTab;
+      render();
+      return;
+    }
+    if (target.dataset.action === 'clear-chat') {
+      captureDraft();
+      state.chat = [];
+      state.mediaFiles = { image: null, video: null, audio: null };
+      render();
+      return;
+    }
+    if (target.dataset.action === 'serve-refresh') {
+      await flushDraft();
+      const round = state.view.round.round_index;
+      state.view = await api(`/api/runs/${state.view.run.id}?round=${round}`);
+      render();
+      toast('已找回部署');
+      return;
+    }
     if (target.dataset.action === 'serve') {
-      state.busy = true;
+      setBusy(true);
       await startServe();
       return;
     }
     if (target.dataset.action === 'serve-stop') {
+      const confirmed = await askConfirm({
+        title: '停止推理',
+        body: '当前推理服务会停掉，已打开的对话不再继续。',
+        okLabel: '停止',
+        danger: true,
+      });
+      if (!confirmed) return;
       await stopServe();
       return;
     }
+    if (target.dataset.action === 'export-preview') {
+      await previewExport();
+      return;
+    }
+    if (target.dataset.action === 'export-run') {
+      setBusy(true);
+      await startExport();
+      return;
+    }
+    if (target.dataset.action === 'export-stop') {
+      const confirmed = await askConfirm({
+        title: '停止导出',
+        body: '正在进行的导出会停掉。已经写到一半的文件会留在导出目录里。',
+        okLabel: '停止',
+        danger: true,
+      });
+      if (!confirmed) return;
+      await stopExport();
+      return;
+    }
+    if (target.dataset.action === 'export-refresh') {
+      await flushDraft();
+      const round = state.view.round.round_index;
+      state.view = await api(`/api/runs/${state.view.run.id}?round=${round}`);
+      state.exportRuntimeOpen = true;
+      render();
+      toast('已找回导出任务');
+      return;
+    }
     if (target.dataset.action === 'chat') {
-      state.busy = true;
+      setBusy(true);
       await sendChat();
     }
   } catch (err) {
     toast(err.message);
   } finally {
-    state.busy = false;
+    setBusy(false);
   }
 });
 
@@ -527,8 +1971,152 @@ document.addEventListener('click', (event) => {
   render();
 });
 
+document.addEventListener('toggle', (event) => {
+  const node = event.target;
+  if (!node || !node.classList || !node.classList.contains('infer-runtime')) return;
+  if (node.dataset.runtime === 'export') state.exportRuntimeOpen = Boolean(node.open);
+  else state.inferRuntimeOpen = Boolean(node.open);
+}, true);
+
+const DRAFT_STAGES = ['sft', 'sft_eval', 'rl', 'rl_eval', 'promote', 'next_round'];
+
+function currentDraftStage() {
+  if (!state.view) return null;
+  if (state.tab === 'serve') return 'serve';
+  if (state.tab === 'export') return 'export';
+  if (state.tab !== 'flow') return null;
+  return DRAFT_STAGES.includes(state.stage) ? state.stage : null;
+}
+
+function captureDraft() {
+  const stage = currentDraftStage();
+  if (!stage || !state.view) return null;
+  const params = collectParams();
+  if (stage === 'serve') {
+    state.serveDraft = params;
+    state.serveDraftRun = state.view.run.id;
+  } else if (stage === 'export') {
+    state.exportDraft = params;
+    state.exportDraftRun = state.view.run.id;
+  }
+  return {
+    stage,
+    params,
+    runId: state.view.run.id,
+    round: state.view.round.round_index,
+  };
+}
+
+function scheduleDraftSave() {
+  captureDraft();
+  if (state.draftTimer) clearTimeout(state.draftTimer);
+  state.draftTimer = setTimeout(() => {
+    state.draftTimer = null;
+    flushDraft();
+  }, 400);
+}
+
+async function saveDraftSnapshot(stage, params) {
+  if (!state.view || !stage) return;
+  if (state.draftTimer) {
+    clearTimeout(state.draftTimer);
+    state.draftTimer = null;
+  }
+  const runId = state.view.run.id;
+  const round = state.view.round.round_index;
+  try {
+    await api(`/api/runs/${runId}/drafts`, {
+      method: 'POST',
+      body: JSON.stringify({ stage, round, params }),
+    });
+  } catch (_err) {
+    /* 草稿没写上时，页面上的值还在。 */
+  }
+}
+
+async function flushDraft(keepalive) {
+  if (state.draftTimer) {
+    clearTimeout(state.draftTimer);
+    state.draftTimer = null;
+  }
+  const snap = captureDraft();
+  if (!snap) return;
+  const url = `/api/runs/${snap.runId}/drafts`;
+  const body = JSON.stringify({ stage: snap.stage, round: snap.round, params: snap.params });
+  if (keepalive) {
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      keepalive: true,
+    }).catch(() => {});
+    return;
+  }
+  await saveDraftSnapshot(snap.stage, snap.params);
+}
+
+function draftEvent(target) {
+  if (!target || !state.view) return false;
+  if (target.id === 'chat-input') return false;
+  if (target.id === 'extra-yaml') return true;
+  if (!target.dataset || !target.dataset.field) return false;
+  return Boolean(target.closest('#main'));
+}
+
+function rememberServeDraft(event) {
+  if ((state.tab !== 'serve' && state.tab !== 'export') || !state.view) return;
+  const field = event.target && event.target.dataset && event.target.dataset.field;
+  if (!field || !event.target.closest('#main')) return;
+  if (state.tab === 'export') {
+    state.exportDraft = collectParams();
+    state.exportDraftRun = state.view.run.id;
+    return;
+  }
+  state.serveDraft = collectParams();
+  state.serveDraftRun = state.view.run.id;
+}
+
+document.addEventListener('input', (event) => {
+  const target = event.target;
+  if (target && target.type === 'range') {
+    const num = document.querySelector(`[data-slider-num="${target.dataset.field}"]`);
+    if (num) num.value = target.value;
+  }
+  if (target && target.dataset && target.dataset.sliderNum) {
+    const range = document.querySelector(`[data-field="${target.dataset.sliderNum}"]`);
+    if (range) {
+      range.value = target.value;
+      rememberServeDraft({ target: range });
+      scheduleDraftSave();
+      return;
+    }
+  }
+  if (target && target.id === 'chat-input') syncSendButton();
+  rememberServeDraft(event);
+  if (draftEvent(target)) scheduleDraftSave();
+  if (target && target.dataset && target.dataset.field) syncStageFields();
+});
+
 document.addEventListener('change', async (event) => {
+  const media = event.target.dataset && event.target.dataset.media;
+  if (media && event.target.files && event.target.files[0]) {
+    state.mediaFiles = state.mediaFiles || { image: null, video: null, audio: null };
+    state.mediaFiles[media] = event.target.files[0];
+    const name = event.target.parentElement && event.target.parentElement.querySelector('.drop-name');
+    if (name) name.textContent = event.target.files[0].name;
+    syncSendButton();
+  }
+  rememberServeDraft(event);
+  if (draftEvent(event.target)) scheduleDraftSave();
   if (event.target.dataset && event.target.dataset.field === 'source') syncSource();
+  if (event.target.dataset && event.target.dataset.field) syncStageFields();
+  if (event.target.dataset && event.target.dataset.field === 'eval_backend') {
+    const scope = event.target.closest('section, form') || document;
+    scope.querySelectorAll('[data-choices-from="eval_datasets_by_backend"]').forEach((input) => {
+      const list = input.parentElement.querySelector('.combo-list');
+      if (list && !list.hidden) showCombo(input, true);
+    });
+  }
   if (event.target.id === 'file-input' && event.target.files[0]) {
     try {
       await uploadFile(event.target.files[0]);
@@ -548,23 +2136,389 @@ document.getElementById('create-form').addEventListener('submit', async (event) 
         name: form.name.value,
         scenario: form.scenario.value,
         base_model: form.base_model.value,
+        model_type: form.model_type.value,
+        template: form.template.value,
       }),
     });
     document.getElementById('create-dialog').close();
     await refreshRuns(created.run.id);
-    toast('实验已创建，从数据阶段开始');
+    toast('实验已创建，从 SFT 开始');
   } catch (err) {
     toast(err.message);
   }
 });
 
+function fetchRows() {
+  return (state.view && state.view.fetches) || [];
+}
+
+function fetchNotice() {
+  const rows = fetchRows();
+  const syncing = rows.find((row) => row.state === '同步中');
+  if (syncing) {
+    if (syncing.message && syncing.message !== '同步中') return `${syncing.repo_id} ${syncing.message}`;
+    return `${syncing.repo_id} 同步中，进度见 rsi/.rsi.log`;
+  }
+  const failed = rows.find((row) => row.state === '失败');
+  if (failed) return failed.message || '失败';
+  if (rows.some((row) => row.state === '就绪')) return '已就绪';
+  return '';
+}
+
+function fetchProgressText() {
+  const parts = [];
+  fetchRows().forEach((row) => {
+    if (row.state === '同步中') {
+      const detail = row.message && row.message !== '同步中' ? row.message : '同步中，进度见 rsi/.rsi.log';
+      parts.push(`${row.repo_id} ${detail}`);
+    } else if (row.state === '失败') {
+      parts.push(`${row.repo_id} ${row.message || '失败'}`);
+    }
+  });
+  return parts.join(' · ');
+}
+
+function fetchNote() {
+  if (!state.schema || state.schema.model_source !== 'hope') return '';
+  const text = fetchProgressText();
+  return `<span class="badge fetch-progress" data-fetch-note${text ? '' : ' hidden'}>${escapeHtml(text)}</span>`;
+}
+
+function refetchButton() {
+  if (!state.schema || state.schema.model_source !== 'hope') return '';
+  return '<button type="button" class="ghost" data-action="refetch">重新拉取</button>';
+}
+
+function paintFetchNotes() {
+  const text = fetchProgressText();
+  document.querySelectorAll('[data-fetch-note]').forEach((el) => {
+    el.textContent = text;
+    el.hidden = !text;
+  });
+}
+
+function needsFetchPoll() {
+  return Boolean(state.schema && state.schema.model_source === 'hope' && state.view
+    && fetchRows().some((row) => row.state === '同步中'));
+}
+
+function catalogNames(source, input) {
+  if (input && input.dataset.choiceList) {
+    try {
+      const parsed = JSON.parse(input.dataset.choiceList);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (_err) {
+      return [];
+    }
+  }
+  if (source === 'eval_datasets_by_backend') {
+    const scope = (input && input.closest('section, form')) || document;
+    const backend = scope.querySelector('[data-field="eval_backend"]');
+    const key = backend && backend.value ? backend.value : 'Native';
+    const table = state.schema && state.schema.catalog ? state.schema.catalog.eval_datasets_by_backend || {} : {};
+    return table[key] || [];
+  }
+  const raw = source && state.schema && state.schema.catalog ? state.schema.catalog[source] : [];
+  return raw || [];
+}
+
+function comboFilterText(input) {
+  if (input.dataset.multi !== '1') return input.value.trim();
+  if (/\s$/.test(input.value)) return '';
+  const parts = input.value.trim().split(/\s+/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : '';
+}
+
+function toggleMultiValue(input, value) {
+  const raw = input.value;
+  const trailingSpace = /\s$/.test(raw);
+  let tokens = raw.trim().split(/\s+/).filter(Boolean);
+  if (!trailingSpace && tokens.length) {
+    const last = tokens[tokens.length - 1];
+    if (last !== value && value.toLowerCase().includes(last.toLowerCase())) tokens.pop();
+  }
+  if (tokens.includes(value)) tokens = tokens.filter((token) => token !== value);
+  else tokens.push(value);
+  return tokens.join(' ');
+}
+
+function showCombo(input, browse) {
+  const list = input.parentElement.querySelector('.combo-list');
+  if (!list) return;
+  const multi = input.dataset.multi === '1';
+  const chip = input.dataset.chip === '1';
+  const query = (browse && (multi || chip) ? '' : (chip ? input.value.trim() : (multi ? comboFilterText(input) : input.value.trim()))).toLowerCase();
+  const all = catalogNames(input.dataset.choicesFrom, input).map((item) => String(item));
+  const cap = input.dataset.choicesFrom === 'eval_datasets_by_backend' ? all.length : 40;
+  const exact = !multi && query ? all.findIndex((item) => item.toLowerCase() === query) : -1;
+  let shown;
+  if (browse && exact >= 0) {
+    const start = Math.max(0, exact - 8);
+    shown = all.slice(start, start + cap);
+  } else if (!query) {
+    shown = all.slice(0, cap);
+  } else {
+    shown = all.filter((item) => item.toLowerCase().includes(query)).slice(0, cap);
+  }
+  if (!shown.length) {
+    list.hidden = true;
+    list.innerHTML = '';
+    return;
+  }
+  let selected = new Set();
+  if (chip) {
+    const hidden = input.parentElement.querySelector('input[type="hidden"][data-field]');
+    selected = new Set(datasetTokens(hidden && hidden.value));
+  } else if (multi) {
+    selected = new Set(input.value.trim().split(/\s+/).filter(Boolean));
+  }
+  list.innerHTML = shown.map((item) => {
+    const pressed = selected.has(item) ? ' aria-pressed="true"' : '';
+    return `<button type="button" data-combo-value="${escapeHtml(item)}"${pressed}>${escapeHtml(item)}</button>`;
+  }).join('');
+  list.hidden = false;
+}
+
+function applyModelMatch(scope, modelId) {
+  const meta = (state.schema.catalog.by_model || {})[modelId];
+  if (!meta) return;
+  const typeEl = scope.querySelector('[data-field="model_type"], [name="model_type"]');
+  const templateEl = scope.querySelector('[data-field="template"], [name="template"]');
+  if (typeEl && meta.model_type) typeEl.value = meta.model_type;
+  if (templateEl && meta.template) templateEl.value = meta.template;
+}
+
+function fillCreateModel() {
+  const box = document.getElementById('create-model');
+  const model = state.schema.base_model_default || 'Qwen/Qwen2.5-7B-Instruct';
+  const meta = (state.schema.catalog.by_model || {})[model] || {};
+  box.innerHTML = `<div class="grid model-grid">
+    <label class="field combo"><span>模型id或路径(--model)</span>
+      <div class="combo-anchor"><input name="base_model" data-combo="1" data-choices-from="models" required maxlength="300" value="${escapeHtml(model)}" autocomplete="off" /><div class="combo-list" hidden></div></div>
+    </label>
+    <label class="field combo"><span>模型类型(--model_type)</span>
+      <div class="combo-anchor"><input name="model_type" data-combo="1" data-choices-from="model_types" maxlength="120" value="${escapeHtml(meta.model_type || '')}" autocomplete="off" /><div class="combo-list" hidden></div></div>
+    </label>
+    <label class="field combo"><span>模型Prompt模板类型(--template)</span>
+      <div class="combo-anchor"><input name="template" data-combo="1" data-choices-from="templates" maxlength="120" value="${escapeHtml(meta.template || '')}" autocomplete="off" /><div class="combo-list" hidden></div></div>
+    </label>
+  </div>`;
+}
+
+document.addEventListener('focusin', (event) => {
+  if (event.target.dataset && event.target.dataset.combo) showCombo(event.target, true);
+});
+
+document.addEventListener('input', (event) => {
+  const el = event.target;
+  if (!el.dataset || !el.dataset.combo) return;
+  showCombo(el, false);
+  if (el.dataset.field === 'model' || el.name === 'base_model') {
+    applyModelMatch(el.closest('dialog, section, form') || document, el.value.trim());
+  }
+});
+
+document.addEventListener('mousedown', (event) => {
+  const option = event.target.closest('[data-combo-value]');
+  if (!option) return;
+  event.preventDefault();
+  const input = option.closest('.combo').querySelector('input');
+  if (input.dataset.chip === '1') {
+    const box = input.closest('.chip-box');
+    const hidden = chipField(box);
+    const tokens = datasetTokens(hidden && hidden.value);
+    const value = option.dataset.comboValue;
+    hidden.value = (tokens.includes(value) ? tokens.filter((item) => item !== value) : tokens.concat(value)).join(' ');
+    input.value = '';
+    paintDatasetChips(box);
+    showCombo(input, true);
+    syncStageFields();
+    return;
+  }
+  if (input.dataset.multi === '1') {
+    input.value = toggleMultiValue(input, option.dataset.comboValue);
+    showCombo(input, true);
+  } else {
+    input.value = option.dataset.comboValue;
+    option.closest('.combo-list').hidden = true;
+  }
+  if (input.dataset.field === 'model' || input.name === 'base_model') {
+    applyModelMatch(input.closest('dialog, section, form') || document, input.value.trim());
+  }
+});
+
+document.addEventListener('focusout', (event) => {
+  const combo = event.target.closest && event.target.closest('.combo');
+  if (!combo) return;
+  setTimeout(() => {
+    if (!combo.contains(document.activeElement)) {
+      const list = combo.querySelector('.combo-list');
+      if (list) list.hidden = true;
+    }
+  }, 120);
+});
+
+function syncLive() {
+  const needs = document.querySelector(
+    '[data-started], [data-duration-start], [data-live-log], [data-live-metrics], [data-metrics-once]')
+    || needsFetchPoll();
+  if (!needs) {
+    if (state.liveTimer) {
+      clearInterval(state.liveTimer);
+      state.liveTimer = null;
+    }
+    return;
+  }
+  if (!state.liveTimer) state.liveTimer = setInterval(pollLive, 1000);
+  if (!state.liveBusy) pollLive();
+}
+
+function paintElapsed() {
+  document.querySelectorAll('[data-started]').forEach((el) => {
+    const label = elapsedLabel(el.dataset.started);
+    if (el.textContent !== label) el.textContent = label;
+  });
+  document.querySelectorAll('[data-duration-start]').forEach((el) => {
+    const label = formatDurationZh(el.dataset.durationStart, '');
+    if (el.textContent !== label) el.textContent = label;
+  });
+}
+
+function paintLog(el, text) {
+  const next = text || '';
+  if (el.textContent === next) {
+    if (el.dataset.pinned !== '0') el.scrollTop = el.scrollHeight;
+    return;
+  }
+  const pinned = el.dataset.pinned !== '0';
+  el.textContent = next;
+  if (pinned) el.scrollTop = el.scrollHeight;
+}
+
+async function pollFetchProgress() {
+  if (!needsFetchPoll()) return;
+  const now = Date.now();
+  if (state.fetchPollAt && now - state.fetchPollAt < 5000) return;
+  state.fetchPollAt = now;
+  let view;
+  try {
+    view = await api(`/api/runs/${state.view.run.id}?round=${state.view.round.round_index}`);
+  } catch (_err) {
+    return;
+  }
+  const wasSyncing = fetchRows().some((row) => row.state === '同步中');
+  state.view.fetches = view.fetches || [];
+  paintFetchNotes();
+  if (wasSyncing && !fetchRows().some((row) => row.state === '同步中')) {
+    await flushDraft();
+    // Keep painted live-log text; view.forms.*.logs stays empty while streaming.
+    state.view = view;
+    const failed = fetchRows().find((row) => row.state === '失败');
+    if (failed && failed.message) toast(failed.message);
+    else if (fetchRows().some((row) => row.state === '就绪')) toast('模型已在本地');
+    render();
+  }
+}
+
+async function pollStageMetrics() {
+  const live = [...document.querySelectorAll('[data-live-metrics]')];
+  const once = [...document.querySelectorAll('[data-metrics-once]')];
+  const targets = live.concat(once);
+  if (!targets.length) return;
+  const groups = new Map();
+  targets.forEach((el) => {
+    const key = `${el.dataset.liveStage}|${el.dataset.liveRound || ''}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(el);
+  });
+  for (const [key, els] of groups) {
+    const [stage, round] = key.split('|');
+    const payload = await fetchStageMetrics(stage, round);
+    if (!payload) continue;
+    els.forEach((el) => {
+      if (!el.isConnected) return;
+      paintMetrics(el, payload);
+      if (el.hasAttribute('data-metrics-once')) el.removeAttribute('data-metrics-once');
+    });
+  }
+}
+
+async function pollLive() {
+  paintElapsed();
+  if (state.liveBusy || !state.view) return;
+  const panels = [...document.querySelectorAll('[data-live-log]')];
+  const wantMetrics = document.querySelector('[data-live-metrics], [data-metrics-once]');
+  if (!panels.length && !wantMetrics) {
+    if (!needsFetchPoll()) return;
+    state.liveBusy = true;
+    try {
+      await pollFetchProgress();
+    } finally {
+      state.liveBusy = false;
+    }
+    return;
+  }
+  state.liveBusy = true;
+  try {
+    const groups = new Map();
+    panels.forEach((el) => {
+      const key = `${el.dataset.liveStage}|${el.dataset.liveRound || ''}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(el);
+    });
+    for (const [key, els] of groups) {
+      const [stage, round] = key.split('|');
+      const query = new URLSearchParams();
+      if (round) query.set('round', round);
+      let payload;
+      try {
+        payload = await api(`/api/runs/${state.view.run.id}/stages/${encodeURIComponent(stage)}/log?${query}`);
+      } catch (_err) {
+        continue;
+      }
+      els.forEach((el) => {
+        if (el.isConnected) paintLog(el, payload.text);
+      });
+      const current = ((state.view.forms || {})[stage] || {}).status;
+      if ((current === 'running' || current === 'syncing') && (payload.done || payload.status !== current)) {
+        await flushDraft();
+        const view = await api(`/api/runs/${state.view.run.id}?round=${state.view.round.round_index}`);
+        state.view = view;
+        state.round = view.round.round_index;
+        toast(`${labelOf(stage)} ${statusText(payload.status)}`);
+        render();
+        return;
+      }
+    }
+    await pollStageMetrics();
+    await pollFetchProgress();
+  } finally {
+    state.liveBusy = false;
+    // One-shot metrics drop their attribute after the first paint; stop the timer
+    // when nothing else needs live updates.
+    if (!document.querySelector(
+      '[data-started], [data-duration-start], [data-live-log], [data-live-metrics], [data-metrics-once]')
+      && !needsFetchPoll() && state.liveTimer) {
+      clearInterval(state.liveTimer);
+      state.liveTimer = null;
+    }
+  }
+}
+
+document.addEventListener('scroll', (event) => {
+  const el = event.target;
+  if (!el || !el.classList || !el.classList.contains('live-log')) return;
+  const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+  el.dataset.pinned = gap < 28 ? '1' : '0';
+}, true);
+
+window.addEventListener('pagehide', () => {
+  flushDraft(true);
+});
+
 async function boot() {
   state.schema = await api('/api/schema');
-  const health = await api('/api/health');
-  document.getElementById('backend-pill').textContent = health.backend === 'mock' ? 'Mock 后端' : 'ms-swift 后端';
-  if (health.hardware && health.hardware.label) {
-    document.getElementById('hardware-pill').textContent = health.hardware.label;
-  }
+  fillCreateModel();
   await refreshRuns();
   render();
 }
