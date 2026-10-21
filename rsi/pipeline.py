@@ -7,8 +7,10 @@ of choice. A failed eval cannot start RL.
 """
 import json
 import logging
+import os
 import re
 import shutil
+import signal
 import threading
 import uuid
 from pathlib import Path
@@ -66,6 +68,33 @@ CHECKPOINT_RESET = {
 }
 
 
+def _terminate_proc(proc, timeout: float = 5.0) -> None:
+    """SIGTERM then SIGKILL. Prefer the process group when ``start_new_session`` was used."""
+    if proc is None or proc.poll() is not None:
+        return
+
+    def _signal(sig):
+        try:
+            os.killpg(proc.pid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                proc.send_signal(sig)
+            except (ProcessLookupError, PermissionError, OSError):
+                return
+
+    _signal(signal.SIGTERM)
+    try:
+        proc.wait(timeout=timeout)
+        return
+    except Exception:
+        pass
+    _signal(signal.SIGKILL)
+    try:
+        proc.wait(timeout=timeout)
+    except Exception:
+        pass
+
+
 class _ExportProcs:
     """In-flight ``swift export`` processes, one per experiment."""
 
@@ -90,12 +119,59 @@ class _ExportProcs:
             proc = self._procs.pop(run_id, None)
         if proc is None or proc.poll() is not None:
             return False
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except Exception:
-            proc.kill()
-            proc.wait(timeout=5)
+        _terminate_proc(proc)
+        return True
+
+
+class _StageProcs:
+    """In-flight training/eval ``swift`` processes, one per experiment.
+
+    Cancellation is per step. A stop that arrives before ``Popen`` still kills
+    the child when it starts, and a later retry of the same experiment is a new step.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._procs = {}
+        self._cancel = set()
+
+    def track(self, run_id: str, step_id: int, proc) -> None:
+        kill_now = False
+        previous = None
+        with self._lock:
+            if step_id in self._cancel:
+                kill_now = True
+            else:
+                previous = self._procs.get(run_id)
+                self._procs[run_id] = (step_id, proc)
+        if kill_now:
+            _terminate_proc(proc)
+            return
+        if previous is not None and previous[1] is not proc and previous[1].poll() is None:
+            _terminate_proc(previous[1])
+
+    def clear(self, run_id: str, step_id: int) -> None:
+        with self._lock:
+            self._cancel.discard(step_id)
+            current = self._procs.get(run_id)
+            if current is not None and current[0] == step_id:
+                self._procs.pop(run_id, None)
+
+    def running(self, run_id: str) -> bool:
+        with self._lock:
+            current = self._procs.get(run_id)
+        return current is not None and current[1].poll() is None
+
+    def stop(self, run_id: str, step_id: int) -> bool:
+        with self._lock:
+            self._cancel.add(step_id)
+            current = self._procs.get(run_id)
+            proc = None
+            if current is not None and current[0] == step_id:
+                proc = self._procs.pop(run_id)[1]
+        if proc is None or proc.poll() is not None:
+            return False
+        _terminate_proc(proc)
         return True
 
 
@@ -320,6 +396,7 @@ class Pipeline:
         from rsi.serving import ServeManager
         self.serve = ServeManager()
         self._exports = _ExportProcs()
+        self._stages = _StageProcs()
 
     def stage_dir(self, run_id: str, round_index: int, stage: str) -> Path:
         path = self.home / 'runs' / run_id / f'round_{round_index}' / stage
@@ -1753,19 +1830,49 @@ class Pipeline:
         run = self.store.get_run(run_id)
         rnd = self.store.get_round(run_id, round_index)
         try:
-            outcome = self._execute(run, rnd, stage, params, side)
+            outcome = self._execute(run, rnd, stage, params, side, step_id=step_id)
         except (PipelineError, BackendError) as exc:
             logs = getattr(exc, 'logs', '') or str(exc)
             with self.store.transaction() as conn:
-                self.store.finish_step(conn, step_id, 'failed', {'error': str(exc), 'backend': self.backend.name}, logs,
-                                       stage_shell(stage, params))
+                row = conn.execute('SELECT status FROM steps WHERE id=?', (step_id, )).fetchone()
+                if row and row['status'] == 'running':
+                    self.store.finish_step(conn, step_id, 'failed', {'error': str(exc), 'backend': self.backend.name},
+                                           logs, stage_shell(stage, params))
             return
         finally:
+            self._stages.clear(run_id, step_id)
             if fetch_log is not None:
                 deactivate_stage_log(fetch_log)
         self._commit_success(run_id, round_index, stage, step_id, params, outcome)
 
-    def _execute(self, run, rnd, stage, params, side) -> dict:
+    def stop_stage(self, run_id: str, stage: str) -> dict:
+        """Stop a running SFT / eval / RL stage. The step is marked failed so it can be retried."""
+        if stage not in SWIFT_STAGES:
+            raise PipelineError('这一阶段不能停止')
+        run = self._require_run(run_id)
+        step = self.store.latest_active_steps(run_id, run['round_index']).get(stage)
+        if not step or step.get('status') != 'running':
+            raise PipelineError('没有正在运行的阶段')
+        self._stages.stop(run_id, step['id'])
+        note = '\n[rsi] 本阶段已停止。\n'
+        log_path = self.stage_log_dir(run_id, run['round_index'], stage) / 'swift.log'
+        try:
+            with log_path.open('a', encoding='utf-8') as handle:
+                handle.write(note)
+        except OSError:
+            pass
+        with self.store.transaction() as conn:
+            row = conn.execute('SELECT status, command, logs FROM steps WHERE id=?', (step['id'], )).fetchone()
+            # The worker may already have stored the signal exit. This stop is the reason.
+            if row and row['status'] in {'running', 'failed'}:
+                logs = note if row['status'] == 'running' else ((row['logs'] or '') + note)
+                self.store.finish_step(conn, step['id'], 'failed', {
+                    'stopped': True,
+                    'error': '本阶段已停止',
+                }, logs, row['command'] or '')
+        return {'ok': True, 'view': self.view(run_id)}
+
+    def _execute(self, run, rnd, stage, params, side, step_id=None) -> dict:
         if stage in SWIFT_STAGES:
             log_dir = self.stage_log_dir(run['id'], rnd['round_index'], stage)
             context = {
@@ -1775,6 +1882,8 @@ class Pipeline:
                 'eval_rows': side.get('eval_rows'),
                 'scenario': run['scenario'],
             }
+            if step_id is not None:
+                context['on_proc'] = lambda proc, rid=run['id'], sid=step_id: self._stages.track(rid, sid, proc)
             produced = self.backend.execute(stage, params, context)
             metrics = merge_eval_report(
                 produced.get('metrics') or {}, params.get('eval_output_dir'), self.home / 'runs' / run['id'])
@@ -1849,6 +1958,10 @@ class Pipeline:
 
     def _commit_success(self, run_id, round_index, stage, step_id, params, outcome):
         with self.store.transaction() as conn:
+            row = conn.execute('SELECT status FROM steps WHERE id=?', (step_id, )).fetchone()
+            # Stop marks the step failed while the worker is still unwinding.
+            if not row or row['status'] != 'running':
+                return
             self.store.finish_step(conn, step_id, 'succeeded', outcome.get('result'), outcome.get('logs'),
                                    outcome.get('command') or '')
             if outcome.get('checkpoint') and outcome.get('checkpoint_kind'):

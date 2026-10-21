@@ -569,6 +569,9 @@ function renderStage(stage) {
   const logText = streaming ? liveLogSeed(stage, form.logs || '') : (form.logs || '');
   const logs = (logText || streaming) ? logPanel(logText, liveAttrs) : '';
   const command = form.command ? outputPanel('命令', form.command, 'command') : '';
+  const stop = form.status === 'running'
+    ? '<button type="button" class="danger" data-action="stage-stop">停止</button>'
+    : '';
   const kicker = form.status === 'running'
     ? `${escapeHtml(meta.label)} · ${runningMarkup(form.started_at)}`
     : `${escapeHtml(meta.label)} · ${escapeHtml(statusText(form.status))}`;
@@ -588,6 +591,7 @@ function renderStage(stage) {
       ${fetchNote()}
       <div class="row-actions">
         <button type="button" class="primary" data-action="run"${tipAttr(mutable ? '' : blockReason)} ${mutable ? '' : 'disabled'}>${buttonLabel}</button>
+        ${stop}
         ${refetchButton()}
         ${validate}
         <button type="button" class="ghost" data-action="preview"${viewTip} ${view.mutable ? '' : 'disabled'}>预览命令</button>
@@ -1360,6 +1364,14 @@ async function startExport() {
   render();
 }
 
+async function stopStage() {
+  const stage = state.stage;
+  const payload = await api(`/api/runs/${state.view.run.id}/stages/${stage}/stop`, { method: 'POST', body: '{}' });
+  state.view = payload.view;
+  toast('本阶段已停止');
+  render();
+}
+
 async function stopExport() {
   const payload = await api(`/api/runs/${state.view.run.id}/export/stop`, { method: 'POST', body: '{}' });
   state.view = payload.view;
@@ -1603,6 +1615,19 @@ document.addEventListener('click', async (event) => {
       state.stage = stage;
       state.tab = 'flow';
       render();
+      return;
+    }
+    if (target.dataset.action === 'stage-stop') {
+      const meta = (state.schema.stages || []).find((item) => item.id === state.stage);
+      const name = meta ? meta.label : '当前阶段';
+      const confirmed = await askConfirm({
+        title: '停止本阶段',
+        body: `${name} 会停掉。已经写到一半的日志会保留，这一步记为失败，可以再重试。`,
+        okLabel: '停止',
+        danger: true,
+      });
+      if (!confirmed) return;
+      await stopStage();
       return;
     }
     if (target.dataset.action === 'run') {

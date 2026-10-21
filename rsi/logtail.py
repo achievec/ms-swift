@@ -209,13 +209,16 @@ def announce_log(prefix: str, log_path: Path):
 
 
 def run_and_tee(argv: list, env: dict | None, log_file, prefix: str, interval: float = 1.0,
-                echo: bool = True) -> int:
+                echo: bool = True, on_start=None, new_session: bool = False) -> int:
     """Run ``argv`` and write combined stdout/stderr to ``log_file``.
 
     ``log_file`` must be a binary file. The file keeps raw bytes (including
     ``\\r`` and ANSI). When ``echo`` is true, a normalized copy is also written
     to the process stdout, with carriage-return progress throttled. Training
     stages pass ``echo=False`` so the process log is not the experiment log.
+
+    ``on_start`` receives the ``Popen`` handle once (for stop/cancel tracking).
+    ``new_session`` starts a process group so stop can SIGTERM/SIGKILL the tree.
     """
     proc = subprocess.Popen(
         argv,
@@ -223,7 +226,10 @@ def run_and_tee(argv: list, env: dict | None, log_file, prefix: str, interval: f
         stderr=subprocess.STDOUT,
         env=env,
         bufsize=0,
+        start_new_session=new_session,
     )
+    if on_start is not None:
+        on_start(proc)
     tee = ConsoleTee(prefix, interval=interval) if echo else None
     try:
         assert proc.stdout is not None

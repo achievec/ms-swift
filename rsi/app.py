@@ -160,6 +160,11 @@ def create_app(home: Path | None = None) -> FastAPI:
         params = body.get('params') if isinstance(body, dict) else {}
         return pipeline.run_stage(run_id, stage, params or {})
 
+    @app.post('/api/runs/{run_id}/stages/{stage}/stop')
+    async def stop_stage(run_id: str, stage: str, request: Request):
+        await read_json(request)
+        return pipeline.stop_stage(run_id, stage)
+
     @app.post('/api/runs/{run_id}/serve')
     async def start_serve(run_id: str, request: Request):
         body = await read_json(request)

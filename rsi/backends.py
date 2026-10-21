@@ -377,7 +377,9 @@ class MsSwiftBackend:
                 log_file.write(b'\n')
             log_file.write((command + '\nexec: ' + ' '.join(argv) + '\n').encode('utf-8'))
             log_file.flush()
-            returncode = run_and_tee(argv, env, log_file, prefix, echo=False)
+            returncode = run_and_tee(
+                argv, env, log_file, prefix, echo=False,
+                on_start=context.get('on_proc'), new_session=True)
         # Parse metrics from the full file; only a short tail is stored/returned in
         # the step row so /api/runs/{id} stays small. Live UI tails swift.log itself.
         full = normalize_log(log_path.read_text(encoding='utf-8', errors='replace'))
