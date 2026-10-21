@@ -14,18 +14,13 @@ from rsi.webui_catalog import eval_datasets_by_backend, load_catalog
 
 CONFIG_PATH = Path(__file__).resolve().parent / 'configs' / 'a100_80g.yaml'
 
-STAGE_ORDER = ['data', 'sft', 'sft_eval', 'rl', 'rl_eval', 'promote', 'next_round']
+STAGE_ORDER = ['sft', 'sft_eval', 'rl', 'rl_eval', 'promote', 'next_round']
 
 STAGE_META = [
     {
-        'id': 'data',
-        'label': '数据',
-        'summary': '选择公开数据集或本地文件。支持 messages、sharegpt、alpaca 或 query/response。',
-    },
-    {
         'id': 'sft',
         'label': 'SFT',
-        'summary': '监督微调。模型默认是本轮基座。',
+        'summary': '监督微调。先选数据集，模型默认是本轮基座。',
     },
     {
         'id': 'sft_eval',
@@ -50,7 +45,7 @@ STAGE_META = [
     {
         'id': 'next_round',
         'label': '下一轮数据',
-        'summary': '用晋级模型作为新的基座，回到数据阶段。上一轮记录保留在实验记录里。',
+        'summary': '用晋级模型作为新的基座，回到 SFT。上一轮记录保留在实验记录里。',
     },
 ]
 
@@ -368,7 +363,15 @@ def public_schema() -> dict:
         if item['id'] not in seen:
             datasets.append(item['id'])
             seen.add(item['id'])
-    datasets.sort()
+    # Keep swift/dataset registration order. Web-UI ``get_dataset_list()`` does not sort.
+    sft_layout = stage_layouts['sft']
+    sft_layout['dataset_fields'] = [
+        field for field in FIELDS['data'] if field['key'] not in {'model', 'model_type', 'template'}
+    ]
+    for block in sft_layout.get('blocks') or []:
+        if block.get('label') == '数据集设置':
+            block['dataset_panel'] = True
+    fields.pop('data', None)
     return {
         'stages': STAGE_META,
         'stage_order': STAGE_ORDER,

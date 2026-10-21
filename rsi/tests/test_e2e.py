@@ -47,18 +47,15 @@ def test_happy_path_records_audit_and_serves(client, monkeypatch):
     assert created.status_code == 200, created.text
     run_id = created.json()['run']['id']
 
-    skipped = _run(api, run_id, 'sft', {})
-    assert skipped.status_code == 400
-    assert '数据' in skipped.json()['detail']
-
-    data = _run(api, run_id, 'data', {'source': 'bundled', 'bundled': 'itops_mix'})
-    assert data.status_code == 200, data.text
-    validation = data.json()['result']['validation']
+    sft = _run(api, run_id, 'sft', {
+        'source': 'bundled',
+        'bundled': 'itops_mix',
+        'extra_yaml': 'learning_rate: 2e-5\n',
+    })
+    assert sft.status_code == 200, sft.text
+    validation = sft.json()['result']['validation']
     assert validation['ok'] is True
     assert validation['num_rows'] == 6
-
-    sft = _run(api, run_id, 'sft', {'extra_yaml': 'learning_rate: 2e-5\n'})
-    assert sft.status_code == 200, sft.text
     sft_body = sft.json()
     assert 'swift sft' in sft_body['command']
     assert '2e-5' in sft_body['command']
@@ -102,15 +99,11 @@ def test_happy_path_records_audit_and_serves(client, monkeypatch):
 
     nxt = _run(api, run_id, 'next_round', {'reuse_dataset': True, 'note': '用 RL 检查点开下一轮'})
     assert nxt.status_code == 200, nxt.text
-    assert nxt.json()['view']['run']['round_index'] == 2
-    assert nxt.json()['view']['run']['current_stage'] == 'data'
-    assert nxt.json()['view']['round']['base_model'] == promoted
-
-    again = _run(api, run_id, 'data', {})
-    assert again.status_code == 200, again.text
-    round2 = api.get(f'/api/runs/{run_id}').json()
-    assert round2['forms']['sft']['values']['model'] == promoted
-    assert round2['run']['current_stage'] == 'sft'
+    opened = nxt.json()['view']
+    assert opened['run']['round_index'] == 2
+    assert opened['run']['current_stage'] == 'sft'
+    assert opened['round']['base_model'] == promoted
+    assert opened['forms']['sft']['values']['model'] == promoted
 
     import socket
     with socket.socket() as sock:
@@ -156,7 +149,7 @@ def test_happy_path_records_audit_and_serves(client, monkeypatch):
     rows = conn.execute(
         'SELECT stage, status, started_at, ended_at, params_json, result_json, logs FROM steps ORDER BY id').fetchall()
     stages = [row[0] for row in rows]
-    for stage in ('data', 'sft', 'sft_eval', 'rl', 'rl_eval', 'promote', 'next_round', 'serve'):
+    for stage in ('sft', 'sft_eval', 'rl', 'rl_eval', 'promote', 'next_round', 'serve'):
         assert stage in stages
     for stage, status, started, ended, params, result, logs in rows:
         assert status in {'succeeded', 'failed', 'superseded', 'running'}
@@ -173,14 +166,15 @@ def test_rerun_supersedes_later_stages(client):
         'scenario': '验证作废后续阶段',
         'base_model': 'Qwen/Qwen2.5-7B-Instruct',
     }).json()['run']['id']
-    assert _run(api, run_id, 'data', {'source': 'bundled'}).status_code == 200
-    assert _run(api, run_id, 'sft', {}).status_code == 200
-    assert _run(api, run_id, 'data', {'source': 'bundled'}).status_code == 200
+    bundled = {'source': 'bundled', 'bundled': 'itops_mix'}
+    assert _run(api, run_id, 'sft', bundled).status_code == 200
+    assert _run(api, run_id, 'sft_eval', {}).status_code == 200
+    assert _run(api, run_id, 'sft', bundled).status_code == 200
     view = api.get(f'/api/runs/{run_id}').json()
-    sft_steps = [step for step in view['steps'] if step['stage'] == 'sft']
-    assert sft_steps and all(step['status'] == 'superseded' for step in sft_steps)
-    assert view['forms']['sft']['status'] == 'ready'
-    blocked = _run(api, run_id, 'sft_eval', {})
+    eval_steps = [step for step in view['steps'] if step['stage'] == 'sft_eval']
+    assert eval_steps and all(step['status'] == 'superseded' for step in eval_steps)
+    assert view['forms']['sft']['status'] == 'succeeded'
+    blocked = _run(api, run_id, 'rl', {})
     assert blocked.status_code == 400
 
 
@@ -192,15 +186,15 @@ def test_model_fields_cannot_change_after_create(client):
         'base_model': 'Qwen/Qwen2.5-7B-Instruct',
     })
     run_id = created.json()['run']['id']
-    data = _run(api, run_id, 'data', {
+    trained = _run(api, run_id, 'sft', {
         'source': 'bundled',
         'bundled': 'itops_mix',
         'model': 'other/model',
         'model_type': 'llama',
         'template': 'llama3',
     })
-    assert data.status_code == 200, data.text
-    stored = data.json()['view']['forms']['data']['values']
+    assert trained.status_code == 200, trained.text
+    stored = trained.json()['view']['forms']['sft']['values']
     assert stored['model'] == 'Qwen/Qwen2.5-7B-Instruct'
     assert stored['model_type'] == 'qwen2'
     assert stored['template'] == 'qwen2_5'
@@ -285,8 +279,7 @@ def test_swift_backend_subprocess(tmp_path, monkeypatch):
             'scenario': '确认真实后端会拉起 swift 进程',
             'base_model': 'Qwen/Qwen2.5-7B-Instruct',
         }).json()['run']['id']
-        assert _run(api, run_id, 'data', {'source': 'bundled'}).status_code == 200
-        started = _run(api, run_id, 'sft', {})
+        started = _run(api, run_id, 'sft', {'source': 'bundled', 'bundled': 'itops_mix'})
         assert started.status_code == 200, started.text
         view = started.json()['view']
         status = view['forms']['sft']['status']
@@ -407,8 +400,8 @@ def test_delete_run_removes_audit_and_only_its_directory(client):
         'base_model': 'Qwen/Qwen2.5-7B-Instruct',
     })
     other_id = other.json()['run']['id']
-    data = _run(api, run_id, 'data', {'source': 'bundled', 'bundled': 'itops_mix'})
-    assert data.status_code == 200, data.text
+    trained = _run(api, run_id, 'sft', {'source': 'bundled', 'bundled': 'itops_mix'})
+    assert trained.status_code == 200, trained.text
 
     workspace = home / 'runs' / run_id / 'round_1' / 'sft'
     workspace.mkdir(parents=True, exist_ok=True)
@@ -469,9 +462,9 @@ def test_empty_post_body_is_not_internal_server_error(client):
     run_id = created.json()['run']['id']
     headers = {'Content-Type': 'application/json'}
     started = api.post(f'/api/runs/{run_id}/stages/sft/run', content=b'', headers=headers)
-    assert started.status_code != 500, started.text
+    assert started.status_code == 200, started.text
     assert started.headers['content-type'].startswith('application/json')
-    assert started.json()['detail']
+    assert started.json()['ok'] is True
     assert 'Internal Server Error' not in started.text
     blank = api.post(f'/api/runs/{run_id}/stages/sft/run', content=b'   \n', headers=headers)
     assert blank.status_code != 500, blank.text

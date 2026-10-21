@@ -197,7 +197,7 @@ class Store:
             conn.execute(
                 'INSERT INTO runs (id, name, scenario, base_model, model_type, template, round_index, current_stage, '
                 'status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)',
-                (run_id, name, scenario, base_model, model_type or '', template or '', 'data', 'active', now, now))
+                (run_id, name, scenario, base_model, model_type or '', template or '', 'sft', 'active', now, now))
             conn.execute(
                 'INSERT INTO rounds (run_id, round_index, base_model, status, created_at) VALUES (?, 1, ?, ?, ?)',
                 (run_id, base_model, 'active', now))
@@ -332,7 +332,7 @@ class Store:
             'INSERT INTO rounds (run_id, round_index, base_model, status, created_at) VALUES (?, ?, ?, ?, ?)',
             (run_id, next_index, next_base, 'active', now))
         conn.execute('UPDATE runs SET round_index=?, current_stage=?, updated_at=? WHERE id=?',
-                     (next_index, 'data', now, run_id))
+                     (next_index, 'sft', now, run_id))
         return next_index
 
     def latest_promotion(self, run_id) -> dict | None:

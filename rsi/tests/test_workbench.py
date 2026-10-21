@@ -76,7 +76,7 @@ def test_load_dataset_recorded_by_the_data_step(tmp_path, monkeypatch):
     run_id = created.json()['run']['id']
     missing = client.get(f'/api/runs/{run_id}/workbench/dataset')
     assert missing.status_code == 400
-    loaded = client.post(f'/api/runs/{run_id}/stages/data/run', json={
+    loaded = client.post(f'/api/runs/{run_id}/stages/sft/run', json={
         'params': {'source': 'bundled', 'bundled': 'itops_mix'},
     })
     assert loaded.status_code == 200, loaded.text

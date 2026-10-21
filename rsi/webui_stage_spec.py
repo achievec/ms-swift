@@ -746,10 +746,48 @@ def _unwrap_root(blocks: list) -> list:
     return blocks
 
 
+def _adapters_widget() -> dict:
+    """Eval has no adapters box in the Web-UI. RSI shows the checkpoint LoRA here."""
+    return {
+        'id': 'adapters',
+        'widget': 'Textbox',
+        'label': 'adapter id或路径(--adapters)',
+        'info': '本轮检查点的 LoRA 路径，可改。',
+        'default': '',
+        'minimum': None,
+        'maximum': None,
+        'step': None,
+        'lines': 1,
+        'multiselect': False,
+        'allow_custom': False,
+        'is_list': True,
+        'locked': False,
+        'choices': [],
+        'choices_from': '',
+    }
+
+
+def _insert_after_model(blocks: list, widget: dict) -> bool:
+    for index, block in enumerate(blocks):
+        kind = block.get('kind')
+        if kind == 'row' and any(item.get('id') == 'model' for item in block.get('widgets') or []):
+            blocks.insert(index + 1, {'kind': 'row', 'widgets': [widget]})
+            return True
+        if kind in {'accordion', 'tab'} and _insert_after_model(block.get('blocks') or [], widget):
+            return True
+        if kind == 'tabs':
+            for tab in block.get('tabs') or []:
+                if _insert_after_model(tab.get('blocks') or [], widget):
+                    return True
+    return False
+
+
 def stage_layout(stage: str, device_count: int = 0) -> dict:
     """``sft`` mirrors LLM预训练/微调, ``rl`` mirrors LLM GRPO, ``eval`` mirrors LLM评测."""
     key = {'sft': 'sft', 'sft_eval': 'eval', 'rl': 'rl', 'rl_eval': 'eval'}[stage]
     blocks = [_clone(block) for block in _unwrap_root(list(_built(key)))]
+    if key == 'eval':
+        _insert_after_model(blocks, _adapters_widget())
     _fill_gpu(blocks, device_count)
     return _layout(blocks)
 

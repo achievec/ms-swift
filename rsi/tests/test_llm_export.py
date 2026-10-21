@@ -118,8 +118,7 @@ def _run(api, run_id, stage, params=None):
 def test_export_fills_lora_and_ignores_model_edits(client):
     api = client
     run_id = _create(api)
-    _run(api, run_id, 'data', {'source': 'bundled', 'bundled': 'itops_mix'})
-    trained = _run(api, run_id, 'sft', {})
+    trained = _run(api, run_id, 'sft', {'source': 'bundled', 'bundled': 'itops_mix'})
     checkpoint = Path(trained['result']['checkpoint'])
     (checkpoint / 'adapter_config.json').write_text('{"peft_type": "LORA"}', encoding='utf-8')
     args = json.loads((checkpoint / 'args.json').read_text(encoding='utf-8'))
@@ -188,8 +187,7 @@ def test_export_fills_lora_and_ignores_model_edits(client):
 def test_rl_weights_win_and_a_full_checkpoint_becomes_model(client):
     api = client
     run_id = _create(api)
-    _run(api, run_id, 'data', {'source': 'bundled'})
-    _run(api, run_id, 'sft', {})
+    _run(api, run_id, 'sft', {'source': 'bundled', 'bundled': 'itops_mix'})
     _run(api, run_id, 'sft_eval', {})
     trained = _run(api, run_id, 'rl', {})
     checkpoint = Path(trained['result']['checkpoint'])

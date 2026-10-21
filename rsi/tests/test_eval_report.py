@@ -96,10 +96,9 @@ def test_stage_view_shows_report_scores_and_serves_html(tmp_path, monkeypatch):
             'model_type': 'qwen2',
             'template': 'qwen2_5',
         }).json()['run']['id']
-        assert api.post(f'/api/runs/{run_id}/stages/data/run', json={
+        assert api.post(f'/api/runs/{run_id}/stages/sft/run', json={
             'params': {'source': 'bundled', 'bundled': 'itops_mix'},
         }).status_code == 200
-        assert api.post(f'/api/runs/{run_id}/stages/sft/run', json={'params': {}}).status_code == 200
         evaluated = api.post(f'/api/runs/{run_id}/stages/sft_eval/run', json={'params': {}})
         assert evaluated.status_code == 200, evaluated.text
         assert evaluated.json()['result']['metrics']['eval_rows'] == 4

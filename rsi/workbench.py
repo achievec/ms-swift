@@ -129,7 +129,7 @@ def write_split(home: Path, text: str, filename: str = 'data.jsonl', eval_ratio:
         'train_path': str((folder / 'train.jsonl').resolve()),
         'eval_path': str((folder / 'eval.jsonl').resolve()),
         'seed': int(seed),
-        'how_to': '数据阶段把来源选成「服务器本地路径」，粘贴训练路径。留出路径填到评测的自定义配置。',
+        'how_to': 'SFT 的数据集设置把来源选成「服务器本地路径」，粘贴训练路径。留出路径填到评测的自定义配置。',
     }
 
 
@@ -171,18 +171,18 @@ def pack_next_round(home: Path, text: str, filename: str = 'data.jsonl', min_sco
 
 
 def latest_dataset(view: dict) -> dict:
-    """Local dataset recorded by the latest succeeded data step. Read-only."""
+    """Local dataset recorded by the latest succeeded SFT step. Read-only."""
     found = None
     for step in view.get('steps') or []:
-        if step.get('stage') != 'data' or step.get('status') != 'succeeded':
+        if step.get('stage') != 'sft' or step.get('status') != 'succeeded':
             continue
         params = step.get('params') or {}
         result = step.get('result') or {}
-        raw = params.get('dataset') or result.get('dataset') or ''
+        raw = result.get('dataset') or params.get('dataset') or ''
         if raw:
             found = {'round_index': step.get('round_index'), 'path': str(raw)}
     if not found:
-        raise PipelineError('这一轮还没有成功的数据阶段')
+        raise PipelineError('这一轮还没有成功的 SFT，没有可打开的数据集')
     path = Path(found['path'])
     if not path.is_file():
         raise PipelineError(f'数据不是本地文件，无法在这里打开：{found["path"]}')
@@ -206,7 +206,7 @@ def latest_dataset(view: dict) -> dict:
         'text': text,
         'inspect': report,
         'checkpoints': checkpoints,
-        'how_to': '文本已填入上方输入框，可以直接检查、拆分或筛选。拆分结果用「服务器本地路径」填回数据阶段。',
+        'how_to': '文本已填入上方输入框，可以直接检查、拆分或筛选。拆分结果用「服务器本地路径」填回 SFT 的数据集设置。',
     }
 
 
@@ -338,7 +338,7 @@ def write_completed(home: Path, rows: list, answer_fn, limit: int = FILL_LIMIT) 
         'pending_rows': pending,
         'next_path': str(next_path.resolve()),
         'waiting_path': waiting_path,
-        'how_to': '数据阶段把来源选成「服务器本地路径」，粘贴 next.jsonl。不会替换当前实验正在用的数据集。',
+        'how_to': 'SFT 的数据集设置把来源选成「服务器本地路径」，粘贴 next.jsonl。不会替换当前实验正在用的数据集。',
     }
 
 

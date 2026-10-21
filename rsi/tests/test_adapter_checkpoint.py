@@ -42,8 +42,7 @@ def _create(api):
 
 
 def _train_sft(api, run_id):
-    assert _run(api, run_id, 'data', {'source': 'bundled', 'bundled': 'itops_mix'}).status_code == 200
-    trained = _run(api, run_id, 'sft', {})
+    trained = _run(api, run_id, 'sft', {'source': 'bundled', 'bundled': 'itops_mix'})
     assert trained.status_code == 200, trained.text
     checkpoint = Path(trained.json()['result']['checkpoint'])
     args = json.loads((checkpoint / 'args.json').read_text(encoding='utf-8'))
@@ -57,6 +56,12 @@ def test_lora_checkpoint_is_passed_as_adapters(client):
     api = client
     run_id = _create(api)
     checkpoint = _train_sft(api, run_id)
+    shown = api.get(f'/api/runs/{run_id}').json()
+    assert shown['forms']['sft_eval']['values']['adapters'] == str(checkpoint)
+    assert shown['forms']['sft_eval']['values']['model'] == BASE
+    assert shown['forms']['rl']['values']['model'] == BASE
+    assert shown['forms']['rl']['values']['model_type'] == 'qwen2'
+    assert shown['forms']['rl']['values']['template'] == 'qwen2_5'
 
     evaluated = _preview(api, run_id, 'sft_eval')
     params = evaluated['params']

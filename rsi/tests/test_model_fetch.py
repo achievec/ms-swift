@@ -121,7 +121,7 @@ def test_huggingface_co_layout_is_ready_and_used_as_model(tmp_path, hope_env):
         assert preview.status_code == 200, preview.text
         assert preview.json()['params']['model'] == str(model_dir)
         assert f'--model {model_dir}' in preview.json()['command']
-        loaded = api.post(f'/api/runs/{run_id}/stages/data/run', json={
+        loaded = api.post(f'/api/runs/{run_id}/stages/sft/run', json={
             'params': {'source': 'public', 'dataset': 'openai/gsm8k'},
         })
         assert loaded.status_code == 200, loaded.text
@@ -514,7 +514,6 @@ def test_pipeline_uses_local_model_and_keeps_type(tmp_path, hope_env):
             'scenario': '把 hub id 换成本地目录',
             'base_model': REPO,
         }).json()['run']['id']
-        api.post(f'/api/runs/{run_id}/stages/data/run', json={'params': {'source': 'bundled', 'bundled': 'itops_mix'}})
         preview = api.post(f'/api/runs/{run_id}/stages/sft/preview', json={'params': {}})
         assert preview.status_code == 200, preview.text
         body = preview.json()
@@ -550,13 +549,13 @@ def test_pipeline_syncing_audit_and_modelscope_error(tmp_path, hope_env):
             'scenario': '外网同步还没完成',
             'base_model': REPO,
         }).json()['run']['id']
-        blocked = api.post('/api/runs/' + run_id + '/stages/data/run', json={
+        blocked = api.post('/api/runs/' + run_id + '/stages/sft/run', json={
             'params': {'source': 'public', 'dataset': 'modelscope/gsm8k'},
         })
         assert blocked.status_code == 400
         assert blocked.json()['detail'] == 'modelscope/gsm8k 不能在当前网络下载，请改用本地文件'
         assert calls == []
-        syncing = api.post(f'/api/runs/{run_id}/stages/data/run', json={
+        syncing = api.post(f'/api/runs/{run_id}/stages/sft/run', json={
             'params': {'source': 'public', 'dataset': 'openai/gsm8k'},
         })
         assert syncing.status_code == 200, syncing.text
@@ -574,7 +573,7 @@ def test_pipeline_syncing_audit_and_modelscope_error(tmp_path, hope_env):
         assert not (tmp_path / 'datasets' / 'openai').exists()
         assert calls[0][0] == ['hope', 'login', USER]
         view = body['view']
-        assert view['forms']['data']['status'] == 'syncing'
+        assert view['forms']['sft']['status'] == 'syncing'
         assert view['fetches'][0]['state'] == '同步中'
         assert view['fetches'][0]['repo_id'] == 'openai/gsm8k'
 
@@ -594,10 +593,9 @@ def test_eval_prefers_local_benchmark_and_keeps_general_qa(tmp_path, hope_env):
             'scenario': '评测集放在本机',
             'base_model': REPO,
         }).json()['run']['id']
-        assert api.post(f'/api/runs/{run_id}/stages/data/run', json={
+        assert api.post(f'/api/runs/{run_id}/stages/sft/run', json={
             'params': {'source': 'bundled', 'bundled': 'itops_mix'},
         }).status_code == 200
-        assert api.post(f'/api/runs/{run_id}/stages/sft/run', json={'params': {}}).status_code == 200
         pointed = tmp_path / 'my-gsm8k'
         pointed.mkdir()
         (pointed / 'gsm8k.jsonl').write_text('{}\n', encoding='utf-8')
@@ -673,21 +671,19 @@ def test_sft_does_not_launch_while_model_is_syncing(tmp_path, hope_env, monkeypa
             'scenario': '模型还在同步时不能启动训练',
             'base_model': REPO,
         }).json()['run']['id']
-        assert api.post(f'/api/runs/{run_id}/stages/data/run', json={
-            'params': {'source': 'bundled', 'bundled': 'itops_mix'},
-        }).status_code == 200
         blocked = api.post('/api/runs', json={
             'name': '魔搭 id',
             'scenario': '不能在当前网络下载',
             'base_model': 'modelscope/Qwen2.5-7B-Instruct',
         }).json()['run']['id']
-        assert api.post(f'/api/runs/{blocked}/stages/data/run', json={
+        rejected = api.post(f'/api/runs/{blocked}/stages/sft/run', json={
             'params': {'source': 'bundled', 'bundled': 'itops_mix'},
-        }).status_code == 200
-        rejected = api.post(f'/api/runs/{blocked}/stages/sft/run', json={'params': {}})
+        })
         assert rejected.status_code == 400
         assert rejected.json()['detail'] == 'modelscope/Qwen2.5-7B-Instruct 不能在当前网络下载，请改用本地文件'
-        started = api.post(f'/api/runs/{run_id}/stages/sft/run', json={'params': {}})
+        started = api.post(f'/api/runs/{run_id}/stages/sft/run', json={
+            'params': {'source': 'bundled', 'bundled': 'itops_mix'},
+        })
         assert started.status_code == 200, started.text
         body = started.json()
         assert body['status'] == 'syncing'
@@ -785,10 +781,9 @@ def test_upsert_fetch_persists_status_without_on_conflict(tmp_path, hope_env):
             'scenario': '不下载也能记下 fetch 状态',
             'base_model': REPO,
         }).json()['run']['id']
-        assert api.post(f'/api/runs/{run_id}/stages/data/run', json={
+        started = api.post(f'/api/runs/{run_id}/stages/sft/run', json={
             'params': {'source': 'bundled', 'bundled': 'itops_mix'},
-        }).status_code == 200
-        started = api.post(f'/api/runs/{run_id}/stages/sft/run', json={'params': {}})
+        })
         assert started.status_code == 200, started.text
         assert started.json()['status'] == 'syncing'
         saved = app.state.pipeline.store.list_fetches()

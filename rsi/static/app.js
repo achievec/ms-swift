@@ -2,7 +2,7 @@ const state = {
   schema: null,
   runs: [],
   view: null,
-  stage: 'data',
+  stage: 'sft',
   tab: 'flow',
   round: null,
   expanded: null,
@@ -272,7 +272,7 @@ async function openRun(id, round, keepStage) {
   state.round = state.view.round.round_index;
   if (!keepStage) {
     const current = state.view.run.current_stage;
-    state.stage = state.view.mutable || current === 'finish' ? current : 'data';
+    state.stage = state.view.mutable || current === 'finish' ? current : 'sft';
     state.tab = 'flow';
   }
   render();
@@ -546,7 +546,7 @@ function renderStage(stage) {
   const values = form.values || {};
   const promote = stage === 'promote' ? renderPromote(values) : '';
   const viewTip = tipAttr(view.mutable ? '' : '历史轮次只能查看');
-  const validate = stage === 'data'
+  const validate = stage === 'sft'
     ? `<button type="button" class="ghost" data-action="validate"${viewTip} ${view.mutable ? '' : 'disabled'}>校验格式</button>`
     : '';
   const reportLink = form.result ? evalReportLink(stage, form.result) : '';
@@ -564,12 +564,10 @@ function renderStage(stage) {
       <h2>${escapeHtml(meta.summary)}</h2>
       ${view.mutable ? '' : '<p class="muted">这是历史轮次，只能查看。</p>'}
       ${promote}
-      ${stage === 'data'
-        ? `<div class="infer-form data-settings">${renderLockedModelRow(fields, values)}${renderDatasetSettings(fields, values)}</div>`
-        : (state.schema.stage_layouts && state.schema.stage_layouts[stage]
-          ? `<div class="infer-form stage-form">${renderBlocks(state.schema.stage_layouts[stage].blocks, values)}</div>`
-          : renderGroups(fields, values))}
-      ${stage === 'data' || (state.schema.stage_layouts && state.schema.stage_layouts[stage]) ? '' : `<details class="yaml">
+      ${state.schema.stage_layouts && state.schema.stage_layouts[stage]
+        ? `<div class="infer-form stage-form">${renderBlocks(state.schema.stage_layouts[stage].blocks, values)}</div>`
+        : renderGroups(fields, values)}
+      ${state.schema.stage_layouts && state.schema.stage_layouts[stage] ? '' : `<details class="yaml">
         <summary>高级参数 YAML</summary>
         <textarea id="extra-yaml">${escapeHtml((values && values.extra_yaml) || '')}</textarea>
       </details>`}
@@ -697,7 +695,7 @@ function renderTerminal() {
 function renderFlow() {
   const graph = renderGraph();
   if (state.stage === 'finish') return graph + renderTerminal();
-  if (!state.view.forms[state.stage]) state.stage = 'data';
+  if (!state.view.forms[state.stage]) state.stage = 'sft';
   return graph + renderStage(state.stage);
 }
 
@@ -952,6 +950,10 @@ function renderBlock(block, values) {
   if (!block) return '';
   if (block.kind === 'row') return renderInferRow(block.widgets || [], values, false, null);
   if (block.kind === 'accordion' || block.kind === 'tab') {
+    if (block.dataset_panel) {
+      const layout = state.schema.stage_layouts && state.schema.stage_layouts[state.stage];
+      return renderDatasetSettings((layout && layout.dataset_fields) || [], values);
+    }
     const open = block.open ? ' open' : '';
     return `<details class="infer-runtime"${open}><summary>${escapeHtml(block.label || '设置')}</summary><div class="body">${renderBlocks(block.blocks, values)}</div></details>`;
   }
@@ -1804,7 +1806,7 @@ document.getElementById('create-form').addEventListener('submit', async (event) 
     });
     document.getElementById('create-dialog').close();
     await refreshRuns(created.run.id);
-    toast('实验已创建，从数据阶段开始');
+    toast('实验已创建，从 SFT 开始');
   } catch (err) {
     toast(err.message);
   }
@@ -1872,9 +1874,6 @@ function catalogNames(source, input) {
     } catch (_err) {
       return [];
     }
-  }
-  if (source === 'datasets' && state.schema && state.schema.model_source === 'hope') {
-    return (state.schema.catalog && state.schema.catalog.hf_datasets) || [];
   }
   if (source === 'eval_datasets_by_backend') {
     const scope = (input && input.closest('section, form')) || document;

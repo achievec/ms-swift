@@ -21,7 +21,7 @@ EXIT_Y = 132
 PROMOTE_W = 92
 PROMOTE_H = NODE_H
 PROMOTE_Y = 236
-CANVAS = {'width': 1004, 'height': 332}
+CANVAS = {'width': 856, 'height': 332}
 
 
 def _loads(value):
@@ -67,10 +67,8 @@ def _done(active, name) -> bool:
 
 
 def stage_unlocked(stage: str, active: dict, rnd: dict | None) -> bool:
-    if stage == 'data':
-        return True
     if stage == 'sft':
-        return _done(active, 'data')
+        return True
     if stage == 'sft_eval':
         return _done(active, 'sft')
     if stage == 'rl':
@@ -85,8 +83,6 @@ def stage_unlocked(stage: str, active: dict, rnd: dict | None) -> bool:
 
 
 def blocked_message(stage: str, active: dict, rnd: dict | None) -> str:
-    if stage == 'sft' and not _done(active, 'data'):
-        return '请先完成「数据」'
     if stage == 'sft_eval' and not _done(active, 'sft'):
         return '请先完成「SFT」'
     if stage == 'rl':
@@ -232,20 +228,19 @@ def assemble_flow(run, rnd, active, status_of, metric_of) -> dict:
     else:
         frontier = None
 
-    data = _box('data', '数据', 20, TRUNK_Y)
-    sft = _box('sft', 'SFT', 168, TRUNK_Y)
-    sft_eval = _box('sft_eval', 'SFT 评测', 316, TRUNK_Y)
-    sft_fail = _box('sft_fail', '不通过', 176, EXIT_Y)
-    sft_next = _box('sft_next', '下一轮数据', 316, EXIT_Y)
-    sft_finish = _box('sft_finish', '完成', 456, EXIT_Y)
-    rl = _box('rl', 'RL', 588, TRUNK_Y)
-    rl_eval = _box('rl_eval', 'RL 评测', 736, TRUNK_Y)
-    rl_fail = _box('rl_fail', '不通过', 596, EXIT_Y)
-    rl_next = _box('rl_next', '下一轮数据', 736, EXIT_Y)
-    rl_finish = _box('rl_finish', '完成', 876, EXIT_Y)
-    promote = _box('promote', '晋级', 534, PROMOTE_Y, PROMOTE_W, PROMOTE_H)
+    sft = _box('sft', 'SFT', 20, TRUNK_Y)
+    sft_eval = _box('sft_eval', 'SFT 评测', 168, TRUNK_Y)
+    sft_fail = _box('sft_fail', '不通过', 28, EXIT_Y)
+    sft_next = _box('sft_next', '下一轮数据', 168, EXIT_Y)
+    sft_finish = _box('sft_finish', '完成', 308, EXIT_Y)
+    rl = _box('rl', 'RL', 440, TRUNK_Y)
+    rl_eval = _box('rl_eval', 'RL 评测', 588, TRUNK_Y)
+    rl_fail = _box('rl_fail', '不通过', 448, EXIT_Y)
+    rl_next = _box('rl_next', '下一轮数据', 588, EXIT_Y)
+    rl_finish = _box('rl_finish', '完成', 728, EXIT_Y)
+    promote = _box('promote', '晋级', 386, PROMOTE_Y, PROMOTE_W, PROMOTE_H)
     placed = {item['id']: item for item in (
-        data, sft, sft_eval, sft_fail, sft_next, sft_finish, rl, rl_eval, rl_fail, rl_next, rl_finish, promote)}
+        sft, sft_eval, sft_fail, sft_next, sft_finish, rl, rl_eval, rl_fail, rl_next, rl_finish, promote)}
 
     def branch_status(ready, taken, failed=False):
         if taken:
@@ -269,7 +264,7 @@ def assemble_flow(run, rnd, active, status_of, metric_of) -> dict:
     }
     nodes = []
     for node_id, label, _x in (
-        ('data', '数据', 0), ('sft', 'SFT', 0), ('sft_eval', 'SFT 评测', 0), ('rl', 'RL', 0), ('rl_eval', 'RL 评测', 0),
+        ('sft', 'SFT', 0), ('sft_eval', 'SFT 评测', 0), ('rl', 'RL', 0), ('rl_eval', 'RL 评测', 0),
     ):
         box = placed[node_id]
         verdict = ''
@@ -295,7 +290,6 @@ def assemble_flow(run, rnd, active, status_of, metric_of) -> dict:
         return _edge(src, dst, label, live, 'down', _down_points(placed[src], placed[dst]), taken, show_label)
 
     edges = [
-        _edge('data', 'sft', '', _done(active, 'data'), 'trunk', _side_points(data, sft), _done(active, 'data'), False),
         _edge('sft', 'sft_eval', '', _done(active, 'sft'), 'trunk', _side_points(sft, sft_eval), _done(active, 'sft'), False),
         _edge('sft_eval', 'rl', 'RL', rl_edge_live, 'trunk', _side_points(sft_eval, rl), rl_edge_taken, True),
         _edge('rl', 'rl_eval', '', _done(active, 'rl'), 'trunk', _side_points(rl, rl_eval), _done(active, 'rl'), False),
@@ -313,14 +307,14 @@ def assemble_flow(run, rnd, active, status_of, metric_of) -> dict:
         down('rl_next', 'promote', '', statuses['rl_next'] in {'ready', 'succeeded'}, next_from_rl, False),
     ]
     bottom = promote['y'] + promote['h'] + 26
-    mid_y = data['y'] + data['h'] / 2
+    mid_y = sft['y'] + sft['h'] / 2
     edges.append(_edge(
-        'promote', 'data', '下一轮', went_next, 'return',
+        'promote', 'sft', '下一轮', went_next, 'return',
         [(promote['x'] + promote['w'] / 2, promote['y'] + promote['h']),
          (promote['x'] + promote['w'] / 2, bottom),
          (8, bottom),
          (8, mid_y),
-         (data['x'], mid_y)],
+         (sft['x'], mid_y)],
         went_next, True,
     ))
     return {'canvas': dict(CANVAS), 'nodes': nodes, 'edges': edges, 'actions': actions, 'prompt': prompt}

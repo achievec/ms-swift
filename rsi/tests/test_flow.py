@@ -34,8 +34,7 @@ def _create(api, name='分支'):
 
 
 def _through_sft_eval(api, run_id, params=None):
-    assert _run(api, run_id, 'data', {'source': 'bundled', 'bundled': 'itops_mix'}).status_code == 200
-    assert _run(api, run_id, 'sft', {}).status_code == 200
+    assert _run(api, run_id, 'sft', {'source': 'bundled', 'bundled': 'itops_mix'}).status_code == 200
     evaluated = _run(api, run_id, 'sft_eval', params or {})
     assert evaluated.status_code == 200, evaluated.text
     return evaluated.json()['view']
@@ -221,7 +220,7 @@ def test_guide_draws_every_branch_before_evaluation(client):
     view = api.get(f'/api/runs/{run_id}').json()
     nodes = {item['id']: item for item in view['flow']['nodes']}
     for node_id in (
-        'data', 'sft', 'sft_eval', 'sft_fail', 'sft_next', 'sft_finish',
+        'sft', 'sft_eval', 'sft_fail', 'sft_next', 'sft_finish',
         'rl', 'rl_eval', 'rl_fail', 'rl_next', 'rl_finish', 'promote',
     ):
         assert node_id in nodes, node_id
@@ -233,7 +232,7 @@ def test_guide_draws_every_branch_before_evaluation(client):
     assert nodes['rl_next']['label'] == '下一轮数据'
     assert nodes['rl_finish']['label'] == '完成'
     assert nodes['promote']['label'] == '晋级'
-    assert nodes['promote']['h'] == nodes['data']['h'] == nodes['sft_eval']['h']
+    assert nodes['promote']['h'] == nodes['sft']['h'] == nodes['sft_eval']['h']
     edges = view['flow']['edges']
 
     def linked(src, dst, label):
@@ -246,7 +245,8 @@ def test_guide_draws_every_branch_before_evaluation(client):
     assert linked('rl_eval', 'rl_fail', '不通过')
     assert linked('rl_eval', 'rl_finish', '完成')
     assert linked('rl_eval', 'rl_next', '下一轮数据')
-    assert linked('promote', 'data', '下一轮')
+    assert linked('promote', 'sft', '下一轮')
+    assert 'data' not in nodes
     assert all(not edge['live'] for edge in edges if edge['from'] in {'sft_eval', 'rl_eval'})
     boxes = view['flow']['nodes']
     assert all(item['h'] >= 52 for item in boxes)

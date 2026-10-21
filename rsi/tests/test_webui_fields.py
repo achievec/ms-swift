@@ -51,8 +51,24 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         assert catalog['by_model']['Qwen/Qwen2.5-7B-Instruct']['template'] == 'qwen2_5'
         assert 'qwen2' in catalog['model_types']
         assert 'qwen2_5' in catalog['templates']
-        assert 'AI-ModelScope/alpaca-gpt4-data-zh' in catalog['datasets']
+        assert catalog['datasets'][:14] == [
+            'AI-ModelScope/alpaca-gpt4-data-zh',
+            'AI-ModelScope/LongAlpaca-12k',
+            'AI-ModelScope/ruozhiba',
+            'AI-ModelScope/math-trn-format',
+            'iic/ms_bench',
+            'damo/MSAgent-Bench',
+            'lvjianjin/AdvertiseGen',
+            'AI-ModelScope/firefly-train-1.1M',
+            'modelscope/clue',
+            'DAMO_NLP/jd',
+            'AI-ModelScope/synthetic_text_to_sql',
+            'shenweizhou/alpha-umi-toolbench-processed-v2',
+            'AI-ModelScope/blossom-math-v2',
+            'AI-ModelScope/sql-create-context',
+        ]
         assert 'modelscope/gsm8k' in catalog['datasets']
+        assert 'openai/gsm8k' not in catalog['datasets'][:20]
         assert catalog['eval_datasets'] == catalog['eval_datasets_by_backend']['Native']
         assert catalog['eval_datasets_by_backend']['OpenCompass'][0] == 'obqa'
         assert 'AX_b' in catalog['eval_datasets_by_backend']['OpenCompass']
@@ -76,13 +92,13 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         assert 'flash_attention_2' in sft['attn_impl']['choices']
         assert 'zero3_offload' in sft['deepspeed']['choices']
 
-        data = by_key('data')
-        assert [field['key'] for field in schema['fields']['data']] == [
-            'model', 'model_type', 'template', 'source', 'dataset', 'split_dataset_ratio', 'max_length', 'padding_free',
+        panel = schema['stage_layouts']['sft']['dataset_fields']
+        data = {field['key']: field for field in panel}
+        assert [field['key'] for field in panel] == [
+            'source', 'dataset', 'split_dataset_ratio', 'max_length', 'padding_free',
         ]
-        assert data['model']['locked'] is True
-        assert data['model_type']['locked'] is True
-        assert data['template']['locked'] is True
+        assert 'data' not in schema['fields']
+        assert schema['stage_order'][0] == 'sft'
         assert data['dataset']['type'] == 'multicombo'
         assert data['dataset']['choices_from'] == 'datasets'
         assert data['dataset']['label'] == '数据集名称(--dataset)'
@@ -104,6 +120,7 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         assert data['max_length']['default'] == 1024
         assert data['padding_free']['label'] == '无填充批处理(--padding_free)'
         assert data['padding_free']['info'] == '将一个batch中的数据进行展平而避免数据padding'
+        assert any(block.get('dataset_panel') for block in schema['stage_layouts']['sft']['blocks'])
         for stage in ('sft', 'sft_eval', 'rl', 'rl_eval', 'promote', 'next_round', 'serve'):
             stage_fields = schema['fields'][stage]
             assert [row['key'] for row in stage_fields[:3]] == ['model', 'model_type', 'template']
@@ -113,6 +130,7 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         assert by_key('sft')['learning_rate'].get('locked') is not True
         page = Path(__file__).resolve().parents[1].joinpath('static', 'app.js').read_text(encoding='utf-8')
         assert 'renderDatasetSettings' in page
+        assert 'catalog.hf_datasets' not in page
         assert '数据集设置' in page
         assert 'data-dataset-mode' in page
         assert '内置示例' not in page
@@ -140,7 +158,9 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         assert rl['dataset']['info'] == '选择训练的数据集，支持复选/本地路径'
         assert sft['dataset']['type'] == 'multicombo'
         assert sft['dataset']['label'] == '数据集名称(--dataset)'
-        assert schema['stages'][3]['label'] == 'RL'
+        assert next(item['label'] for item in schema['stages'] if item['id'] == 'rl') == 'RL'
+        assert schema['stage_layouts']['sft_eval']['by_id']['adapters']['locked'] is not True
+        assert schema['stage_layouts']['sft_eval']['by_id']['adapters']['label'] == 'adapter id或路径(--adapters)'
         assert [row['key'] for row in schema['fields']['sft_eval']] == [row['key'] for row in schema['fields']['rl_eval']]
         assert 'eval_dataset' in schema['stage_layouts']['rl_eval']['by_id']
         assert schema['stage_layouts']['sft']['by_id']['dataset']['multiselect'] is True
@@ -155,13 +175,17 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         }).json()
         assert created['run']['model_type'] == 'qwen2'
         assert created['run']['template'] == 'qwen2_5'
+        assert created['run']['current_stage'] == 'sft'
+        assert 'data' not in created['forms']
         values = created['forms']['sft']['values']
         assert values['model'] == 'Qwen/Qwen2.5-7B-Instruct'
         assert values['model_type'] == 'qwen2'
         assert values['template'] == 'qwen2_5'
-        data_values = created['forms']['data']['values']
-        assert data_values['model'] == 'Qwen/Qwen2.5-7B-Instruct'
-        assert data_values['model_type'] == 'qwen2'
-        assert data_values['template'] == 'qwen2_5'
-        assert data_values['source'] == 'public'
-        assert data_values['max_length'] == 1024
+        assert values['source'] == 'public'
+        assert values['dataset'] == 'AI-ModelScope/alpaca-gpt4-data-zh'
+        assert values['max_length'] == 2048
+        for stage in ('rl', 'sft_eval', 'rl_eval'):
+            locked = created['forms'][stage]['values']
+            assert locked['model'] == 'Qwen/Qwen2.5-7B-Instruct'
+            assert locked['model_type'] == 'qwen2'
+            assert locked['template'] == 'qwen2_5'

@@ -37,6 +37,7 @@ INTERNAL_KEYS = {
     'pass_threshold',
     'more_params',
     'checkpoint',
+    'trained_model',
     'gpu_id',
     'infer_model_type',
     'train_stage',

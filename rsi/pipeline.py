@@ -1,9 +1,9 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 """Stage machine for one RSI run.
 
-The trunk is data → SFT → SFT eval. After that eval the user chooses RL,
-another round, or an end. RL eval offers the same kind of choice. A failed
-eval cannot start RL.
+The trunk is SFT → SFT eval. Dataset settings live on SFT. After that eval
+the user chooses RL, another round, or an end. RL eval offers the same kind
+of choice. A failed eval cannot start RL.
 """
 import json
 import re
@@ -40,7 +40,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = Path(__file__).resolve().parent / 'examples'
 SWIFT_STAGES = {'sft', 'sft_eval', 'rl', 'rl_eval'}
 CHECKPOINT_RESET = {
-    'data': ['sft', 'rl'],
     'sft': ['sft', 'rl'],
     'sft_eval': ['rl'],
     'rl': ['rl'],
@@ -478,16 +477,29 @@ class Pipeline:
         adapter. The base ``--model`` comes from that checkpoint's ``args.json``.
         When args.json has no model, the run's base model is used. A full
         checkpoint (``config.json`` and no adapter file) stays ``--model``.
-        An ``adapters`` value already chosen by the form is kept.
+        A LoRA on ``adapters`` keeps that path and takes ``--model`` from the
+        checkpoint ``args.json``. A full checkpoint remembered as
+        ``trained_model`` becomes ``--model``. An ``adapters`` value that is
+        not a LoRA directory is left as the form wrote it. When ``--model``
+        itself is an adapter directory (the next round's base), it moves to
+        ``--adapters``.
         """
         chosen = str(merged.get('adapters') or '').strip()
+        trained = str(merged.get('trained_model') or '').strip()
         raw = str(merged.get('model') or '').strip()
+        fallback = (run or {}).get('base_model') or ''
         if chosen:
             path = Path(chosen).expanduser()
             try:
                 adapter = path.is_dir() and _is_adapter_checkpoint(path)
             except OSError:
                 adapter = False
+            if adapter:
+                base = _adapter_base_model(path, fallback)
+                if base:
+                    merged['model'] = base
+                self._pin_identity(merged, run)
+                return
             model_path = Path(raw).expanduser() if raw else None
             model_is_adapter = False
             if model_path is not None:
@@ -496,11 +508,23 @@ class Pipeline:
                 except OSError:
                     model_is_adapter = False
             if model_is_adapter or not raw:
-                base = _adapter_base_model(path if adapter else model_path, (run or {}).get('base_model') or '')
+                base = _adapter_base_model(model_path or path, fallback)
                 if base:
                     merged['model'] = base
             self._pin_identity(merged, run)
             return
+        if trained:
+            path = Path(trained).expanduser()
+            try:
+                full = path.is_dir() and (path / 'config.json').is_file() and not (
+                    path / 'adapter_config.json').is_file()
+            except OSError:
+                full = False
+            if full:
+                merged['model'] = str(path)
+                merged['adapters'] = ''
+                self._pin_identity(merged, run)
+                return
         if not raw:
             return
         path = Path(raw).expanduser()
@@ -608,58 +632,90 @@ class Pipeline:
         _dataset, report = self.resolve_dataset(params or {})
         return report
 
-    def _data_context(self, run_id: str, round_index: int):
-        active = self.store.latest_active_steps(run_id, round_index)
-        step = active.get('data')
+    def _sft_params(self, run_id: str, round_index: int) -> dict:
+        step = self.store.latest_active_steps(run_id, round_index).get('sft')
         if not step or step['status'] != 'succeeded':
-            return {}, {}
-        return _loads(step['params_json']), _loads(step['result_json'])
+            return {}
+        return _loads(step['params_json'])
+
+    def _seed_dataset(self, preset: dict) -> None:
+        """SFT keeps the old data-stage dataset when its own preset does not name one."""
+        data = presets().get('data') or {}
+        if not preset.get('source'):
+            preset['source'] = data.get('source') or 'public'
+        if preset.get('dataset') in (None, ''):
+            preset['dataset'] = data.get('dataset') or ''
+        for key in ('split_dataset_ratio', 'padding_free'):
+            if key not in preset and data.get(key) not in (None, ''):
+                preset[key] = data[key]
+
+    def _carry_dataset(self, preset: dict, run: dict, rnd: dict) -> None:
+        if rnd['round_index'] <= 1:
+            return
+        previous = self.store.latest_active_steps(run['id'], rnd['round_index'] - 1)
+        nxt = previous.get('next_round')
+        reuse = True
+        if nxt and nxt['status'] == 'succeeded':
+            reuse = bool(_loads(nxt['params_json']).get('reuse_dataset', True))
+        prev = previous.get('sft')
+        if not reuse or not prev or prev['status'] != 'succeeded':
+            return
+        carried = _loads(prev['params_json'])
+        for key in ('source', 'bundled', 'dataset', 'max_length', 'split_dataset_ratio', 'padding_free'):
+            if carried.get(key) not in (None, ''):
+                preset[key] = carried[key]
+        dataset = str(preset.get('dataset') or '')
+        if dataset and preset.get('source') == 'public':
+            try:
+                if Path(dataset).expanduser().exists():
+                    preset['source'] = 'path'
+            except OSError:
+                pass
+
+    def _remember_checkpoint(self, preset: dict, path: str) -> None:
+        """Show the experiment model. A LoRA fills adapters; a full checkpoint is command-only."""
+        preset['adapters'] = ''
+        preset.pop('trained_model', None)
+        if not path:
+            return
+        checkpoint = Path(path).expanduser()
+        try:
+            is_dir = checkpoint.is_dir()
+        except OSError:
+            return
+        if not is_dir:
+            return
+        if _is_adapter_checkpoint(checkpoint):
+            preset['adapters'] = str(path)
+            return
+        if (checkpoint / 'config.json').is_file():
+            preset['trained_model'] = str(path)
 
     def _defaults_for(self, run: dict, rnd: dict, stage: str) -> dict:
         preset = dict(presets().get(stage) or {})
-        if stage == 'data':
-            if rnd['round_index'] > 1:
-                previous = self.store.latest_active_steps(run['id'], rnd['round_index'] - 1)
-                nxt = previous.get('next_round')
-                reuse = True
-                if nxt and nxt['status'] == 'succeeded':
-                    reuse = bool(_loads(nxt['params_json']).get('reuse_dataset', True))
-                prev_data = previous.get('data')
-                if reuse and prev_data and prev_data['status'] == 'succeeded':
-                    carried = _loads(prev_data['params_json'])
-                    carried.pop('extra_yaml', None)
-                    preset.update(carried)
-            self._show_round_model(preset, run, rnd)
-            return preset
-
-        data_params, data_result = self._data_context(run['id'], rnd['round_index'])
         if stage == 'sft':
-            preset['model'] = rnd['base_model']
-            self._apply_model_meta(preset, run)
-            if data_result.get('dataset'):
-                preset['dataset'] = data_result['dataset']
-            for key in ('max_length', 'split_dataset_ratio', 'dataset_num_proc', 'dataloader_num_workers',
-                        'padding_free', 'val_dataset'):
-                if data_params.get(key) not in (None, ''):
-                    preset[key] = data_params[key]
+            self._seed_dataset(preset)
+            self._carry_dataset(preset, run, rnd)
+            self._show_round_model(preset, run, rnd)
             preset['output_dir'] = str(self.stage_dir(run['id'], rnd['round_index'], 'sft'))
             return preset
 
         if stage == 'rl':
+            self._show_round_model(preset, run, rnd)
             sft_ckpt = self.store.active_checkpoint(run['id'], rnd['round_index'], 'sft')
-            preset['model'] = sft_ckpt['path'] if sft_ckpt else ''
-            self._apply_model_meta(preset, run)
-            if data_result.get('dataset'):
-                preset['dataset'] = data_result['dataset']
+            self._remember_checkpoint(preset, sft_ckpt['path'] if sft_ckpt else '')
+            sft_params = self._sft_params(run['id'], rnd['round_index'])
+            if sft_params.get('dataset'):
+                preset['dataset'] = sft_params['dataset']
             preset['output_dir'] = str(self.stage_dir(run['id'], rnd['round_index'], 'rl'))
             preset['external_plugins'] = _resolve_existing(preset.get('external_plugins'))
             return preset
 
         if stage in {'sft_eval', 'rl_eval'}:
+            self._show_round_model(preset, run, rnd)
             kind = 'sft' if stage == 'sft_eval' else 'rl'
             checkpoint = self.store.active_checkpoint(run['id'], rnd['round_index'], kind)
-            preset['model'] = checkpoint['path'] if checkpoint else (rnd.get('base_model') or run.get('base_model') or '')
-            self._apply_model_meta(preset, run)
+            self._remember_checkpoint(preset, checkpoint['path'] if checkpoint else '')
             preset['eval_output_dir'] = str(self.stage_dir(run['id'], rnd['round_index'], stage) / 'eval_output')
             preset['custom_eval_config'] = _resolve_existing(preset.get('custom_eval_config'))
             return preset
@@ -864,22 +920,27 @@ class Pipeline:
             if text.strip():
                 merged['more_params'] = text
         side = {}
-        if stage == 'data':
-            dataset, report = self.resolve_dataset(merged)
-            merged['dataset'] = dataset
-            side['validation'] = report
-            if report.get('fetch_state') == '同步中':
-                side['fetch_state'] = '同步中'
-                side['fetch_repo'] = report.get('fetch_repo') or ''
-            elif strict and not report['ok']:
-                raise PipelineError(_format_errors(report))
-            return merged, side
+        if stage == 'sft' and merged.get('source'):
+            try:
+                dataset, report = self.resolve_dataset(merged)
+            except PipelineError:
+                if strict:
+                    raise
+            else:
+                merged['dataset'] = dataset
+                side['validation'] = report
+                if report.get('fetch_state') == '同步中':
+                    side['fetch_state'] = '同步中'
+                    side['fetch_repo'] = report.get('fetch_repo') or ''
+                    return merged, side
+                if strict and not report.get('ok'):
+                    raise PipelineError(_format_errors(report))
 
         if stage in {'sft', 'rl'}:
             dataset = merged.get('dataset') or ''
             if strict:
                 if not dataset:
-                    raise PipelineError('缺少数据集，请先完成数据阶段')
+                    raise PipelineError('请填写数据集')
                 self._require_dataset(str(dataset))
                 if not merged.get('model'):
                     raise PipelineError('缺少模型路径')
@@ -975,11 +1036,15 @@ class Pipeline:
         step = active.get(stage)
         if step and step['status'] == 'succeeded':
             values = _loads(step['params_json'])
-            for key in ('model', 'model_type', 'template'):
-                if values.get(key) in (None, '') and defaults.get(key) not in (None, ''):
-                    values[key] = defaults[key]
         else:
-            values = defaults
+            values = dict(defaults)
+        shown = {}
+        self._show_round_model(shown, run, rnd)
+        for key in ('model', 'model_type', 'template'):
+            if shown.get(key) not in (None, ''):
+                values[key] = shown[key]
+        if defaults.get('adapters') and not str(values.get('adapters') or '').strip():
+            values['adapters'] = defaults['adapters']
         result = _loads(step['result_json']) if step and step.get('result_json') else None
         result = self._with_eval_report(run['id'], stage, result, values)
         return {
@@ -1299,7 +1364,7 @@ class Pipeline:
         index = STAGE_ORDER.index(stage)
         with self.store.transaction() as conn:
             superseded = list(STAGE_ORDER[index:])
-            if stage in {'data', 'sft', 'sft_eval', 'rl', 'rl_eval'}:
+            if stage in {'sft', 'sft_eval', 'rl', 'rl_eval'}:
                 superseded.append('decide')
             self.store.supersede(conn, run_id, rnd['round_index'], superseded)
             self.store.deactivate_checkpoints(conn, run_id, rnd['round_index'], CHECKPOINT_RESET.get(stage, []))
@@ -1373,25 +1438,6 @@ class Pipeline:
         self._commit_success(run_id, round_index, stage, step_id, params, outcome)
 
     def _execute(self, run, rnd, stage, params, side) -> dict:
-        if stage == 'data':
-            report = side['validation']
-            formats = ', '.join(f'{name}×{count}' for name, count in (report.get('formats') or {}).items()) or '无'
-            rows = report.get('num_rows')
-            logs = (f'[rsi] 数据校验通过。来源={params.get("source")} 行数={rows} 格式={formats}\n'
-                    f'[rsi] dataset={params.get("dataset")}\n')
-            for warning in report.get('warnings') or []:
-                logs += f'[rsi] 注意：{warning}\n'
-            return {
-                'command': '',
-                'logs': logs,
-                'result': {
-                    'backend': self.backend.name,
-                    'mock': self.backend.name == 'mock',
-                    'dataset': params.get('dataset'),
-                    'validation': report,
-                },
-            }
-
         if stage in SWIFT_STAGES:
             log_dir = self.stage_log_dir(run['id'], rnd['round_index'], stage)
             context = {
@@ -1412,6 +1458,9 @@ class Pipeline:
             }
             if metrics.get('report_html'):
                 result['report_path'] = metrics['report_html']
+            if side.get('validation'):
+                result['validation'] = side['validation']
+                result['dataset'] = params.get('dataset')
             outcome = {
                 'command': produced.get('command') or '',
                 'logs': produced.get('logs') or '',
@@ -1485,7 +1534,7 @@ class Pipeline:
                 self.store.close_round_and_open_next(conn, run_id, round_index, outcome.get('note') or '',
                                                      outcome['next_base'])
             else:
-                focus = {'data': 'sft', 'sft': 'sft_eval', 'rl': 'rl_eval'}.get(stage, stage)
+                focus = {'sft': 'sft_eval', 'rl': 'rl_eval'}.get(stage, stage)
                 self.store.set_current_stage(conn, run_id, focus)
 
     def _prepare_serve(self, run: dict, user: dict, strict: bool) -> dict:

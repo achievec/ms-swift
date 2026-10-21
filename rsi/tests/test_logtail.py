@@ -185,8 +185,9 @@ def test_mock_writes_swift_log_under_the_experiment(client, tmp_path, monkeypatc
     })
     assert created.status_code == 200, created.text
     run_id = created.json()['run']['id']
-    assert api.post(f'/api/runs/{run_id}/stages/data/run', json={'params': {'source': 'bundled'}}).status_code == 200
-    dotted = api.post(f'/api/runs/{run_id}/stages/sft/run', json={'params': {'output_dir': '.'}})
+    dotted = api.post(f'/api/runs/{run_id}/stages/sft/run', json={
+        'params': {'source': 'bundled', 'bundled': 'itops_mix', 'output_dir': '.'},
+    })
     assert dotted.status_code == 200, dotted.text
     assert api.post(f'/api/runs/{run_id}/stages/sft_eval/run', json={'params': {'eval_output_dir': '.'}}).status_code == 200
     assert api.post(f'/api/runs/{run_id}/stages/rl/run', json={'params': {}}).status_code == 200

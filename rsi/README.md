@@ -2,7 +2,7 @@
 
 Click-through recursive self-improvement on top of ms-swift:
 
-**data → SFT → SFT eval**. A passed SFT eval can enter online RL, open the next round of data, or finish the run. A failed SFT eval can only open the next round of data. After RL eval, a pass can finish or open the next round; a failure only opens the next round. There is no separate stop action.
+**SFT → SFT eval**. Dataset settings live on SFT. A passed SFT eval can enter online RL, open the next round, or finish the run. A failed SFT eval can only open the next round. After RL eval, a pass can finish or open the next round; a failure only opens the next round. There is no separate stop action.
 
 The UI speaks Chinese. Parameter names match the existing Gradio Web-UI and the `swift sft` / `swift rlhf` / `swift eval` / `swift deploy` CLIs. ms-swift itself is not modified; this app shells out to it only when you ask.
 
@@ -10,20 +10,20 @@ Default mode calls **this checkout's ms-swift** (`python -m swift.cli.main`) on 
 
 ```mermaid
 flowchart TD
-  data[Data] --> sft[SFT] --> se[SFT eval]
+  sft[SFT] --> se[SFT eval]
   se -->|不通过| miss[Not passed]
   se -->|RL| rl[Online RL]
   se -->|完成| done[Finish]
-  se -->|下一轮数据| nxt[Next data]
+  se -->|下一轮数据| nxt[Next round]
   miss --> nxt
   rl --> re[RL eval]
   re -->|不通过| rmiss[Not passed]
   re -->|完成| rdone[Finish]
-  re -->|下一轮数据| rnxt[Next data]
+  re -->|下一轮数据| rnxt[Next round]
   rmiss --> rnxt
   nxt --> promo[Promote]
   rnxt --> promo
-  promo -->|下一轮| data
+  promo -->|下一轮| sft
 ```
 
 This is the manual version of the loop most post-training stacks use now: supervised fine-tuning sets the scenario behavior, a held-out eval is the gate, online RL (GRPO here, the default in ms-swift) pushes the policy with a reward, and only the winning checkpoint becomes the next base. InstructGPT used SFT → reward model → PPO. Open recipes more often skip the learned reward model and score completions directly (GRPO / RLOO / DAPO). The human stays on the gate: every stage is a form, and promotion is an explicit choice.
@@ -43,14 +43,13 @@ The server listens on `0.0.0.0:8418`. On this machine open http://127.0.0.1:8418
 
 Then:
 
-1. **新建实验**. The default base is `Qwen/Qwen2.5-7B-Instruct` and the scenario is an internal IT helpdesk.
-2. **数据**. The panel matches the Web-UI **数据集设置**: 数据集名称(`--dataset`), 验证集拆分比例, 句子最大长度, and 无填充批处理. **数据来源** adds 公开数据集, 上传文件, or 服务器本地路径. `--model`, `--model_type`, and `--template` are shown at the top and stay as chosen in 新建实验. Click 校验格式, then 运行本阶段. `rsi/examples/itops_mix.jsonl` can be passed as a server path.
-3. **SFT**. The form is the single-GPU preset (`swift sft`, LoRA, bf16). Run it. The log shows the command that real training would execute, and a mock `checkpoint-final/args.json` is written.
-4. **SFT 评测**, **RL** (`swift rlhf --rlhf_type grpo`, vLLM colocate), **RL 评测**. The SFT form follows Web-UI「LLM预训练/微调」, RL follows「LLM GRPO」, and both eval stages follow「LLM评测」. Same pattern.
-5. **晋级**. RL is recommended when its mock accuracy is higher. You can still pick SFT or stay on the base.
-6. **下一轮数据**. Choosing it opens 晋级 first. The promoted checkpoint becomes the next base and the board returns to 数据. Previous rounds stay in the audit.
-7. **推理服务**. The tab uses the same fields, order, and Chinese labels as the SWIFT Web-UI **LLM推理** page (`swift/ui/llm_infer`). `--model`, `--model_type`, `--template`, and `--adapters` are filled from this round and locked. Deploy still starts the RSI service (`swift deploy --model --adapters`). After it is up, the chat box streams to that OpenAI-compatible API. Weights are not loaded in mock mode. The **更多参数** text is stored on that experiment's deploy record. Deploy does not clear it, and opening the experiment again shows the saved text. Another experiment stays empty until it is set there. **运行中部署** lists that experiment's running service as soon as deploy returns; **找回部署** reloads the same list. While that service is running, **日志输出** is on screen and refreshes by itself. The red button is **停止推理** (it stops the deploy). The Web-UI **展示部署状态** / **停止展示** buttons are not on this page.
-8. **模型导出**. The tab sits next to 推理服务 and follows Web-UI **LLM导出** (`swift export`). `--model`, `--model_type`, and `--template` stay on the experiment. `--adapters` is filled from this round's RL checkpoint when there is one, otherwise the SFT checkpoint, and can be edited. **预览命令** shows the command; **开始导出** runs it and the 运行时 log follows the job. Mock mode writes the log without loading weights.
+1. **新建实验**. The default base is `Qwen/Qwen2.5-7B-Instruct` and the scenario is an internal IT helpdesk. `--model`, `--model_type`, and `--template` are chosen here and stay locked afterwards, including on RL.
+2. **SFT**. This is the first stage. **数据集设置** is the old data panel: 数据来源 is 公开数据集, 上传文件, or 服务器本地路径, plus 数据集名称(`--dataset`), 验证集拆分比例, 句子最大长度, and 无填充批处理. Public dataset names are the same ModelScope list the Web-UI loads. The rest of the form follows Web-UI「LLM预训练/微调」 (`swift sft`, LoRA, bf16). Click 校验格式, then 运行本阶段. `rsi/examples/itops_mix.jsonl` can be passed as a server path. The log shows the command that real training would execute, and a mock `checkpoint-final/args.json` is written.
+3. **SFT 评测**, **RL** (`swift rlhf --rlhf_type grpo`, vLLM colocate), **RL 评测**. RL follows「LLM GRPO」, and both eval stages follow「LLM评测」. SFT 评测 shows `--adapters` filled from the SFT checkpoint when that checkpoint is a LoRA. `--model` on RL and both evals stays the experiment base.
+4. **晋级**. RL is recommended when its mock accuracy is higher. You can still pick SFT or stay on the base.
+5. **下一轮数据**. Choosing it opens 晋级 first. The promoted checkpoint becomes the next base and the board returns to SFT. Previous rounds stay in the audit.
+6. **推理服务**. The tab uses the same fields, order, and Chinese labels as the SWIFT Web-UI **LLM推理** page (`swift/ui/llm_infer`). `--model`, `--model_type`, `--template`, and `--adapters` are filled from this round and locked. Deploy still starts the RSI service (`swift deploy --model --adapters`). After it is up, the chat box streams to that OpenAI-compatible API. Weights are not loaded in mock mode. The **更多参数** text is stored on that experiment's deploy record. Deploy does not clear it, and opening the experiment again shows the saved text. Another experiment stays empty until it is set there. **运行中部署** lists that experiment's running service as soon as deploy returns; **找回部署** reloads the same list. While that service is running, **日志输出** is on screen and refreshes by itself. The red button is **停止推理** (it stops the deploy). The Web-UI **展示部署状态** / **停止展示** buttons are not on this page.
+7. **模型导出**. The tab sits next to 推理服务 and follows Web-UI **LLM导出** (`swift export`). `--model`, `--model_type`, and `--template` stay on the experiment. `--adapters` is filled from this round's RL checkpoint when there is one, otherwise the SFT checkpoint, and can be edited. **预览命令** shows the command; **开始导出** runs it and the 运行时 log follows the job. Mock mode writes the log without loading weights.
 
 Re-running a stage that already succeeded asks for confirmation. The old audit row stays, and later stages in that round are marked 已作废.
 
