@@ -67,20 +67,40 @@ def load_rows(text: str, filename: str = 'data.jsonl') -> tuple:
     return rows, report
 
 
+def _user_text(row: dict) -> str:
+    for message in row.get('messages') or []:
+        if isinstance(message, dict) and message.get('role') == 'user' and message.get('content'):
+            return str(message['content'])
+    for key in ('query', 'instruction'):
+        if row.get(key):
+            return str(row[key])
+    return ''
+
+
+def _clip(text: str, limit: int = 160) -> str:
+    compact = ' '.join(str(text or '').split())
+    if len(compact) <= limit:
+        return compact
+    return compact[:limit] + '…'
+
+
+def _row_card(index: int, row: dict) -> dict:
+    item = score_row(row)
+    return {
+        'row': index,
+        'user': _clip(_user_text(row)),
+        'answer': _clip(_assistant_text(row)),
+        'keys': item['keys'],
+        'score': item['score'],
+        'missing': item['missing'],
+    }
+
+
 def inspect_text(text: str, filename: str = 'data.jsonl', limit: int = 8) -> dict:
     rows, report = load_rows(text, filename)
-    scored = [score_row(row) for row in rows]
-    covered = [item for item in scored if item['score'] is not None]
+    cards = [_row_card(index, row) for index, row in enumerate(rows, 1)]
+    covered = [item for item in cards if item['score'] is not None]
     full = sum(1 for item in covered if item['score'] == 1)
-    preview = []
-    for index, row in enumerate(rows[:limit], 1):
-        item = score_row(row)
-        preview.append({
-            'row': index,
-            'answer': _assistant_text(row)[:180],
-            'score': item['score'],
-            'missing': item['missing'],
-        })
     return {
         'validation': report,
         'coverage': {
@@ -89,7 +109,8 @@ def inspect_text(text: str, filename: str = 'data.jsonl', limit: int = 8) -> dic
             'full_hit': full,
             'partial': len(covered) - full,
         },
-        'preview': preview,
+        'rows': cards,
+        'preview': cards[:limit],
     }
 
 

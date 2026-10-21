@@ -64,6 +64,76 @@ function showPaths(id, note, pairs) {
   });
 }
 
+let cards = [];
+let filterMode = 'all';
+let page = 0;
+
+function setCards(list) {
+  cards = list || [];
+  page = 0;
+  const filters = document.getElementById('filters');
+  filters.hidden = cards.length === 0;
+  renderCards();
+}
+
+function filteredCards() {
+  return cards.filter((row) => {
+    if (filterMode === 'miss') return row.score !== null && row.score < 1;
+    if (filterMode === 'full') return row.score === 1;
+    return true;
+  });
+}
+
+function renderCards() {
+  const list = document.getElementById('row-list');
+  const pager = document.getElementById('pager');
+  list.replaceChildren();
+  pager.replaceChildren();
+  const rows = filteredCards();
+  if (!cards.length) return;
+  const size = 8;
+  const pages = Math.max(1, Math.ceil(rows.length / size));
+  if (page >= pages) page = pages - 1;
+  rows.slice(page * size, page * size + size).forEach((row) => {
+    const card = document.createElement('article');
+    card.className = 'sample';
+    const title = document.createElement('b');
+    let score = '无关键词';
+    if (row.score === 1) score = '关键词全中';
+    else if (row.score !== null && row.score !== undefined) score = '缺关键词';
+    title.textContent = `第 ${row.row} 条 · ${score}`;
+    const user = document.createElement('p');
+    user.textContent = '问：' + (row.user || '（没有问题）');
+    const answer = document.createElement('p');
+    answer.textContent = '答：' + (row.answer || '（没有回答）');
+    card.append(title, user, answer);
+    const keys = document.createElement('div');
+    (row.keys || []).forEach((key) => {
+      const tag = document.createElement('span');
+      tag.className = 'tag' + ((row.missing || []).indexOf(key) >= 0 ? ' miss' : '');
+      tag.textContent = key;
+      keys.appendChild(tag);
+    });
+    card.appendChild(keys);
+    list.appendChild(card);
+  });
+  if (rows.length > size) {
+    const prev = document.createElement('button');
+    prev.type = 'button';
+    prev.textContent = '上一页';
+    prev.disabled = page === 0;
+    prev.addEventListener('click', () => { page -= 1; renderCards(); });
+    const label = document.createElement('span');
+    label.textContent = `第 ${page + 1} / ${pages} 页，筛选后 ${rows.length} 条`;
+    const next = document.createElement('button');
+    next.type = 'button';
+    next.textContent = '下一页';
+    next.disabled = page + 1 >= pages;
+    next.addEventListener('click', () => { page += 1; renderCards(); });
+    pager.append(prev, label, next);
+  }
+}
+
 function dataBody() {
   return {
     text: document.getElementById('data-text').value,
@@ -80,27 +150,48 @@ document.getElementById('data-text').addEventListener('input', () => {
   retryPath = '';
 });
 
+function describeCoverage(coverage) {
+  const stats = coverage || {};
+  return `共 ${stats.num_rows || 0} 条，有关键词 ${stats.with_solution || 0} 条，全部命中 ${stats.full_hit || 0} 条。`;
+}
+
+async function inspectLoaded(filename) {
+  const saved = await api('/api/workbench/inspect', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(dataBody()),
+  });
+  setCards(saved.rows || saved.preview || []);
+  document.getElementById('data-meta').textContent = (filename ? filename + '，' : '') + describeCoverage(saved.coverage);
+  return saved;
+}
+
+document.getElementById('filters').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-filter]');
+  if (!button) return;
+  filterMode = button.dataset.filter;
+  page = 0;
+  document.querySelectorAll('#filters button').forEach((item) => {
+    item.classList.toggle('primary', item === button);
+  });
+  renderCards();
+});
+
 document.getElementById('file').addEventListener('change', async (event) => {
   const file = event.target.files && event.target.files[0];
   if (!file) return;
   retryPath = '';
   document.getElementById('data-text').value = await file.text();
+  try {
+    await inspectLoaded(file.name);
+  } catch (err) {
+    show('data-out', err.message);
+  }
 });
 
 document.getElementById('inspect').addEventListener('click', async () => {
   try {
-    const saved = await api('/api/workbench/inspect', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(dataBody()),
-    });
-    const coverage = saved.coverage || {};
-    const lines = (saved.preview || []).map((row) => {
-      const score = row.score === null || row.score === undefined ? '无关键词' : row.score;
-      const missing = (row.missing || []).length ? '，缺 ' + row.missing.join('、') : '';
-      return `第 ${row.row} 行 得分 ${score}${missing}：${row.answer || ''}`;
-    });
-    show('data-out', `共 ${coverage.num_rows || 0} 条，其中 ${coverage.with_solution || 0} 条有关键词，全部命中 ${coverage.full_hit || 0} 条。\n` + lines.join('\n'));
+    await inspectLoaded('');
   } catch (err) {
     show('data-out', err.message);
   }
@@ -214,11 +305,13 @@ document.getElementById('load-data').addEventListener('click', async () => {
     retryPath = '';
     document.getElementById('data-text').value = saved.text || '';
     const coverage = saved.inspect && saved.inspect.coverage ? saved.inspect.coverage : {};
+    setCards((saved.inspect && saved.inspect.rows) || []);
+    document.getElementById('data-meta').textContent = `第 ${saved.round_index} 轮 ${saved.filename || ''}，${describeCoverage(coverage)}`;
     const pairs = [['本轮数据', saved.path]];
     (saved.checkpoints || []).forEach((row) => {
       pairs.push([`第${row.round_index}轮 ${row.kind}`, row.path]);
     });
-    const note = `第 ${saved.round_index} 轮，${coverage.num_rows || 0} 条，关键词全中 ${coverage.full_hit || 0} 条。${saved.notice ? saved.notice + ' ' : ''}${saved.how_to}`;
+    const note = `${saved.notice ? saved.notice + ' ' : ''}${saved.how_to}`;
     showPaths('data-out', note, pairs);
   } catch (err) {
     show('data-out', err.message);

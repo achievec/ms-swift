@@ -7,7 +7,14 @@ main { max-width: 920px; margin: 0 auto; padding: 20px; display: grid; gap: 16px
 .panel h2 { margin: 0 0 8px; font-size: 16px; }
 .muted { color: var(--muted); }
 textarea, input { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 8px; background: var(--bg); }
-textarea { min-height: 120px; }
+textarea { min-height: 88px; }
+details { margin-top: 10px; }
+.sample { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-top: 8px; }
+.sample b { display: block; margin-bottom: 4px; }
+.sample p { margin: 4px 0; }
+.tag { display: inline-block; margin: 2px 4px 0 0; padding: 1px 6px; border-radius: 999px; background: var(--green-soft); }
+.tag.miss { background: var(--red-soft); }
+.pager { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
 .row-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 button { border: 1px solid var(--line); background: var(--card); border-radius: 8px; padding: 6px 12px; }
 button.primary { background: var(--accent); color: white; border-color: var(--accent); }

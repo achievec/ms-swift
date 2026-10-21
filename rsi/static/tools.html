@@ -15,28 +15,41 @@
   <main>
     <section class="panel">
       <h2>数据检查</h2>
-      <p class="muted">检查关键词、拆成训练和留出、筛出下一轮还能用的题。结果是磁盘上的 jsonl。SFT 的数据集设置里选「服务器本地路径」粘贴路径，不会自动改当前实验。</p>
-      <textarea id="data-text" placeholder="把 jsonl 贴在这里，或选择文件"></textarea>
+      <p class="muted">按条查看问题和回答，并标出缺的关键词。拆分和筛选只生成文件，SFT 的数据集设置里选「服务器本地路径」粘贴，不会自动改当前实验。</p>
+      <label>实验<select id="run"></select></label>
+      <div class="row-actions">
+        <button type="button" id="load-data" class="primary">读取本轮数据</button>
+        <button type="button" id="pick-file" class="ghost">选择文件</button>
+        <input id="file" type="file" accept=".jsonl,.json,.txt" hidden />
+      </div>
+      <p id="data-meta" class="muted">还没有载入数据。</p>
+      <details>
+        <summary>粘贴 jsonl</summary>
+        <textarea id="data-text" placeholder="需要手工贴入时再打开"></textarea>
+      </details>
+      <div class="row-actions" id="filters" hidden>
+        <button type="button" data-filter="all" class="primary">全部</button>
+        <button type="button" data-filter="miss">缺关键词</button>
+        <button type="button" data-filter="full">全部命中</button>
+      </div>
+      <div id="row-list"></div>
+      <div id="pager" class="pager"></div>
       <label>留出比例<input id="eval-ratio" type="number" min="0.05" max="0.9" step="0.05" value="0.2" /></label>
       <div class="row-actions">
-        <button type="button" id="pick-file" class="ghost">选择文件</button>
-        <button type="button" id="inspect" class="primary">检查</button>
+        <button type="button" id="inspect">重新检查</button>
         <button type="button" id="split">拆分</button>
         <button type="button" id="pack">筛下一轮候选</button>
         <button type="button" id="complete">用当前推理补全</button>
-        <input id="file" type="file" accept=".jsonl,.json,.txt" hidden />
       </div>
       <div class="log-panel">
-        <div class="log-head"><h3>检查结果</h3><span class="log-tools"><button type="button" class="ghost" data-log-copy>复制</button><button type="button" class="ghost" data-log-fullscreen>全屏</button></span></div>
-        <div id="data-out" class="result">还没有结果。</div>
+        <div class="log-head"><h3>生成的文件</h3><span class="log-tools"><button type="button" class="ghost" data-log-copy>复制</button><button type="button" class="ghost" data-log-fullscreen>全屏</button></span></div>
+        <div id="data-out" class="result">还没有新文件。</div>
       </div>
     </section>
     <section class="panel">
       <h2>实验报告与导出</h2>
-      <p class="muted">只读报告，内容来自实验记录。日常导出用训练页的「模型导出」。这里在还没晋级时也可以合并本轮 SFT 或 RL 检查点，写到单独目录，不替换训练结果。</p>
-      <label>实验<select id="run"></select></label>
+      <p class="muted">只读报告，内容来自实验记录。日常导出用训练页的「模型导出」。这里在还没晋级时也可以合并本轮 SFT 或 RL 检查点，写到单独目录，不替换训练结果。使用上方选中的实验。</p>
       <div class="row-actions">
-        <button type="button" id="load-data" class="primary">读取本轮数据</button>
         <button type="button" id="report">生成报告</button>
         <button type="button" id="ready">检查推理是否就绪</button>
         <button type="button" id="export">合并导出 LoRA</button>
