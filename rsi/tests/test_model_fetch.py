@@ -1,6 +1,7 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 import json
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -60,10 +61,12 @@ class Completed:
 @pytest.fixture(autouse=True)
 def _reset_fetch_globals():
     model_fetch._INFLIGHT.clear()
+    model_fetch._ACTIVE_STAGE_LOGS.clear()
     model_fetch._HOPE_WARNED = False
     model_fetch.reset_hope_login_state()
     yield
     model_fetch._INFLIGHT.clear()
+    model_fetch._ACTIVE_STAGE_LOGS.clear()
     model_fetch.reset_hope_login_state()
 
 
@@ -1784,3 +1787,193 @@ def test_model_fetch_lines_stay_above_the_swift_command(tmp_path, hope_env, monk
     assert body.index('模型进度') < body.index('swift sft')
     assert TOKEN not in body
     assert '登录成功' in body
+
+
+def test_reset_keeps_a_log_hope_is_still_writing(tmp_path):
+    path = tmp_path / 'swift.log'
+    path.write_text('keep\n', encoding='utf-8')
+    model_fetch.activate_stage_log(path)
+    try:
+        model_fetch.reset_stage_log(path)
+        assert path.read_text(encoding='utf-8') == 'keep\n'
+    finally:
+        model_fetch.deactivate_stage_log(path)
+    model_fetch.reset_stage_log(path)
+    assert path.read_text(encoding='utf-8') == ''
+
+
+def test_cr_progress_does_not_eat_the_previous_stage_line(tmp_path, monkeypatch):
+    stage = tmp_path / 'swift.log'
+    monkeypatch.setattr(model_fetch, 'process_log_path', lambda: tmp_path / 'process.log')
+    stage.write_bytes('登录成功'.encode())
+    with model_fetch.use_stage_log(stage):
+        model_fetch.fanout_log('\rclone-progress\n')
+    body = stage.read_bytes()
+    assert body.startswith('登录成功\n'.encode())
+    assert b'clone-progress' in body
+
+
+def _repo_from_clone_url(url: str) -> str:
+    text = url.split('?', 1)[0]
+    if text.endswith('.git'):
+        text = text[:-4]
+    for marker in ('modelscope.cn/datasets/', 'huggingface.co/datasets/'):
+        if marker in text:
+            return text.split(marker, 1)[1]
+    raise AssertionError(url)
+
+
+def test_sft_starts_after_every_selected_dataset_lands(tmp_path, hope_env, monkeypatch):
+    monkeypatch.delenv('RSI_FETCH_INLINE', raising=False)
+    monkeypatch.setattr(model_fetch, 'process_log_path', lambda: tmp_path / 'process.log')
+    _seed_model(tmp_path / 'models')
+    other = 'openai/gsm8k'
+    release = threading.Event()
+    root = tmp_path / 'datasets'
+
+    def runner(argv, **kwargs):
+        if argv[1] == 'login':
+            return Completed(stdout='登录成功\n')
+        kwargs['on_chunk'](b'clone-progress\n')
+        assert release.wait(5)
+        repo = _repo_from_clone_url(argv[2])
+        dest = model_fetch.hope_clone_dir(root, 'dataset', repo)
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / 'train.jsonl').write_text('{"instruction": "q", "output": "a"}\n', encoding='utf-8')
+        return Completed()
+
+    client, _app = _client(tmp_path, runner)
+    with client as api:
+        run_id = api.post('/api/runs', json={
+            'name': '下完自动开训',
+            'scenario': '多选数据集都落盘后自己开始',
+            'base_model': REPO,
+        }).json()['run']['id']
+        started = api.post(f'/api/runs/{run_id}/stages/sft/run', json={
+            'params': {'source': 'public', 'dataset': f'{MS_DATASET} {other}'},
+        })
+        assert started.status_code == 200, started.text
+        assert started.json()['status'] == 'syncing'
+        early = _sft_log(tmp_path / 'home', run_id).read_text(encoding='utf-8')
+        assert 'swift sft' not in early
+        release.set()
+        deadline = time.monotonic() + 5
+        status = 'syncing'
+        command = ''
+        while time.monotonic() < deadline:
+            view = api.get(f'/api/runs/{run_id}').json()
+            form = view['forms']['sft']
+            status = form['status']
+            command = form.get('command') or ''
+            if status in {'succeeded', 'failed'}:
+                break
+            time.sleep(0.05)
+        assert status == 'succeeded', command
+        assert 'alpaca-gpt4-data-zh' in command
+        assert 'gsm8k' in command
+        body = _sft_log(tmp_path / 'home', run_id).read_text(encoding='utf-8')
+    assert '登录成功' in body
+    assert f'[数据集] {MS_DATASET}' in body
+    assert f'[数据集] {other}' in body
+    assert 'clone-progress' in body
+    assert body.index('登录成功') < body.index('clone-progress') < body.index('swift sft')
+
+
+def test_failed_clone_fails_the_waiting_stage(tmp_path, hope_env, monkeypatch):
+    monkeypatch.delenv('RSI_FETCH_INLINE', raising=False)
+    monkeypatch.setattr(model_fetch, 'process_log_path', lambda: tmp_path / 'process.log')
+    _seed_model(tmp_path / 'models')
+    release = threading.Event()
+
+    def runner(argv, **kwargs):
+        if argv[1] == 'login':
+            return Completed(stdout='登录成功\n')
+        kwargs['on_chunk'](b'clone-progress\n')
+        assert release.wait(5)
+        return Completed(returncode=2, stdout='boom')
+
+    client, _app = _client(tmp_path, runner)
+    with client as api:
+        run_id = api.post('/api/runs', json={
+            'name': '拉取失败',
+            'scenario': 'clone 失败就不要一直同步',
+            'base_model': REPO,
+        }).json()['run']['id']
+        started = api.post(f'/api/runs/{run_id}/stages/sft/run', json={
+            'params': {'source': 'public', 'dataset': MS_DATASET},
+        })
+        assert started.status_code == 200, started.text
+        assert started.json()['status'] == 'syncing'
+        release.set()
+        deadline = time.monotonic() + 5
+        status = 'syncing'
+        detail = ''
+        while time.monotonic() < deadline:
+            view = api.get(f'/api/runs/{run_id}').json()
+            form = view['forms']['sft']
+            status = form['status']
+            detail = json.dumps(form.get('result') or {}, ensure_ascii=False)
+            if status in {'succeeded', 'failed'}:
+                break
+            time.sleep(0.05)
+        assert status == 'failed', detail
+        assert '拉取失败' in detail
+        assert 'swift sft' not in _sft_log(tmp_path / 'home', run_id).read_text(encoding='utf-8')
+
+
+def test_hope_stdout_redirect_does_not_truncate_the_stage_log(tmp_path, hope_env, monkeypatch):
+    monkeypatch.setattr(model_fetch, 'process_log_path', lambda: tmp_path / 'process.log')
+    _seed_model(tmp_path / 'models')
+    bindir = tmp_path / 'bin'
+    bindir.mkdir()
+    hope = bindir / 'hope'
+    hope.write_text(
+        '#!/usr/bin/env python3\n'
+        'import os, sys\n'
+        'from pathlib import Path\n'
+        'kind = sys.argv[1]\n'
+        'if kind == "login":\n'
+        '    sys.stdout.write("登录成功\\n")\n'
+        '    sys.stdout.flush()\n'
+        '    raise SystemExit(0)\n'
+        'fd_path = os.readlink("/proc/self/fd/1")\n'
+        'if fd_path.startswith("/"):\n'
+        '    Path(fd_path).write_text("truncated-by-hope\\n", encoding="utf-8")\n'
+        '    raise SystemExit(0)\n'
+        'sys.stdout.write("clone-progress\\n")\n'
+        'sys.stdout.flush()\n'
+        'url = sys.argv[2].split("?", 1)[0]\n'
+        'if url.endswith(".git"):\n'
+        '    url = url[:-4]\n'
+        'marker = "modelscope.cn/datasets/" if "modelscope.cn/datasets/" in url else "huggingface.co/datasets/"\n'
+        'repo = url.split(marker, 1)[1]\n'
+        'org, name = repo.split("/", 1)\n'
+        'if "modelscope.cn" in marker:\n'
+        '    dest = Path.cwd() / "www.modelscope.cn" / "datasets" / org / name\n'
+        'else:\n'
+        '    dest = Path.cwd() / "huggingface.co" / "datasets" / org / name\n'
+        'dest.mkdir(parents=True, exist_ok=True)\n'
+        '(dest / "train.jsonl").write_text("{}", encoding="utf-8")\n',
+        encoding='utf-8')
+    hope.chmod(0o755)
+    monkeypatch.setenv('PATH', str(bindir) + os.pathsep + os.environ.get('PATH', ''))
+
+    client, _app = _client(tmp_path, subprocess.run)
+    with client as api:
+        run_id = api.post('/api/runs', json={
+            'name': '重定向',
+            'scenario': 'hope 重定向不能清掉阶段日志',
+            'base_model': REPO,
+        }).json()['run']['id']
+        trained = api.post(f'/api/runs/{run_id}/stages/sft/run', json={
+            'params': {'source': 'public', 'dataset': f'{MS_DATASET} openai/gsm8k'},
+        })
+        assert trained.status_code == 200, trained.text
+        assert trained.json()['status'] == 'succeeded', trained.text
+        body = _sft_log(tmp_path / 'home', run_id).read_text(encoding='utf-8')
+    assert 'truncated-by-hope' not in body
+    assert '登录成功' in body
+    assert f'[数据集] {MS_DATASET}' in body
+    assert '[数据集] openai/gsm8k' in body
+    assert body.count('clone-progress') >= 2
+    assert body.index('登录成功') < body.index('clone-progress') < body.index('swift sft')
