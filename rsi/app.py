@@ -6,14 +6,14 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from rsi import __version__
-from rsi.backends import build_backend, detect_gpu
+from rsi.backends import build_backend, cached_gpu
 from rsi.model_fetch import resolve_rsi_home
 from rsi.pipeline import Pipeline, PipelineError
-from rsi.schemas import public_schema
+from rsi.schemas import presets, public_schema_wire
 from rsi.store import StoreError
 from rsi import workbench
 
@@ -70,19 +70,28 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.get('/api/health')
     def health():
-        schema = public_schema()
+        # hardware lives in presets YAML — never trigger a cold schema rebuild here.
         return {
             'ok': True,
             'version': __version__,
             'backend': pipeline.backend.name,
             'serve_backend': pipeline._serve_backend_name(),
-            'gpu': detect_gpu(),
-            'hardware': schema.get('hardware') or {},
+            'gpu': cached_gpu(),
+            'hardware': presets().get('hardware') or {},
         }
 
     @app.get('/api/schema')
-    def schema():
-        return public_schema()
+    def schema(request: Request):
+        raw, gzipped, etag = public_schema_wire()
+        headers = {'ETag': etag, 'Vary': 'Accept-Encoding'}
+        if request.headers.get('if-none-match') == etag:
+            return Response(status_code=304, headers=headers)
+        accept = (request.headers.get('accept-encoding') or '').lower()
+        if 'gzip' in accept:
+            # Pre-compressed body: GZipMiddleware sees Content-Encoding and passes through.
+            return Response(content=gzipped, media_type='application/json',
+                            headers={**headers, 'Content-Encoding': 'gzip'})
+        return Response(content=raw, media_type='application/json', headers=headers)
 
     @app.get('/api/runs')
     def list_runs():

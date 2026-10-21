@@ -5,6 +5,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 from rsi.commands import apply_process_env, build_argv, stage_shell
@@ -12,6 +14,12 @@ from rsi.logtail import announce_log, normalize_log, run_and_tee, truncate_log_t
 from rsi.model_fetch import apply_runtime_env, configured_train_python
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# nvidia-smi can take tens–hundreds of ms (or timeout under load). Cache the last
+# good result so schema cache keys do not flip on probe jitter.
+_GPU_TTL = 30.0
+_gpu_cache: dict = {'at': float('-inf'), 'value': None}
+_gpu_lock = threading.Lock()
 
 
 class BackendError(Exception):
@@ -45,6 +53,31 @@ def detect_gpu() -> dict:
         return {'available': False, 'devices': []}
     devices = [line.strip() for line in (completed.stdout or '').splitlines() if line.strip().startswith('GPU')]
     return {'available': bool(devices), 'devices': devices}
+
+
+def clear_gpu_cache() -> None:
+    with _gpu_lock:
+        _gpu_cache['value'] = None
+        _gpu_cache['at'] = float('-inf')
+
+
+def cached_gpu(ttl: float = _GPU_TTL) -> dict:
+    """TTL-cached ``detect_gpu`` with stale-on-empty: keep the last successful device list."""
+    now = time.monotonic()
+    last = _gpu_cache['value']
+    if last is not None and now - _gpu_cache['at'] < ttl:
+        return last
+    with _gpu_lock:
+        now = time.monotonic()
+        last = _gpu_cache['value']
+        if last is not None and now - _gpu_cache['at'] < ttl:
+            return last
+        fresh = detect_gpu()
+        if not fresh.get('devices') and last and last.get('devices'):
+            fresh = last
+        _gpu_cache['value'] = fresh
+        _gpu_cache['at'] = now
+        return fresh
 
 
 def training_python() -> str:

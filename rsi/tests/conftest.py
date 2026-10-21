@@ -13,7 +13,10 @@ if str(ROOT) not in sys.path:
 def _modelscope_source_unless_overridden(monkeypatch):
     """fetch.yaml defaults to hope. Closed-loop tests keep hub ids unless they opt into hope."""
     monkeypatch.setenv('RSI_MODEL_SOURCE', 'modelscope')
+    from rsi.backends import clear_gpu_cache
     from rsi.schemas import clear_public_schema_cache
     clear_public_schema_cache()
+    clear_gpu_cache()
     yield
     clear_public_schema_cache()
+    clear_gpu_cache()

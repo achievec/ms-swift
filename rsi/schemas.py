@@ -1,11 +1,15 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 """Form fields mirroring the ms-swift Web-UI / CLI argument names."""
+import gzip
+import hashlib
+import json
+import threading
 from functools import lru_cache
 from pathlib import Path
 
 import yaml
 
-from rsi.backends import detect_gpu
+from rsi.backends import cached_gpu
 from rsi.llm_export_spec import export_layout
 from rsi.llm_infer_spec import llm_infer_layout
 from rsi.webui_stage_spec import stage_layout
@@ -350,18 +354,37 @@ def presets() -> dict:
 
 
 # Built once per (GPU count, model source). Cold build walks Web-UI AST + catalogs;
-# the JSON is ~350KB so we also trim wire duplicates below.
+# the JSON is ~350KB so we also trim wire duplicates below. Wire bytes (raw + gzip +
+# ETag) are computed once with the dict so the hit path skips encoder/compress.
 _SCHEMA_CACHE: dict[tuple, dict] = {}
+_SCHEMA_WIRE: dict[tuple, tuple[bytes, bytes, str]] = {}
+_SCHEMA_LOCK = threading.Lock()
 
 
 def clear_public_schema_cache() -> None:
-    _SCHEMA_CACHE.clear()
+    with _SCHEMA_LOCK:
+        _SCHEMA_CACHE.clear()
+        _SCHEMA_WIRE.clear()
 
 
 def _wire_export_layout(device_count: int) -> dict:
     """Client renders ``sections`` + ``by_id``; drop triplicate ``blocks`` / ``fields``."""
     layout = export_layout(device_count)
     return {key: value for key, value in layout.items() if key not in {'blocks', 'fields'}}
+
+
+def _schema_cache_key() -> tuple:
+    device_count = len((cached_gpu().get('devices') or []))
+    return (device_count, model_source())
+
+
+def _store_schema(key: tuple, schema: dict) -> dict:
+    raw = json.dumps(schema, ensure_ascii=False, separators=(',', ':')).encode()
+    gzipped = gzip.compress(raw, 6)
+    etag = '"' + hashlib.blake2b(raw, digest_size=16).hexdigest() + '"'
+    _SCHEMA_CACHE[key] = schema
+    _SCHEMA_WIRE[key] = (raw, gzipped, etag)
+    return schema
 
 
 def _build_public_schema(device_count: int) -> dict:
@@ -416,11 +439,27 @@ def _build_public_schema(device_count: int) -> dict:
 
 
 def public_schema() -> dict:
-    device_count = len((detect_gpu().get('devices') or []))
-    key = (device_count, model_source())
+    """Return the public schema dict (single-flight cold build)."""
+    key = _schema_cache_key()
     cached = _SCHEMA_CACHE.get(key)
     if cached is not None:
         return cached
-    schema = _build_public_schema(device_count)
-    _SCHEMA_CACHE[key] = schema
-    return schema
+    with _SCHEMA_LOCK:
+        cached = _SCHEMA_CACHE.get(key)
+        if cached is not None:
+            return cached
+        return _store_schema(key, _build_public_schema(key[0]))
+
+
+def public_schema_wire() -> tuple[bytes, bytes, str]:
+    """Pre-serialized JSON, gzip body, and quoted ETag for ``/api/schema``."""
+    key = _schema_cache_key()
+    wire = _SCHEMA_WIRE.get(key)
+    if wire is not None:
+        return wire
+    with _SCHEMA_LOCK:
+        wire = _SCHEMA_WIRE.get(key)
+        if wire is not None:
+            return wire
+        _store_schema(key, _build_public_schema(key[0]))
+        return _SCHEMA_WIRE[key]

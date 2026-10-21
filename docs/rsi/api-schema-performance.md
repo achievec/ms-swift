@@ -2,7 +2,7 @@
 
 现象：DevTools 里 `GET /api/schema` 出现 **1.7s** 量级的水瀑布，且 RSI 前端 `boot()` 是先把 schema 拿到再渲染，所以这段时间是白屏。
 
-本文只做**定位 + 优化思路**，代码未改动。实测对象：`http://10.164.162.4:8418`（当前进程，已包含 `9077549f 缓存并压缩 /api/schema` 的改动）。
+本文先做定位 + 优化思路；**P0 已于 2026-10-21 落地**（GPU TTL/stale-on-error、`/api/health` 解耦、预序列化/预压缩/`ETag`/`304`、构建单飞）。P1/P2 仍为建议。实测基线对象：`http://10.164.162.4:8418`（含 `9077549f` 的 dict 缓存 + `GZipMiddleware` + 布局去重）。
 
 ---
 
@@ -106,7 +106,9 @@ async function boot() {
 
 ### P0：先把"命中路径"压到毫秒级
 
-**① GPU 探测加 TTL 缓存 + stale-on-error**
+**① GPU 探测加 TTL 缓存 + stale-on-error** — ✅ 已完成（2026-10-21）
+
+实现：`rsi.backends.cached_gpu`（TTL 30s + 探测为空时保留上次成功结果）。`schema` 与 `health` 都走它。
 
 ```python
 _GPU_TTL = 30.0
@@ -124,9 +126,9 @@ def cached_gpu(ttl: float = _GPU_TTL) -> dict:
     return fresh
 ```
 
-`schema` 与 `health` 都用它。收益：去掉每请求 60–200ms，并彻底消除"探测抖动 → 3.5s 重建"。
+收益：去掉每请求 60–200ms，并彻底消除"探测抖动 → 3.5s 重建"。
 
-**② `/api/health` 只读预设**
+**② `/api/health` 只读预设** — ✅ 已完成（2026-10-21）
 
 ```python
 'hardware': presets().get('hardware') or {},
@@ -134,7 +136,9 @@ def cached_gpu(ttl: float = _GPU_TTL) -> dict:
 
 收益：health 从"可能 3.5s"变成 <1ms，冷启动时的首屏不再被它抢跑。
 
-**③ schema 预序列化 + 预压缩 + `ETag`**
+**③ schema 预序列化 + 预压缩 + `ETag`** — ✅ 已完成（2026-10-21）
+
+实现：`rsi.schemas.public_schema_wire()` + `/api/schema` 返回 `Response(bytes)`。
 
 ```python
 def public_schema_wire() -> tuple:          # (raw, gzipped, etag)，每次构建只算一次
@@ -149,7 +153,7 @@ def public_schema_wire() -> tuple:          # (raw, gzipped, etag)，每次构�
 
 注意：返回 `Response(bytes)` 而不是 dict，可以顺带跳过 `jsonable_encoder`。
 
-**④ 构建单飞（single-flight）**
+**④ 构建单飞（single-flight）** — ✅ 已完成（2026-10-21）
 
 加一把 `threading.Lock`，双重检查缓存：并发首屏只构建一次，其余请求等这一次结果，而不是各自构建 3.5s。
 
