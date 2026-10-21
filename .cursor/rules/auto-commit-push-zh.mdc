@@ -1,0 +1,34 @@
+---
+description: 改完代码后用中文提交并推送到当前分支上游
+alwaysApply: true
+---
+
+# 改完自动提交并推送（中文）
+
+这是用户对 **本仓库** 的长期要求：实现工作完成后，不要再等用户说「提交」，直接 `git commit` 然后 `git push`。提交说明用中文。
+
+只在改完可交付的实现（代码、测试、文档）后执行。纯问答、只读查看、用户明确说先别提交时，不要提交。没有改动时不要空提交。
+
+## 提交
+
+并行查看 `git status`、`git diff`（含暂存）、`git log`，对齐本仓库现有说明风格。只暂存本次相关文件。用 HEREDOC 写入说明：一两句中文，写清为什么改，而不是罗列文件。
+
+```bash
+git commit -m "$(cat <<'EOF'
+为运行中的训练阶段提供停止，中断后该步记为失败以便重试。
+
+EOF
+)"
+```
+
+## 推送
+
+推到当前分支已跟踪的上游，不要 force。没有上游时用 `git push -u origin HEAD`（同样不要 force）。推送后用 `git status` 确认工作区干净、分支与上游一致。
+
+## 安全
+
+- 不要改 git config。
+- 不要 `--force` / `--force-with-lease`，尤其不要对 `main` / `master` 强推。
+- 不要提交密钥（`.env`、credentials、token）。
+- 不要加 `--no-verify`，除非用户当次明确要求。
+- hook 失败时修问题后新建提交，不要 amend，除非 amend 条件全部满足。
