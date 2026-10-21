@@ -51,6 +51,8 @@ INTERNAL_KEYS = {
     'ddp_num',
     'envs',
     'dry_run',
+    # RSI-only: run a second eval on the experiment base model (no adapters).
+    'eval_base',
 }
 
 STAGE_COMMAND = {

@@ -434,7 +434,10 @@ tr.expand td { background: #f9fafb; }
 }
 html.log-lock, body.log-lock { overflow: hidden; }
 .score-table { width: auto; margin: 8px 0 12px; }
-.score-table td { padding: 4px 12px 4px 0; }
+.score-table td, .score-table th { padding: 4px 12px 4px 0; text-align: left; }
+.compare-block { margin: 8px 0 12px; }
+.compare-table th { font-weight: 600; color: var(--muted, #6b7280); }
+.compare-table td:first-child, .compare-table th:first-child { min-width: 7em; }
 .empty { padding: 48px 12px; max-width: 640px; }
 .chat-log { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
 .bubble { padding: 8px 10px; border-radius: 8px; max-width: 80%; }

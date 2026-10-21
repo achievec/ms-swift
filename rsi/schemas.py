@@ -29,7 +29,7 @@ STAGE_META = [
     {
         'id': 'sft_eval',
         'label': 'SFT 评测',
-        'summary': '评测这一轮的 SFT 检查点。',
+        'summary': '评测这一轮的 SFT 检查点，并默认同套配置评测基座以便对比。',
     },
     {
         'id': 'rl',
@@ -39,7 +39,7 @@ STAGE_META = [
     {
         'id': 'rl_eval',
         'label': 'RL 评测',
-        'summary': '用同一套评测配置检查 RL checkpoint，便于和 SFT 分数对比。',
+        'summary': '用同一套评测配置检查 RL checkpoint，并默认同套配置评测基座；有 SFT 评测结果时一并对比。',
     },
     {
         'id': 'promote',
@@ -226,6 +226,8 @@ FIELDS = {
         _field('eval_dataset', '评测数据集(--eval_dataset)', '--eval_dataset', 'multicombo', '评测',
                choices_from='eval_datasets_by_backend'),
         _field('eval_limit', '每个数据集取样数', '--eval_limit', 'number', '评测', step='1'),
+        _field('eval_base', '同时评测基座', '', 'checkbox', '评测',
+               info='用同一套评测集/取样数/后端跑实验基座（无 adapter），结果与本阶段检查点并排对比。'),
         _field('custom_eval_config', '自定义评测配置', '--extra_eval_args', 'text', '评测'),
         _field('temperature', '温度', '--temperature', 'number', '生成', step='0.1'),
         _field('max_new_tokens', '最大生成长度', '--max_new_tokens', 'number', '生成', step='1'),
@@ -300,6 +302,8 @@ FIELDS = {
         _field('eval_dataset', '评测数据集(--eval_dataset)', '--eval_dataset', 'multicombo', '评测',
                choices_from='eval_datasets_by_backend'),
         _field('eval_limit', '每个数据集取样数', '--eval_limit', 'number', '评测', step='1'),
+        _field('eval_base', '同时评测基座', '', 'checkbox', '评测',
+               info='用同一套评测集/取样数/后端跑实验基座（无 adapter），结果与本阶段检查点并排对比。'),
         _field('custom_eval_config', '自定义评测配置', '--extra_eval_args', 'text', '评测'),
         _field('temperature', '温度', '--temperature', 'number', '生成', step='0.1'),
         _field('max_new_tokens', '最大生成长度', '--max_new_tokens', 'number', '生成', step='1'),

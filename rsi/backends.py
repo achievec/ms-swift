@@ -351,8 +351,16 @@ class MockBackend:
             lines.append(f'检查点：{checkpoint}')
         elif stage in {'sft_eval', 'rl_eval'}:
             rows = context.get('eval_rows')
+            # Empty adapters → base-model eval; keep scores below the adapter run so
+            # the RSI compare table has a visible gap in mock mode.
+            if not str(params.get('adapters') or '').strip():
+                metrics = dict(metrics)
+                for key in ('accuracy', 'mock_score'):
+                    if key in metrics and isinstance(metrics[key], (int, float)):
+                        metrics[key] = round(max(0.01, float(metrics[key]) - 0.12), 4)
             lines.append(f"eval_dataset={params.get('eval_dataset')} eval_limit={params.get('eval_limit')} "
-                         f'heldout_rows={rows}')
+                         f'heldout_rows={rows} adapters={params.get("adapters") or ""} '
+                         f'model={params.get("model") or ""}')
             lines.append(str({'accuracy': metrics.get('accuracy')}))
             if rows is not None:
                 metrics = dict(metrics)

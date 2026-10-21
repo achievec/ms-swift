@@ -79,6 +79,7 @@ sft_eval:
   eval_backend: Native
   eval_dataset: itops-heldout
   eval_limit: 20
+  eval_base: true
   temperature: 0
   eval_num_proc: 4
   max_new_tokens: 512
@@ -153,6 +154,7 @@ rl_eval:
   eval_backend: Native
   eval_dataset: itops-heldout
   eval_limit: 20
+  eval_base: true
   temperature: 0
   eval_num_proc: 4
   max_new_tokens: 512

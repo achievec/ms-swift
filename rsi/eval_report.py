@@ -185,3 +185,32 @@ def merge_eval_report(metrics: dict, eval_output_dir, root=None) -> dict:
         if key not in merged:
             merged[key] = value
     return merged
+
+
+_COMPARE_METRIC_KEYS = ('accuracy', 'bleu_1', 'rouge_l_f', 'eval_rows', 'mock_score')
+
+
+def compact_eval_metrics(metrics: dict) -> dict:
+    """Keep score fields for the compare table; drop bulky paths from the payload."""
+    if not isinstance(metrics, dict):
+        return {}
+    out = {}
+    for key in _COMPARE_METRIC_KEYS:
+        if key in metrics and metrics[key] is not None:
+            out[key] = metrics[key]
+    scores = metrics.get('scores')
+    if isinstance(scores, dict) and scores:
+        out['scores'] = dict(scores)
+    return out
+
+
+def base_eval_output_dir(eval_output_dir) -> Path | None:
+    """Sibling ``base/`` under the stage eval root (``…/eval_output/base``)."""
+    if not eval_output_dir:
+        return None
+    root = Path(str(eval_output_dir))
+    if root.name == 'base':
+        return root
+    if root.name == 'adapter':
+        return root.parent / 'base'
+    return root / 'base'

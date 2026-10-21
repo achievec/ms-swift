@@ -280,6 +280,11 @@ def test_mock_writes_swift_log_under_the_experiment(client, tmp_path, monkeypatc
         'rl': home / 'runs' / run_id / 'round_1' / 'rl' / 'swift.log',
         'rl_eval': home / 'runs' / run_id / 'round_1' / 'rl_eval' / 'eval_output' / 'swift.log',
     }
+    # Dual eval also writes a base-model log under eval_output/base/.
+    base_logs = {
+        'sft_eval': home / 'runs' / run_id / 'round_1' / 'sft_eval' / 'eval_output' / 'base' / 'swift.log',
+        'rl_eval': home / 'runs' / run_id / 'round_1' / 'rl_eval' / 'eval_output' / 'base' / 'swift.log',
+    }
     out = capsys.readouterr().out
     assert not (tmp_path / 'swift.log').exists()
     for stage, path in expected.items():
@@ -292,7 +297,11 @@ def test_mock_writes_swift_log_under_the_experiment(client, tmp_path, monkeypatc
         assert shown['size'] == path.stat().st_size
         assert shown['text'].strip()
         assert 'swift' in shown['text']
-    assert out.count('实验日志：') == 4
+    for stage, path in base_logs.items():
+        assert path.is_file(), stage
+        assert 'swift ' in path.read_text(encoding='utf-8')
+        assert f'实验日志：{path}' in out
+    assert out.count('实验日志：') == 6
 
 
 def test_training_stream_stays_out_of_the_process_log(tmp_path, monkeypatch, capsys):

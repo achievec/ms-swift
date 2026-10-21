@@ -34,19 +34,42 @@ const STAGE_METRIC_KEYS = {
   rl: ['train/loss', 'train/reward', 'train/learning_rate', 'train/completions/mean_length', 'train/kl'],
 };
 
+function evalReportHref(stage, roundIndex, kind) {
+  if (!state.view) return '';
+  const round = roundIndex || state.view.round.round_index;
+  let href = `/api/runs/${encodeURIComponent(state.view.run.id)}/stages/${encodeURIComponent(stage)}/report?round=${round}`;
+  if (kind) href += `&kind=${encodeURIComponent(kind)}`;
+  return href;
+}
+
 function evalReportLink(stage, result, roundIndex) {
   if (stage !== 'sft_eval' && stage !== 'rl_eval') return '';
   const metrics = (result && result.metrics) || {};
   const path = (result && result.report_path) || metrics.report_html || '';
   if (!path || !state.view) return '';
-  const round = roundIndex || state.view.round.round_index;
-  const href = `/api/runs/${encodeURIComponent(state.view.run.id)}/stages/${encodeURIComponent(stage)}/report?round=${round}`;
+  const href = evalReportHref(stage, roundIndex);
   return `<a class="ghost" href="${href}" target="_blank" rel="noopener">查看完整报告</a>`;
+}
+
+function compareReportLinks(stage, result, roundIndex) {
+  const rows = result && Array.isArray(result.compare) ? result.compare : [];
+  const links = rows
+    .filter((row) => row && (row.report_path || (row.metrics && row.metrics.report_html)))
+    .map((row) => {
+      const href = evalReportHref(stage, roundIndex, row.role);
+      return `<a class="ghost" href="${href}" target="_blank" rel="noopener">${escapeHtml(row.label || row.role)} 报告</a>`;
+    });
+  if (!links.length) {
+    const single = evalReportLink(stage, result, roundIndex);
+    return single ? `<p class="row-actions">${single}</p>` : '';
+  }
+  return `<p class="row-actions">${links.join(' · ')}</p>`;
 }
 
 function scoreHeadline(metrics) {
   if (!metrics) return '';
   const bits = [];
+  if (metrics.accuracy != null && metrics.accuracy !== '') bits.push(`acc ${metrics.accuracy}`);
   if (metrics.bleu_1 != null && metrics.bleu_1 !== '') bits.push(`BLEU-1 ${metrics.bleu_1}`);
   if (metrics.rouge_l_f != null && metrics.rouge_l_f !== '') bits.push(`ROUGE-L F1 ${metrics.rouge_l_f}`);
   return bits.length ? `<p>${escapeHtml(bits.join(' · '))}</p>` : '';
@@ -57,6 +80,50 @@ function scoreTable(metrics) {
   if (!scores || typeof scores !== 'object') return '';
   const rows = Object.keys(scores).map((key) => `<tr><td>${escapeHtml(key)}</td><td>${escapeHtml(scores[key])}</td></tr>`).join('');
   return rows ? `<table class="score-table"><tbody>${rows}</tbody></table>` : '';
+}
+
+function compareMetricKeys(rows) {
+  const preferred = ['accuracy', 'bleu_1', 'rouge_l_f'];
+  const keys = [];
+  preferred.forEach((key) => {
+    if (rows.some((row) => row.metrics && row.metrics[key] != null && row.metrics[key] !== '')) keys.push(key);
+  });
+  const scoreNames = new Set();
+  rows.forEach((row) => {
+    const scores = row.metrics && row.metrics.scores;
+    if (scores && typeof scores === 'object') Object.keys(scores).forEach((name) => scoreNames.add(name));
+  });
+  Array.from(scoreNames).sort().forEach((name) => {
+    if (!keys.includes(name)) keys.push(name);
+  });
+  return keys;
+}
+
+function compareCell(row, key) {
+  const metrics = (row && row.metrics) || {};
+  if (metrics[key] != null && metrics[key] !== '') return metrics[key];
+  const scores = metrics.scores;
+  if (scores && scores[key] != null && scores[key] !== '') return scores[key];
+  return '—';
+}
+
+function compareTable(result) {
+  const rows = result && Array.isArray(result.compare) ? result.compare.filter((row) => row && row.label) : [];
+  if (rows.length < 2) return '';
+  const keys = compareMetricKeys(rows);
+  if (!keys.length) return '';
+  const head = `<tr><th>指标</th>${rows.map((row) => `<th>${escapeHtml(row.label)}</th>`).join('')}</tr>`;
+  const body = keys.map((key) => {
+    const cells = rows.map((row) => `<td>${escapeHtml(compareCell(row, key))}</td>`).join('');
+    return `<tr><td>${escapeHtml(key)}</td>${cells}</tr>`;
+  }).join('');
+  return `<div class="compare-block"><p class="muted">基座对比（同一评测集）</p><table class="score-table compare-table"><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
+}
+
+function evalResultMarkup(stage, result, roundIndex) {
+  if (!result) return '';
+  const report = compareReportLinks(stage, result, roundIndex);
+  return `${compareTable(result)}${scoreHeadline(result.metrics)}${scoreTable(result.metrics)}${report}${outputPanel('结果', JSON.stringify(visibleResult(result), null, 2))}`;
 }
 
 function visibleResult(result) {
@@ -699,8 +766,7 @@ function renderStage(stage) {
   const validate = stage === 'sft'
     ? `<button type="button" class="ghost" data-action="validate"${viewTip} ${view.mutable ? '' : 'disabled'}>校验格式</button>`
     : '';
-  const reportLink = form.result ? evalReportLink(stage, form.result) : '';
-  const result = form.result ? `${scoreHeadline(form.result.metrics)}${scoreTable(form.result.metrics)}${reportLink ? `<p class="row-actions">${reportLink}</p>` : ''}${outputPanel('结果', JSON.stringify(visibleResult(form.result), null, 2))}` : '';
+  const result = form.result ? evalResultMarkup(stage, form.result) : '';
   const streaming = form.status === 'running' || form.status === 'syncing';
   const finished = form.status === 'succeeded' || form.status === 'failed';
   // Completed stages still fetch /stages/.../log so「加载更早」can reach full swift.log
@@ -879,7 +945,7 @@ function renderAudit() {
     const detail = open ? `<tr class="expand"><td colspan="7">
       <p><b>开始</b> ${escapeHtml(formatShanghai(step.started_at))} · <b>结束</b> ${escapeHtml(formatShanghai(step.ended_at || ''))} · <b>耗时</b> ${escapeHtml(formatDurationZh(step.started_at, step.ended_at))}</p>
       ${outputPanel('参数', JSON.stringify(step.params, null, 2))}
-      ${scoreHeadline((step.result || {}).metrics)}${scoreTable((step.result || {}).metrics)}${evalReportLink(step.stage, step.result, step.round_index) ? `<p class="row-actions">${evalReportLink(step.stage, step.result, step.round_index)}</p>` : ''}${outputPanel('结果', JSON.stringify(visibleResult(step.result), null, 2))}
+      ${evalResultMarkup(step.stage, step.result, step.round_index)}
       ${(() => {
         const live = step.status === 'running' || step.status === 'syncing';
         const done = step.status === 'succeeded' || step.status === 'failed';

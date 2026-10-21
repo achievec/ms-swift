@@ -18,7 +18,12 @@ from pathlib import Path
 import yaml
 
 from rsi.backends import BackendError, swift_launch
-from rsi.eval_report import inside_directory, merge_eval_report
+from rsi.eval_report import (
+    base_eval_output_dir,
+    compact_eval_metrics,
+    inside_directory,
+    merge_eval_report,
+)
 from rsi.commands import (
     QUANT_FORM_KEYS,
     STAGE_COMMAND,
@@ -259,6 +264,15 @@ def _metric(step, name):
     metrics = _loads(step['result_json']).get('metrics') or {}
     value = metrics.get(name)
     return float(value) if isinstance(value, (int, float)) else None
+
+
+def _flag(value, default: bool = True) -> bool:
+    """Checkbox / YAML / form string → bool. Missing value keeps ``default``."""
+    if value is None or value == '':
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 def _format_errors(report: dict) -> str:
@@ -913,6 +927,10 @@ class Pipeline:
             self._remember_checkpoint(preset, checkpoint['path'] if checkpoint else '')
             preset['eval_output_dir'] = str(self.stage_dir(run['id'], rnd['round_index'], stage) / 'eval_output')
             preset['custom_eval_config'] = _resolve_existing(preset.get('custom_eval_config'))
+            if 'eval_base' not in preset:
+                preset['eval_base'] = True
+            else:
+                preset['eval_base'] = _flag(preset.get('eval_base'), True)
             return preset
 
         if stage == 'promote':
@@ -1220,6 +1238,7 @@ class Pipeline:
                 if strict:
                     raise PipelineError('请填写 eval_dataset')
                 merged['eval_dataset'] = 'itops-heldout'
+            merged['eval_base'] = _flag(merged.get('eval_base'), True)
             self._rewrite_model(merged, run, side, strict, fetch=fetch)
             self._place_trained_checkpoint(merged, run)
             self._attach_eval_locals(merged, strict)
@@ -1319,18 +1338,41 @@ class Pipeline:
     def _with_eval_report(self, run_id: str, stage: str, result, params):
         if stage not in {'sft_eval', 'rl_eval'} or not isinstance(result, dict):
             return result
-        metrics = merge_eval_report(
-            result.get('metrics') or {}, (params or {}).get('eval_output_dir'), self.home / 'runs' / run_id)
-        if metrics == (result.get('metrics') or {}):
-            return result
+        root = self.home / 'runs' / run_id
+        metrics = merge_eval_report(result.get('metrics') or {}, (params or {}).get('eval_output_dir'), root)
         updated = dict(result)
-        updated['metrics'] = metrics
-        if metrics.get('report_html'):
-            updated['report_path'] = metrics['report_html']
-        return updated
+        changed = metrics != (result.get('metrics') or {})
+        if changed:
+            updated['metrics'] = metrics
+            if metrics.get('report_html'):
+                updated['report_path'] = metrics['report_html']
+        compare = list(result.get('compare') or [])
+        refreshed = []
+        for row in compare:
+            if not isinstance(row, dict):
+                continue
+            item = dict(row)
+            out_dir = item.get('eval_output_dir')
+            if out_dir:
+                row_metrics = merge_eval_report(item.get('metrics') or {}, out_dir, root)
+                if row_metrics != (item.get('metrics') or {}):
+                    item['metrics'] = compact_eval_metrics(row_metrics)
+                    changed = True
+                if row_metrics.get('report_html'):
+                    item['report_path'] = row_metrics['report_html']
+                    changed = True
+            refreshed.append(item)
+        if refreshed != compare:
+            updated['compare'] = refreshed
+            changed = True
+        return updated if changed else result
 
-    def eval_report_file(self, run_id: str, stage: str, round_index=None) -> Path:
-        """HTML report for this stage, only if it sits inside the run directory."""
+    def eval_report_file(self, run_id: str, stage: str, round_index=None, kind: str | None = None) -> Path:
+        """HTML report for this stage, only if it sits inside the run directory.
+
+        ``kind`` selects a compare row (``base`` / ``sft`` / ``rl``). Empty kind
+        serves the stage checkpoint report (current SFT or RL eval).
+        """
         if stage not in {'sft_eval', 'rl_eval'}:
             raise PipelineError('这一阶段没有评测报告', 404)
         run = self._require_run(run_id)
@@ -1345,10 +1387,104 @@ class Pipeline:
         result = _loads(step.get('result_json'))
         params = _loads(step.get('params_json'))
         shown = self._with_eval_report(run_id, stage, result, params) or {}
-        path = inside_directory(root, shown.get('report_path') or (shown.get('metrics') or {}).get('report_html'))
+        role = (kind or '').strip().lower()
+        path = None
+        if role in {'base', 'sft', 'rl'}:
+            for row in shown.get('compare') or []:
+                if isinstance(row, dict) and row.get('role') == role:
+                    path = inside_directory(root, row.get('report_path') or (row.get('metrics') or {}).get('report_html'))
+                    break
+            if path is None and role == ('sft' if stage == 'sft_eval' else 'rl'):
+                path = inside_directory(
+                    root, shown.get('report_path') or (shown.get('metrics') or {}).get('report_html'))
+        else:
+            path = inside_directory(root, shown.get('report_path') or (shown.get('metrics') or {}).get('report_html'))
         if path is None or path.suffix.lower() not in {'.html', '.htm'}:
             raise PipelineError('还没有评测报告', 404)
         return path
+
+    def _want_base_eval(self, run: dict, params: dict) -> bool:
+        if not _flag((params or {}).get('eval_base'), True):
+            return False
+        base = str((run or {}).get('base_model') or '').strip()
+        if not base:
+            return False
+        model = str((params or {}).get('model') or '').strip()
+        adapters = str((params or {}).get('adapters') or '').strip()
+        # Already evaluating the bare base — a second pass would be identical.
+        if not adapters and model == base:
+            return False
+        return True
+
+    def _base_eval_params(self, run: dict, params: dict) -> dict:
+        """Same eval knobs as the stage checkpoint, but ``model=run.base_model`` and no adapters."""
+        base = dict(params or {})
+        base_model = str((run or {}).get('base_model') or '').strip()
+        base['model'] = base_model
+        base['adapters'] = ''
+        base.pop('trained_model', None)
+        out = base_eval_output_dir(base.get('eval_output_dir'))
+        if out is not None:
+            base['eval_output_dir'] = str(out)
+        self._pin_identity(base, run)
+        return base
+
+    def _compare_from_prior_sft(self, run_id: str, round_index: int, root: Path) -> dict | None:
+        """Reuse this round's SFT eval metrics when building an RL compare table (no re-run)."""
+        step = self.store.latest_active_steps(run_id, round_index).get('sft_eval')
+        if not step or step.get('status') != 'succeeded':
+            return None
+        result = self._with_eval_report(run_id, 'sft_eval', _loads(step.get('result_json')), _loads(step.get('params_json')))
+        if not isinstance(result, dict):
+            return None
+        metrics = compact_eval_metrics(result.get('metrics') or {})
+        if not metrics:
+            return None
+        report = result.get('report_path') or (result.get('metrics') or {}).get('report_html')
+        row = {
+            'role': 'sft',
+            'label': 'SFT',
+            'metrics': metrics,
+            'eval_output_dir': (_loads(step.get('params_json')) or {}).get('eval_output_dir') or '',
+        }
+        if report and inside_directory(root, report) is not None:
+            row['report_path'] = report
+        return row
+
+    def _build_eval_compare(self, run, rnd, stage, params, adapter_metrics, base_bundle=None) -> list:
+        """Ordered rows for the form UI: 基座 → (SFT) → current stage checkpoint."""
+        root = self.home / 'runs' / run['id']
+        rows = []
+        if base_bundle:
+            base_metrics = compact_eval_metrics(base_bundle.get('metrics') or {})
+            base_row = {
+                'role': 'base',
+                'label': '基座',
+                'metrics': base_metrics,
+                'eval_output_dir': base_bundle.get('eval_output_dir') or '',
+                'command': base_bundle.get('command') or '',
+            }
+            report = base_bundle.get('report_path') or base_metrics.get('report_html')
+            if report:
+                base_row['report_path'] = report
+            rows.append(base_row)
+        if stage == 'rl_eval':
+            prior = self._compare_from_prior_sft(run['id'], rnd['round_index'], root)
+            if prior:
+                rows.append(prior)
+        current_role = 'sft' if stage == 'sft_eval' else 'rl'
+        current_label = 'SFT' if stage == 'sft_eval' else 'RL'
+        current = {
+            'role': current_role,
+            'label': current_label,
+            'metrics': compact_eval_metrics(adapter_metrics or {}),
+            'eval_output_dir': (params or {}).get('eval_output_dir') or '',
+        }
+        report = (adapter_metrics or {}).get('report_html')
+        if report:
+            current['report_path'] = report
+        rows.append(current)
+        return rows
 
     def _touch_fetch_progress(self) -> None:
         """Update hope rows from local files. Clone progress is in the process log."""
@@ -1560,7 +1696,12 @@ class Pipeline:
         # Preview must not kick off hope; otherwise an inflight clone has no stage log.
         merged, _side = self._prepare(run, rnd, stage, params or {}, strict=False, fetch=False)
         command = stage_shell(stage, merged) if stage in STAGE_COMMAND else ''
-        return {'params': merged, 'command': command}
+        payload = {'params': merged, 'command': command}
+        if stage in {'sft_eval', 'rl_eval'} and self._want_base_eval(run, merged):
+            base_params = self._base_eval_params(run, merged)
+            payload['base_params'] = base_params
+            payload['base_command'] = stage_shell(stage, base_params)
+        return payload
 
     def stage_log(self, run_id: str, stage: str, round_index=None, offset=None, limit=None) -> dict:
         """Return a normalized slice of this stage's swift.log.
@@ -1683,8 +1824,13 @@ class Pipeline:
             candidates.append(Path(str(params['output_dir'])) / 'swift.log')
         if params.get('eval_output_dir'):
             candidates.append(Path(str(params['eval_output_dir'])) / 'swift.log')
+            base_out = base_eval_output_dir(params.get('eval_output_dir'))
+            if base_out is not None:
+                candidates.append(base_out / 'swift.log')
         candidates.append(base / 'swift.log')
         candidates.append(base / 'eval_output' / 'swift.log')
+        candidates.append(base / 'eval_output' / 'adapter' / 'swift.log')
+        candidates.append(base / 'eval_output' / 'base' / 'swift.log')
         owned = [path for path in (self._owned_log(run_id, item) for item in candidates) if path]
         for path in owned:
             if path.is_file():
@@ -1970,8 +2116,9 @@ class Pipeline:
             if step_id is not None:
                 context['on_proc'] = lambda proc, rid=run['id'], sid=step_id: self._stages.track(rid, sid, proc)
             produced = self.backend.execute(stage, params, context)
+            run_root = self.home / 'runs' / run['id']
             metrics = merge_eval_report(
-                produced.get('metrics') or {}, params.get('eval_output_dir'), self.home / 'runs' / run['id'])
+                produced.get('metrics') or {}, params.get('eval_output_dir'), run_root)
             result = {
                 'backend': self.backend.name,
                 'mock': produced.get('mock', self.backend.name == 'mock'),
@@ -1980,12 +2127,41 @@ class Pipeline:
             }
             if metrics.get('report_html'):
                 result['report_path'] = metrics['report_html']
+            logs = produced.get('logs') or ''
+            command = produced.get('command') or ''
+            if stage in {'sft_eval', 'rl_eval'} and self._want_base_eval(run, params):
+                base_params = self._base_eval_params(run, params)
+                base_dir = Path(base_params['eval_output_dir'])
+                base_dir.mkdir(parents=True, exist_ok=True)
+                base_context = dict(context)
+                base_context['workdir'] = str(base_dir)
+                # Base eval reuses the same held-out rows / dataset args as the stage run.
+                base_produced = self.backend.execute(stage, base_params, base_context)
+                base_metrics = merge_eval_report(
+                    base_produced.get('metrics') or {}, base_params.get('eval_output_dir'), run_root)
+                base_bundle = {
+                    'metrics': base_metrics,
+                    'eval_output_dir': base_params.get('eval_output_dir') or '',
+                    'command': base_produced.get('command') or '',
+                    'report_path': base_metrics.get('report_html') or '',
+                }
+                result['compare'] = self._build_eval_compare(
+                    run, rnd, stage, params, metrics, base_bundle=base_bundle)
+                result['base_command'] = base_bundle['command']
+                base_logs = base_produced.get('logs') or ''
+                if base_logs:
+                    logs = (logs.rstrip() + '\n\n[rsi] —— 基座评测 ——\n' + base_logs.lstrip())
+                if command and base_bundle['command']:
+                    command = command.rstrip() + '\n\n# 基座评测\n' + base_bundle['command']
+            elif stage in {'sft_eval', 'rl_eval'}:
+                # Still surface a one-column compare when dual-eval is off / skipped.
+                result['compare'] = self._build_eval_compare(run, rnd, stage, params, metrics)
             if side.get('validation'):
                 result['validation'] = side['validation']
                 result['dataset'] = params.get('dataset')
             outcome = {
-                'command': produced.get('command') or '',
-                'logs': produced.get('logs') or '',
+                'command': command,
+                'logs': logs,
                 'result': result,
             }
             if produced.get('checkpoint'):
