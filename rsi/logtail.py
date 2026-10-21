@@ -7,8 +7,12 @@ import sys
 import time
 from pathlib import Path
 
-# First paint shows the tail of the file. Later polls can ask for a byte offset.
+# View/DB payloads keep a short tail so /api/runs/{id} stays small.
 TAIL_BYTES = 64 * 1024
+# Live stage-log panel first paint; later polls append from next_offset.
+# Still capped — use offset=0 (or「加载更早」) to page through the full file.
+LIVE_TAIL_BYTES = 256 * 1024
+# One request window for follow /「加载更早」chunks. Huge files stay on disk.
 MAX_READ = 256 * 1024
 
 # CSI / OSC, plus leftover tqdm sequences whose ESC byte was already consumed (`[A`, `[2K`, `[32m`).
@@ -57,6 +61,20 @@ def normalize_log(text: str) -> str:
     return collapse_cr(strip_ansi(text or ''))
 
 
+def align_start_to_newline(raw: bytes, start: int) -> tuple[int, bytes]:
+    """Drop a partial first line when ``start`` is not the beginning of the file.
+
+    Raw byte tails (e.g. last 64KB of a multi‑MB ``swift.log``) often land mid‑tqdm
+    line. Skipping forward to the next ``\\n`` keeps the panel readable.
+    """
+    if start <= 0 or not raw:
+        return start, raw
+    nl = raw.find(b'\n')
+    if nl < 0:
+        return start, raw
+    return start + nl + 1, raw[nl + 1:]
+
+
 def truncate_log_text(text: str, max_bytes: int | None = None) -> str:
     """Keep only the tail of a log for API/DB payloads.
 
@@ -74,11 +92,13 @@ def truncate_log_text(text: str, max_bytes: int | None = None) -> str:
     # Avoid splitting a multi-byte UTF-8 sequence at the start of the window.
     while cut < len(raw) and raw[cut] & 0xC0 == 0x80:
         cut += 1
-    return raw[cut:].decode('utf-8', errors='replace')
+    cut, clipped = align_start_to_newline(raw[cut:], cut)
+    return clipped.decode('utf-8', errors='replace')
 
 
 def window_bounds(size: int, offset: int | None, limit: int | None, tail: int | None = None) -> tuple[int, int]:
     """Byte window. Omit ``offset`` to keep the tail. ``tail`` overrides the default tail size."""
+    # Default stays TAIL_BYTES (view/DB). Live panel passes LIVE_TAIL_BYTES.
     tail_bytes = TAIL_BYTES if tail is None else max(1, int(tail))
     if limit is None or int(limit) <= 0:
         limit = tail_bytes
@@ -91,21 +111,28 @@ def window_bounds(size: int, offset: int | None, limit: int | None, tail: int | 
     return start, min(limit, size - start)
 
 
-def slice_bytes(raw: bytes, offset: int | None, limit: int | None) -> dict:
-    size = len(raw)
-    start, count = window_bounds(size, offset, limit)
-    blob = raw[start:start + count]
+def _window_payload(raw: bytes, start: int, size: int, *, align: bool) -> dict:
+    # Only auto-tails align: follow reads from next_offset must not drop live bytes.
+    if align and start > 0:
+        start, raw = align_start_to_newline(raw, start)
     return {
         'offset': start,
-        'next_offset': start + len(blob),
+        'next_offset': start + len(raw),
         'size': size,
-        'text': normalize_log(blob.decode('utf-8', errors='replace')),
+        'truncated': start > 0,
+        'text': normalize_log(raw.decode('utf-8', errors='replace')),
     }
+
+
+def slice_bytes(raw: bytes, offset: int | None, limit: int | None, tail: int | None = None) -> dict:
+    size = len(raw)
+    start, count = window_bounds(size, offset, limit, tail=tail)
+    return _window_payload(raw[start:start + count], start, size, align=offset is None)
 
 
 def read_log_window(path: Path | None, offset: int | None, limit: int | None, tail: int | None = None) -> dict:
     if path is None or not path.is_file():
-        return slice_bytes(b'', offset, limit)
+        return slice_bytes(b'', offset, limit, tail=tail)
     try:
         size = path.stat().st_size
         start, count = window_bounds(size, offset, limit, tail=tail)
@@ -113,9 +140,8 @@ def read_log_window(path: Path | None, offset: int | None, limit: int | None, ta
             handle.seek(start)
             blob = handle.read(count)
     except OSError:
-        return slice_bytes(b'', offset, limit)
-    text = normalize_log(blob.decode('utf-8', errors='replace'))
-    return {'offset': start, 'next_offset': start + len(blob), 'size': size, 'text': text}
+        return slice_bytes(b'', offset, limit, tail=tail)
+    return _window_payload(blob, start, size, align=offset is None)
 
 
 class ConsoleTee:

@@ -412,6 +412,7 @@ tr.expand td { background: #f9fafb; }
 .log-head h3 { margin: 0; }
 .log-tools { display: flex; gap: 6px; flex: 0 0 auto; }
 .log-head .ghost { padding: 4px 10px; font-size: 12px; box-shadow: none; }
+.log-earlier-hint { margin: 0 0 8px; font-size: 12px; }
 .log-panel.log-fullscreen {
   position: fixed;
   inset: 0;

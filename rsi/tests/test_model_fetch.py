@@ -1779,9 +1779,16 @@ def test_view_payload_does_not_grow_with_huge_stage_log(tmp_path, hope_env, monk
 
             live = api.get(f'/api/runs/{run_id}/stages/sft/log')
             assert live.status_code == 200
-            text = live.json()['text']
+            body = live.json()
+            text = body['text']
             assert 'HUGE_TAIL_OK' in text
-            assert len(text.encode('utf-8')) <= TAIL_BYTES + 4096
+            assert body.get('truncated') is True
+            from rsi.logtail import LIVE_TAIL_BYTES
+            assert len(text.encode('utf-8')) <= LIVE_TAIL_BYTES + 4096
+            # Full history stays reachable via offset=0 pagination, not /api/runs/{id}.
+            head = api.get(f'/api/runs/{run_id}/stages/sft/log', params={'offset': 0, 'limit': 256}).json()
+            assert head['offset'] == 0
+            assert head['truncated'] is False
         finally:
             release.set()
 

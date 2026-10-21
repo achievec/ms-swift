@@ -36,7 +36,7 @@ from rsi.commands import (
 from rsi.llm_infer_spec import chat_request_body, cuda_visible_devices, template_default_system
 from rsi.dataset_validate import MAX_BYTES, validate_file, validate_public_id
 from rsi.flow import ACTION_LABELS, assemble_flow, blocked_message, decision_actions, stage_unlocked
-from rsi.logtail import announce_log, read_log_window, slice_bytes, truncate_log_text
+from rsi.logtail import LIVE_TAIL_BYTES, announce_log, read_log_window, slice_bytes, truncate_log_text
 from rsi.metrics import STAGE_PLOTS, collect_stage_metrics
 from rsi.model_fetch import (
     ModelFetcher,
@@ -1565,9 +1565,13 @@ class Pipeline:
     def stage_log(self, run_id: str, stage: str, round_index=None, offset=None, limit=None) -> dict:
         """Return a normalized slice of this stage's swift.log.
 
-        Omit ``offset`` to read the last 64KB (what the panel shows on open).
-        Pass ``offset`` to read forward from that byte. Carriage returns and ANSI
-        are collapsed so a tqdm bar is one line. The path must stay inside this run.
+        Omit ``offset`` to read the live tail (``LIVE_TAIL_BYTES``) for the panel.
+        Pass ``offset`` to read forward (follow) or to page earlier history.
+        Windows that do not start at byte 0 are aligned to the next newline so a
+        mid‑tqdm cut does not paint a broken first line. Huge files stay on disk;
+        the UI pages with「加载更早」instead of embedding the full log in
+        ``/api/runs/{id}``. Carriage returns and ANSI are collapsed so a tqdm bar
+        is one line. The path must stay inside this run.
         """
         if stage not in STAGE_ORDER:
             raise PipelineError('未知阶段')
@@ -1585,9 +1589,11 @@ class Pipeline:
             raise PipelineError('轮次不存在', 404)
         step = self.store.latest_active_steps(run_id, round_index).get(stage)
         path = self._stage_log_path(run_id, round_index, stage, step)
-        window = read_log_window(path, offset, limit)
+        # First paint uses a larger live tail; follow/earlier pass explicit offset/limit.
+        live_tail = None if offset is not None else LIVE_TAIL_BYTES
+        window = read_log_window(path, offset, limit, tail=live_tail)
         if window['size'] == 0 and step and step.get('logs') and offset in (None, 0):
-            window = slice_bytes((step['logs'] or '').encode('utf-8'), offset, limit)
+            window = slice_bytes((step['logs'] or '').encode('utf-8'), offset, limit, tail=live_tail)
         status = step['status'] if step else 'locked'
         return {
             'stage': stage,

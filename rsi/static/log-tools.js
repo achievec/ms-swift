@@ -1,5 +1,14 @@
-function logTools() {
-  return '<span class="log-tools"><button type="button" class="ghost" data-log-copy>复制</button><button type="button" class="ghost" data-log-fullscreen>全屏</button></span>';
+function logTools(opts) {
+  const options = typeof opts === 'string' ? { extra: opts } : (opts || {});
+  const earlierHidden = options.earlier ? '' : ' hidden';
+  const earlier = `<button type="button" class="ghost" data-log-earlier${earlierHidden}>加载更早</button>`;
+  return `<span class="log-tools">${earlier}<button type="button" class="ghost" data-log-copy>复制</button><button type="button" class="ghost" data-log-fullscreen>全屏</button>${options.extra || ''}</span>`;
+}
+
+function setLogEarlierVisible(panel, visible) {
+  if (!panel) return;
+  const button = panel.querySelector('[data-log-earlier]');
+  if (button) button.hidden = !visible;
 }
 
 function logPanelText(panel) {
@@ -53,6 +62,14 @@ function flashCopyButton(button, ok) {
 }
 
 document.addEventListener('click', (event) => {
+  const earlier = event.target.closest('[data-log-earlier]');
+  if (earlier) {
+    event.preventDefault();
+    const panel = earlier.closest('.log-panel');
+    const pre = panel && panel.querySelector('[data-live-stage], [data-stage-log], [data-live-log]');
+    if (pre && typeof loadEarlierLogs === 'function') loadEarlierLogs(pre);
+    return;
+  }
   const copy = event.target.closest('[data-log-copy]');
   if (copy) {
     event.preventDefault();

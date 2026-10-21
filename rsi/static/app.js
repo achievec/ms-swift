@@ -24,6 +24,8 @@ const state = {
   mediaTab: 'image',
   mediaFiles: { image: null, video: null, audio: null },
   metricsCache: {},
+  // stage|round → { next, start, truncated } for incremental /stages/.../log follow.
+  logCursors: {},
 };
 
 // Same keys as swift.ui Runtime.sft_plot / grpo_plot (placeholder until TB arrives).
@@ -272,7 +274,9 @@ async function deleteRun(id) {
 async function openRun(id, round, keepStage) {
   await flushDraft();
   const query = round ? `?round=${round}` : '';
+  const prevId = state.view && state.view.run ? state.view.run.id : null;
   state.view = await api(`/api/runs/${id}${query}`);
+  if (prevId !== id) state.logCursors = {};
   state.serveDraft = null;
   state.serveDraftRun = null;
   state.exportDraft = null;
@@ -524,22 +528,54 @@ function renderPromote(values) {
   return `<div class="candidates">${cards}</div>${hint}`;
 }
 
-function liveLogSeed(stage, formLogs) {
+function logCursorKey(stage, round) {
+  return `${stage}|${round == null ? '' : round}`;
+}
+
+function liveLogSeed(stage, formLogs, round) {
   // Full render replaces the <pre>. Prefer text already painted by pollLive over an
   // empty/stale step snapshot (syncing→running often has form.logs === '').
-  const existing = [...document.querySelectorAll('[data-live-log]')].find(
-    (el) => el.dataset.liveStage === String(stage) && el.isConnected);
+  const roundKey = round == null ? (state.view && state.view.round ? state.view.round.round_index : '') : round;
+  const cached = (state.logCursors[logCursorKey(stage, roundKey)] || {}).text || '';
+  const existing = [...document.querySelectorAll('[data-live-log], [data-stage-log]')].find(
+    (el) => el.dataset.liveStage === String(stage)
+      && String(el.dataset.liveRound || '') === String(roundKey || '')
+      && el.isConnected);
   const shown = existing ? (existing.textContent || '') : '';
+  const best = (shown && cached && shown.length >= cached.length) ? shown
+    : (cached || shown);
   const fromForm = formLogs || '';
-  if (shown && (!fromForm || shown.length >= fromForm.length)) return shown;
+  if (best && (!fromForm || best.length >= fromForm.length)) return best;
   return fromForm;
 }
 
 function logPanel(text, liveAttrs, title) {
+  const truncated = liveAttrs && /\bdata-log-truncated="1"/.test(liveAttrs);
+  const hint = truncated
+    ? '<p class="muted log-earlier-hint">仅显示末尾；超大日志可点「加载更早」分页查看全文。</p>'
+    : '';
   return `<div class="log-panel">
-    <div class="log-head"><h3>${escapeHtml(title || '日志')}</h3>${logTools()}</div>
+    <div class="log-head"><h3>${escapeHtml(title || '日志')}</h3>${logTools({ earlier: truncated })}</div>
+    ${hint}
     <pre class="log live-log" data-pinned="1"${liveAttrs || ''}>${escapeHtml(text || '')}</pre>
   </div>`;
+}
+
+function stageLogAttrs(stage, round, opts) {
+  const options = opts || {};
+  const key = logCursorKey(stage, round);
+  const cursor = state.logCursors[key] || {};
+  const once = options.once ? ' data-log-once="1"' : '';
+  const truncated = cursor.truncated || cursor.start > 0 ? ' data-log-truncated="1"' : '';
+  return ` data-live-log="1" data-live-stage="${escapeHtml(stage)}" data-live-round="${escapeHtml(round)}"${once}${truncated}`;
+}
+
+function syncLogEarlierButton(el) {
+  const panel = el && el.closest ? el.closest('.log-panel') : null;
+  if (!panel || typeof setLogEarlierVisible !== 'function') return;
+  const truncated = el.dataset.logTruncated === '1'
+    || (Number(el.dataset.logStart || 0) > 0);
+  setLogEarlierVisible(panel, truncated);
 }
 
 function outputPanel(title, text, kind) {
@@ -666,9 +702,17 @@ function renderStage(stage) {
   const reportLink = form.result ? evalReportLink(stage, form.result) : '';
   const result = form.result ? `${scoreHeadline(form.result.metrics)}${scoreTable(form.result.metrics)}${reportLink ? `<p class="row-actions">${reportLink}</p>` : ''}${outputPanel('结果', JSON.stringify(visibleResult(form.result), null, 2))}` : '';
   const streaming = form.status === 'running' || form.status === 'syncing';
-  const liveAttrs = streaming ? ` data-live-log="1" data-live-stage="${escapeHtml(stage)}" data-live-round="${view.round.round_index}"` : '';
-  const logText = streaming ? liveLogSeed(stage, form.logs || '') : (form.logs || '');
-  const logs = (logText || streaming) ? logPanel(logText, liveAttrs) : '';
+  const finished = form.status === 'succeeded' || form.status === 'failed';
+  // Completed stages still fetch /stages/.../log so「加载更早」can reach full swift.log
+  // without stuffing multi‑MB text into every /api/runs/{id} poll.
+  const wantLog = streaming || finished || Boolean(form.logs);
+  const liveAttrs = wantLog
+    ? stageLogAttrs(stage, view.round.round_index, { once: !streaming })
+    : '';
+  const logText = wantLog
+    ? liveLogSeed(stage, form.logs || '', view.round.round_index)
+    : '';
+  const logs = wantLog ? logPanel(logText, liveAttrs) : '';
   const charts = STAGE_METRIC_KEYS[stage]
     ? metricsPanel(stage, view.round.round_index, streaming || form.status === 'succeeded' || form.status === 'failed')
     : '';
@@ -836,9 +880,14 @@ function renderAudit() {
       <p><b>开始</b> ${escapeHtml(formatShanghai(step.started_at))} · <b>结束</b> ${escapeHtml(formatShanghai(step.ended_at || ''))} · <b>耗时</b> ${escapeHtml(formatDurationZh(step.started_at, step.ended_at))}</p>
       ${outputPanel('参数', JSON.stringify(step.params, null, 2))}
       ${scoreHeadline((step.result || {}).metrics)}${scoreTable((step.result || {}).metrics)}${evalReportLink(step.stage, step.result, step.round_index) ? `<p class="row-actions">${evalReportLink(step.stage, step.result, step.round_index)}</p>` : ''}${outputPanel('结果', JSON.stringify(visibleResult(step.result), null, 2))}
-      ${logPanel(
-        (step.status === 'running' || step.status === 'syncing') ? liveLogSeed(step.stage, step.logs || '') : (step.logs || ''),
-        (step.status === 'running' || step.status === 'syncing') ? ` data-live-log="1" data-live-stage="${escapeHtml(step.stage)}" data-live-round="${step.round_index}"` : '')}
+      ${(() => {
+        const live = step.status === 'running' || step.status === 'syncing';
+        const done = step.status === 'succeeded' || step.status === 'failed';
+        if (!live && !done && !(step.logs || '')) return '';
+        return logPanel(
+          liveLogSeed(step.stage, step.logs || '', step.round_index),
+          stageLogAttrs(step.stage, step.round_index, { once: !live }));
+      })()}
       ${step.command ? outputPanel('命令', step.command, 'command') : ''}
     </td></tr>` : '';
     return `<tr data-step="${step.id}">
@@ -1323,6 +1372,8 @@ async function runCurrent() {
       method: 'POST',
       body: JSON.stringify({ params }),
     });
+    // New stage run rewrites swift.log — drop the follow cursor so the panel tails afresh.
+    delete state.logCursors[logCursorKey(stage, payload.view.round.round_index)];
     state.view = payload.view;
     state.round = payload.view.round.round_index;
     if (payload.status === 'succeeded' && payload.view.mutable) {
@@ -2384,15 +2435,95 @@ function paintElapsed() {
   });
 }
 
-function paintLog(el, text) {
+function paintLog(el, text, mode) {
   const next = text || '';
-  if (el.textContent === next) {
-    if (el.dataset.pinned !== '0') el.scrollTop = el.scrollHeight;
+  const pinned = el.dataset.pinned !== '0';
+  if (mode === 'append') {
+    if (!next) {
+      if (pinned) el.scrollTop = el.scrollHeight;
+      return;
+    }
+    el.textContent = (el.textContent || '') + next;
+    if (pinned) el.scrollTop = el.scrollHeight;
     return;
   }
-  const pinned = el.dataset.pinned !== '0';
+  if (mode === 'prepend') {
+    if (!next) return;
+    const prevTop = el.scrollTop;
+    const prevHeight = el.scrollHeight;
+    el.textContent = next + (el.textContent || '');
+    el.scrollTop = prevTop + (el.scrollHeight - prevHeight);
+    return;
+  }
+  if (el.textContent === next) {
+    if (pinned) el.scrollTop = el.scrollHeight;
+    return;
+  }
   el.textContent = next;
   if (pinned) el.scrollTop = el.scrollHeight;
+}
+
+function rememberLogCursor(stage, round, payload, text) {
+  const key = logCursorKey(stage, round);
+  const prev = state.logCursors[key] || {};
+  const start = payload.offset == null ? (prev.start || 0) : payload.offset;
+  state.logCursors[key] = {
+    next: payload.next_offset,
+    start,
+    truncated: Boolean(payload.truncated) || start > 0,
+    text: text == null ? (prev.text || '') : text,
+  };
+  return state.logCursors[key];
+}
+
+async function fetchStageLog(stage, round, params) {
+  const query = new URLSearchParams(params || {});
+  if (round) query.set('round', round);
+  return api(`/api/runs/${state.view.run.id}/stages/${encodeURIComponent(stage)}/log?${query}`);
+}
+
+async function loadEarlierLogs(el) {
+  if (!el || !state.view || el.dataset.logLoading === '1') return;
+  const stage = el.dataset.liveStage;
+  const round = el.dataset.liveRound || '';
+  const key = logCursorKey(stage, round);
+  const cursor = state.logCursors[key] || {};
+  const start = Number(el.dataset.logStart != null ? el.dataset.logStart : (cursor.start || 0));
+  if (!(start > 0)) {
+    syncLogEarlierButton(el);
+    return;
+  }
+  const page = Math.min(start, 256 * 1024);
+  const offset = Math.max(0, start - page);
+  el.dataset.logLoading = '1';
+  try {
+    const payload = await fetchStageLog(stage, round, {
+      offset: String(offset),
+      limit: String(start - offset),
+    });
+    paintLog(el, payload.text || '', 'prepend');
+    const next = cursor.next != null ? cursor.next : payload.next_offset;
+    el.dataset.logStart = String(payload.offset);
+    el.dataset.logNext = String(next);
+    el.dataset.logTruncated = payload.offset > 0 ? '1' : '0';
+    state.logCursors[key] = {
+      next,
+      start: payload.offset,
+      truncated: payload.offset > 0,
+      history: true,
+      text: el.textContent || '',
+    };
+    const panel = el.closest('.log-panel');
+    if (panel) {
+      const hint = panel.querySelector('.log-earlier-hint');
+      if (hint && payload.offset <= 0) hint.remove();
+    }
+    syncLogEarlierButton(el);
+  } catch (_err) {
+    toast('加载更早日志失败');
+  } finally {
+    delete el.dataset.logLoading;
+  }
 }
 
 async function pollFetchProgress() {
@@ -2468,17 +2599,57 @@ async function pollLive() {
     });
     for (const [key, els] of groups) {
       const [stage, round] = key.split('|');
-      const query = new URLSearchParams();
-      if (round) query.set('round', round);
+      const cursor = state.logCursors[key] || {};
+      // Fresh tail each poll keeps tqdm CR collapse correct. After「加载更早」we
+      // append from next_offset so the prepended history is not wiped.
+      let follow = Boolean(cursor.history) && cursor.next != null && cursor.next !== '';
       let payload;
       try {
-        payload = await api(`/api/runs/${state.view.run.id}/stages/${encodeURIComponent(stage)}/log?${query}`);
+        payload = await fetchStageLog(stage, round, follow
+          ? { offset: String(cursor.next) }
+          : {});
       } catch (_err) {
         continue;
       }
+      // If the log was truncated/rewritten (re-run), restart from a fresh tail.
+      if (follow && payload.size < Number(cursor.next || 0)) {
+        delete state.logCursors[key];
+        try {
+          payload = await fetchStageLog(stage, round, {});
+        } catch (_err) {
+          continue;
+        }
+        follow = false;
+      }
+      let painted = '';
       els.forEach((el) => {
-        if (el.isConnected) paintLog(el, payload.text);
+        if (!el.isConnected) return;
+        paintLog(el, payload.text || '', follow ? 'append' : 'replace');
+        painted = el.textContent || '';
+        const remembered = rememberLogCursor(stage, round, follow
+          ? {
+            offset: cursor.start != null ? cursor.start : payload.offset,
+            next_offset: payload.next_offset,
+            truncated: cursor.truncated || payload.truncated,
+          }
+          : payload, painted);
+        if (cursor.history) remembered.history = true;
+        el.dataset.logStart = String(remembered.start || 0);
+        el.dataset.logNext = String(remembered.next);
+        el.dataset.logTruncated = remembered.truncated ? '1' : '0';
+        syncLogEarlierButton(el);
+        if (el.hasAttribute('data-log-once')) el.removeAttribute('data-log-once');
       });
+      if (!painted && payload) {
+        const remembered = rememberLogCursor(stage, round, follow
+          ? {
+            offset: cursor.start != null ? cursor.start : payload.offset,
+            next_offset: payload.next_offset,
+            truncated: cursor.truncated || payload.truncated,
+          }
+          : payload, payload.text || '');
+        if (cursor.history) remembered.history = true;
+      }
       const current = ((state.view.forms || {})[stage] || {}).status;
       if ((current === 'running' || current === 'syncing') && (payload.done || payload.status !== current)) {
         await flushDraft();
@@ -2494,6 +2665,17 @@ async function pollLive() {
     await pollFetchProgress();
   } finally {
     state.liveBusy = false;
+    // After a one-shot fetch, demote finished panels so the timer can stop while
+    // keeping stage/round attrs for「加载更早」.
+    document.querySelectorAll('[data-live-log]').forEach((el) => {
+      if (el.hasAttribute('data-log-once')) return;
+      const stage = el.dataset.liveStage;
+      const status = ((state.view.forms || {})[stage] || {}).status;
+      if (status !== 'running' && status !== 'syncing') {
+        el.removeAttribute('data-live-log');
+        el.setAttribute('data-stage-log', '1');
+      }
+    });
     // One-shot metrics drop their attribute after the first paint; stop the timer
     // when nothing else needs live updates.
     if (!document.querySelector(
