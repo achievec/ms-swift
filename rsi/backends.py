@@ -1,5 +1,6 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 """Training backends. MsSwiftBackend is the default and shells out to this repo's swift CLI."""
+import json
 import os
 import re
 import shutil
@@ -195,14 +196,62 @@ def find_checkpoint(output_dir: Path, logs: str = ''):
     return sorted(candidates, key=sort_key)[-1]
 
 
+def _mock_eval_metrics(accuracy: float) -> dict:
+    """Accuracy plus the headline NLG scores the compare table expects."""
+    bleu_1 = round(max(0.01, accuracy - 0.18), 4)
+    rouge_1_f = round(max(0.01, accuracy - 0.08), 4)
+    rouge_l_f = round(max(0.01, accuracy - 0.05), 4)
+    return {
+        'accuracy': accuracy,
+        'mock_score': accuracy,
+        'bleu_1': bleu_1,
+        'rouge_l_f': rouge_l_f,
+        'scores': {
+            'bleu-1': bleu_1,
+            'rouge-1-f': rouge_1_f,
+            'rouge-l-f': rouge_l_f,
+        },
+    }
+
+
+def _write_mock_eval_report(eval_output_dir, metrics: dict) -> None:
+    """Drop a tiny evalscope-shaped report so mock runs get HTML links + merge_eval_report scores."""
+    if not eval_output_dir:
+        return
+    root = Path(str(eval_output_dir))
+    reports = root / 'native' / 'mock' / 'reports'
+    dataset = reports / 'mock-model'
+    dataset.mkdir(parents=True, exist_ok=True)
+    scores = (metrics or {}).get('scores') or {}
+    payload = {
+        'dataset_name': 'general_qa',
+        'model_name': 'mock-model',
+        'metrics': [
+            {'name': name, 'score': score, 'categories': []}
+            for name, score in scores.items()
+            if isinstance(score, (int, float))
+        ],
+    }
+    if metrics.get('accuracy') is not None:
+        payload['metrics'].insert(0, {
+            'name': 'accuracy',
+            'score': metrics['accuracy'],
+            'categories': [],
+        })
+    (dataset / 'general_qa.json').write_text(json.dumps(payload), encoding='utf-8')
+    (reports / 'report.html').write_text(
+        '<html><body><h1>mock eval report</h1></body></html>',
+        encoding='utf-8',
+    )
+
+
 def _mock_metrics(stage: str, round_index: int) -> dict:
     bump = (round_index - 1) * 0.05
     if stage == 'sft':
         loss = round(max(0.22, 1.12 - 0.16 * round_index), 4)
         return {'train_loss': loss, 'eval_loss': round(loss + 0.08, 4), 'token_acc': round(0.55 + bump, 4)}
     if stage == 'sft_eval':
-        accuracy = round(0.51 + bump, 4)
-        return {'accuracy': accuracy, 'mock_score': accuracy}
+        return _mock_eval_metrics(round(0.51 + bump, 4))
     if stage == 'rl':
         return {
             'reward': round(0.48 + bump, 4),
@@ -210,8 +259,7 @@ def _mock_metrics(stage: str, round_index: int) -> dict:
             'loss': round(max(0.1, 0.42 - 0.05 * round_index), 4),
         }
     if stage == 'rl_eval':
-        accuracy = round(0.58 + bump, 4)
-        return {'accuracy': accuracy, 'mock_score': accuracy}
+        return _mock_eval_metrics(round(0.58 + bump, 4))
     return {}
 
 
@@ -354,10 +402,7 @@ class MockBackend:
             # Empty adapters → base-model eval; keep scores below the adapter run so
             # the RSI compare table has a visible gap in mock mode.
             if not str(params.get('adapters') or '').strip():
-                metrics = dict(metrics)
-                for key in ('accuracy', 'mock_score'):
-                    if key in metrics and isinstance(metrics[key], (int, float)):
-                        metrics[key] = round(max(0.01, float(metrics[key]) - 0.12), 4)
+                metrics = _mock_eval_metrics(round(max(0.01, float(metrics.get('accuracy') or 0.5) - 0.12), 4))
             lines.append(f"eval_dataset={params.get('eval_dataset')} eval_limit={params.get('eval_limit')} "
                          f'heldout_rows={rows} adapters={params.get("adapters") or ""} '
                          f'model={params.get("model") or ""}')
@@ -365,6 +410,7 @@ class MockBackend:
             if rows is not None:
                 metrics = dict(metrics)
                 metrics['eval_rows'] = rows
+            _write_mock_eval_report(params.get('eval_output_dir'), metrics)
         logs = '\n'.join(lines) + '\n'
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / 'swift.log'

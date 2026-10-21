@@ -16,4 +16,12 @@
 
 ## 页面
 
-阶段结果区会显示「基座对比」表，并可分别打开基座 / SFT / RL 的完整报告（`/report?kind=base|sft|rl`）。
+阶段结果区（`sft_eval` / `rl_eval`）会显示 **基座对比** 表：
+
+| 指标 | 基座 | SFT | RL |
+|------|------|-----|----|
+| Accuracy / ROUGE-L F1 / ROUGE-1 F1 / BLEU-1… | … | … | … |
+
+- 缺席的列会省略（例如还没跑 RL、或未勾选基座时只有单列则不画对照表）。
+- 数值行会用浅色标出最优 / 最弱（越高越好）。
+- 表下可分别打开 **基座 / SFT / RL** 的完整 HTML 报告：`/api/runs/.../stages/{sft_eval|rl_eval}/report?kind=base|sft|rl`（`kind` 空则本阶段检查点报告）。

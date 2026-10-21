@@ -97,10 +97,24 @@ def newest_reports_dir(eval_output_dir) -> Path | None:
     root = Path(eval_output_dir) if eval_output_dir else None
     if root is None or not root.is_dir():
         return None
-    found = [path for path in root.rglob('reports') if path.is_dir()]
+    found = []
+    for path in root.rglob('reports'):
+        if not path.is_dir():
+            continue
+        # Dual-eval writes 基座 under ``eval_output/base/``; do not mix it into
+        # the stage-checkpoint report when scanning the parent eval_output.
+        try:
+            rel = path.relative_to(root)
+        except ValueError:
+            continue
+        if rel.parts and rel.parts[0] == 'base':
+            continue
+        found.append(path)
     if not found:
         return None
-    return max(found, key=lambda path: (path.parent.name, path.stat().st_mtime))
+    # Prefer wall-clock mtime so a freshly written evalscope report wins over an
+    # older stub (e.g. mock ``native/mock/reports`` vs ``native/<timestamp>/reports``).
+    return max(found, key=lambda path: (path.stat().st_mtime, path.parent.name))
 
 
 def _load_json(path: Path) -> dict:
@@ -176,11 +190,26 @@ def read_eval_report(eval_output_dir, root=None) -> dict:
 
 
 def merge_eval_report(metrics: dict, eval_output_dir, root=None) -> dict:
-    """Add report scores without replacing eval_rows or a score already recorded."""
+    """Add report scores without replacing eval_rows or a score already recorded.
+
+    If a newer on-disk ``report.html`` appears (different path), refresh the
+    score fields from that report so mock stubs can be overwritten by real
+    evalscope output.
+    """
     merged = dict(metrics or {})
+    found = read_eval_report(eval_output_dir, root=root)
+    if not found:
+        return merged
+    disk_html = found.get('report_html')
+    if disk_html and disk_html != merged.get('report_html'):
+        for key, value in found.items():
+            if key in {'scores', 'bleu_1', 'rouge_l_f', 'report_html', 'report_json'}:
+                merged[key] = value
+            elif key not in merged:
+                merged[key] = value
+        return merged
     if merged.get('scores') and merged.get('report_html'):
         return merged
-    found = read_eval_report(eval_output_dir, root=root)
     for key, value in found.items():
         if key not in merged:
             merged[key] = value

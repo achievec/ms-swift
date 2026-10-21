@@ -435,9 +435,31 @@ tr.expand td { background: #f9fafb; }
 html.log-lock, body.log-lock { overflow: hidden; }
 .score-table { width: auto; margin: 8px 0 12px; }
 .score-table td, .score-table th { padding: 4px 12px 4px 0; text-align: left; }
-.compare-block { margin: 8px 0 12px; }
-.compare-table th { font-weight: 600; color: var(--muted, #6b7280); }
-.compare-table td:first-child, .compare-table th:first-child { min-width: 7em; }
+.compare-block {
+  margin: 10px 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line, #e5e7eb);
+  border-radius: 10px;
+  background: #fafafa;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.compare-title { margin: 0 0 2px; font-weight: 600; }
+.compare-sub { margin: 0 0 10px; font-size: 0.92em; }
+.compare-table { margin: 0; border-collapse: collapse; width: auto; min-width: 16em; }
+.compare-table th, .compare-table td {
+  padding: 6px 14px 6px 0;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--line, #e5e7eb);
+}
+.compare-table th { font-weight: 600; color: var(--muted, #6b7280); white-space: nowrap; }
+.compare-table td:first-child, .compare-table th:first-child { min-width: 7.5em; color: var(--ink, #111827); }
+.compare-table td:not(:first-child) { font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.95em; }
+.compare-table tbody tr:last-child td { border-bottom: none; }
+.compare-table td.compare-best { color: #166534; background: #f0fdf4; border-radius: 4px; }
+.compare-table td.compare-worst { color: #9a3412; background: #fff7ed; border-radius: 4px; }
+.compare-block .compare-reports { margin: 10px 0 0; }
 .empty { padding: 48px 12px; max-width: 640px; }
 .chat-log { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
 .bubble { padding: 8px 10px; border-radius: 8px; max-width: 80%; }

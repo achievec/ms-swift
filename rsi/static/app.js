@@ -34,6 +34,41 @@ const STAGE_METRIC_KEYS = {
   rl: ['train/loss', 'train/reward', 'train/learning_rate', 'train/completions/mean_length', 'train/kl'],
 };
 
+// Canonical compare keys (alias top-level bleu_1 / rouge_l_f → scores names).
+const COMPARE_METRIC_ALIASES = {
+  bleu_1: 'bleu-1',
+  bleu_2: 'bleu-2',
+  bleu_3: 'bleu-3',
+  bleu_4: 'bleu-4',
+  rouge_l_f: 'rouge-l-f',
+  rouge_1_f: 'rouge-1-f',
+  rouge_2_f: 'rouge-2-f',
+};
+
+const COMPARE_METRIC_LABELS = {
+  accuracy: 'Accuracy',
+  'bleu-1': 'BLEU-1',
+  'bleu-2': 'BLEU-2',
+  'bleu-3': 'BLEU-3',
+  'bleu-4': 'BLEU-4',
+  'rouge-1-f': 'ROUGE-1 F1',
+  'rouge-2-f': 'ROUGE-2 F1',
+  'rouge-l-f': 'ROUGE-L F1',
+  mock_score: 'Mock score',
+};
+
+const COMPARE_METRIC_ORDER = [
+  'accuracy',
+  'rouge-l-f',
+  'rouge-1-f',
+  'rouge-2-f',
+  'bleu-1',
+  'bleu-2',
+  'bleu-3',
+  'bleu-4',
+  'mock_score',
+];
+
 function evalReportHref(stage, roundIndex, kind) {
   if (!state.view) return '';
   const round = roundIndex || state.view.round.round_index;
@@ -51,19 +86,23 @@ function evalReportLink(stage, result, roundIndex) {
   return `<a class="ghost" href="${href}" target="_blank" rel="noopener">查看完整报告</a>`;
 }
 
+function rowHasReport(row) {
+  return Boolean(row && (row.report_path || (row.metrics && row.metrics.report_html)));
+}
+
 function compareReportLinks(stage, result, roundIndex) {
   const rows = result && Array.isArray(result.compare) ? result.compare : [];
   const links = rows
-    .filter((row) => row && (row.report_path || (row.metrics && row.metrics.report_html)))
+    .filter((row) => rowHasReport(row))
     .map((row) => {
       const href = evalReportHref(stage, roundIndex, row.role);
       return `<a class="ghost" href="${href}" target="_blank" rel="noopener">${escapeHtml(row.label || row.role)} 报告</a>`;
     });
   if (!links.length) {
     const single = evalReportLink(stage, result, roundIndex);
-    return single ? `<p class="row-actions">${single}</p>` : '';
+    return single ? `<p class="row-actions compare-reports">${single}</p>` : '';
   }
-  return `<p class="row-actions">${links.join(' · ')}</p>`;
+  return `<p class="row-actions compare-reports">${links.join(' · ')}</p>`;
 }
 
 function scoreHeadline(metrics) {
@@ -82,48 +121,123 @@ function scoreTable(metrics) {
   return rows ? `<table class="score-table"><tbody>${rows}</tbody></table>` : '';
 }
 
+function normalizeCompareKey(key) {
+  return COMPARE_METRIC_ALIASES[key] || key;
+}
+
+function compareMetricLabel(key) {
+  const norm = normalizeCompareKey(key);
+  if (COMPARE_METRIC_LABELS[norm]) return COMPARE_METRIC_LABELS[norm];
+  const rouge = /^rouge-([12l])-([rpf])$/i.exec(norm);
+  if (rouge) {
+    const variant = rouge[1].toLowerCase() === 'l' ? 'L' : rouge[1];
+    const stat = { r: 'R', p: 'P', f: 'F1' }[rouge[2].toLowerCase()] || rouge[2].toUpperCase();
+    return `ROUGE-${variant} ${stat}`;
+  }
+  const bleu = /^bleu-(\d+)$/i.exec(norm);
+  if (bleu) return `BLEU-${bleu[1]}`;
+  return String(key);
+}
+
 function compareMetricKeys(rows) {
-  const preferred = ['accuracy', 'bleu_1', 'rouge_l_f'];
-  const keys = [];
-  preferred.forEach((key) => {
-    if (rows.some((row) => row.metrics && row.metrics[key] != null && row.metrics[key] !== '')) keys.push(key);
-  });
-  const scoreNames = new Set();
+  const available = new Set();
   rows.forEach((row) => {
-    const scores = row.metrics && row.metrics.scores;
-    if (scores && typeof scores === 'object') Object.keys(scores).forEach((name) => scoreNames.add(name));
+    const metrics = (row && row.metrics) || {};
+    Object.keys(metrics).forEach((key) => {
+      if (key === 'scores' || key === 'report_html' || key === 'report_json' || key === 'eval_rows') return;
+      if (metrics[key] != null && metrics[key] !== '') available.add(normalizeCompareKey(key));
+    });
+    const scores = metrics.scores;
+    if (scores && typeof scores === 'object') {
+      Object.keys(scores).forEach((name) => {
+        if (scores[name] != null && scores[name] !== '') available.add(normalizeCompareKey(name));
+      });
+    }
   });
-  Array.from(scoreNames).sort().forEach((name) => {
-    if (!keys.includes(name)) keys.push(name);
-  });
-  return keys;
+  const preferred = COMPARE_METRIC_ORDER.filter((key) => available.has(key));
+  if (preferred.length) return preferred;
+  return Array.from(available)
+    .filter((key) => {
+      const match = /^rouge-([12l])-[rp]$/i.exec(key);
+      if (match && available.has(`rouge-${match[1].toLowerCase()}-f`)) return false;
+      return true;
+    })
+    .sort();
 }
 
-function compareCell(row, key) {
+function compareCellRaw(row, key) {
+  const norm = normalizeCompareKey(key);
   const metrics = (row && row.metrics) || {};
-  if (metrics[key] != null && metrics[key] !== '') return metrics[key];
+  const candidates = [norm, key];
+  Object.keys(COMPARE_METRIC_ALIASES).forEach((alias) => {
+    if (COMPARE_METRIC_ALIASES[alias] === norm) candidates.push(alias);
+  });
+  for (let i = 0; i < candidates.length; i += 1) {
+    const candidate = candidates[i];
+    if (metrics[candidate] != null && metrics[candidate] !== '') return metrics[candidate];
+  }
   const scores = metrics.scores;
-  if (scores && scores[key] != null && scores[key] !== '') return scores[key];
-  return '—';
+  if (scores && typeof scores === 'object') {
+    if (scores[norm] != null && scores[norm] !== '') return scores[norm];
+    if (scores[key] != null && scores[key] !== '') return scores[key];
+  }
+  return null;
 }
 
-function compareTable(result) {
+function formatCompareValue(value) {
+  if (value == null || value === '') return '—';
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    if (Number.isInteger(value)) return String(value);
+    const rounded = Math.round(value * 10000) / 10000;
+    return String(rounded);
+  }
+  return String(value);
+}
+
+function compareHighlightClasses(values) {
+  const nums = [];
+  values.forEach((value, index) => {
+    if (typeof value === 'number' && Number.isFinite(value)) nums.push({ index, value });
+  });
+  const classes = values.map(() => '');
+  if (nums.length < 2) return classes;
+  const max = Math.max(...nums.map((item) => item.value));
+  const min = Math.min(...nums.map((item) => item.value));
+  if (max === min) return classes;
+  nums.forEach((item) => {
+    if (item.value === max) classes[item.index] = 'compare-best';
+    else if (item.value === min) classes[item.index] = 'compare-worst';
+  });
+  return classes;
+}
+
+function compareTable(stage, result, roundIndex) {
   const rows = result && Array.isArray(result.compare) ? result.compare.filter((row) => row && row.label) : [];
   if (rows.length < 2) return '';
   const keys = compareMetricKeys(rows);
   if (!keys.length) return '';
   const head = `<tr><th>指标</th>${rows.map((row) => `<th>${escapeHtml(row.label)}</th>`).join('')}</tr>`;
   const body = keys.map((key) => {
-    const cells = rows.map((row) => `<td>${escapeHtml(compareCell(row, key))}</td>`).join('');
-    return `<tr><td>${escapeHtml(key)}</td>${cells}</tr>`;
+    const values = rows.map((row) => compareCellRaw(row, key));
+    const highlights = compareHighlightClasses(values);
+    const cells = values.map((value, index) => {
+      const cls = highlights[index] ? ` class="${highlights[index]}"` : '';
+      return `<td${cls}>${escapeHtml(formatCompareValue(value))}</td>`;
+    }).join('');
+    return `<tr><td>${escapeHtml(compareMetricLabel(key))}</td>${cells}</tr>`;
   }).join('');
-  return `<div class="compare-block"><p class="muted">基座对比（同一评测集）</p><table class="score-table compare-table"><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
+  const reports = compareReportLinks(stage, result, roundIndex);
+  return `<div class="compare-block"><p class="compare-title">基座对比</p><p class="muted compare-sub">同一评测集 · 越高越好（浅色标出最优 / 最弱）</p><table class="score-table compare-table"><thead>${head}</thead><tbody>${body}</tbody></table>${reports}</div>`;
 }
 
 function evalResultMarkup(stage, result, roundIndex) {
   if (!result) return '';
-  const report = compareReportLinks(stage, result, roundIndex);
-  return `${compareTable(result)}${scoreHeadline(result.metrics)}${scoreTable(result.metrics)}${report}${outputPanel('结果', JSON.stringify(visibleResult(result), null, 2))}`;
+  const table = compareTable(stage, result, roundIndex);
+  // When the side-by-side table is present, skip the duplicate single-column scores.
+  const headline = table ? '' : scoreHeadline(result.metrics);
+  const scores = table ? '' : scoreTable(result.metrics);
+  const report = table ? '' : compareReportLinks(stage, result, roundIndex);
+  return `${table}${headline}${scores}${report}${outputPanel('结果', JSON.stringify(visibleResult(result), null, 2))}`;
 }
 
 function visibleResult(result) {

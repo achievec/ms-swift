@@ -89,6 +89,18 @@ def test_sft_eval_run_stores_base_compare(client):
     assert str(compare[0]['eval_output_dir']).endswith('/eval_output/base')
     assert result.get('base_command')
     assert '--adapters' not in result['base_command']
+    # Headline NLG scores + HTML paths for the UI compare table / report links.
+    for row in compare:
+        metrics = row['metrics']
+        assert metrics.get('bleu_1') is not None
+        assert metrics.get('rouge_l_f') is not None
+        assert metrics['scores']['rouge-1-f'] is not None
+        assert row.get('report_path') and str(row['report_path']).endswith('report.html')
+    base_report = api.get(f'/api/runs/{run_id}/stages/sft_eval/report?kind=base')
+    assert base_report.status_code == 200, base_report.text
+    assert 'mock eval report' in base_report.text
+    sft_report = api.get(f'/api/runs/{run_id}/stages/sft_eval/report?kind=sft')
+    assert sft_report.status_code == 200, sft_report.text
 
     off = _run(api, run_id, 'sft_eval', {'eval_base': False})
     assert off.status_code == 200, off.text
@@ -120,7 +132,16 @@ def test_rl_eval_compare_includes_sft_when_available(client):
 
 
 def test_ui_has_compare_table_markup():
-    script = (Path(__file__).resolve().parents[1] / 'static' / 'app.js').read_text(encoding='utf-8')
+    root = Path(__file__).resolve().parents[1] / 'static'
+    script = (root / 'app.js').read_text(encoding='utf-8')
+    css = (root / 'app.css').read_text(encoding='utf-8')
     assert 'function compareTable(' in script
+    assert 'function compareMetricLabel(' in script
+    assert 'function compareHighlightClasses(' in script
     assert '基座对比' in script
+    assert "COMPARE_METRIC_LABELS" in script
+    assert "'rouge-l-f': 'ROUGE-L F1'" in script or '"rouge-l-f": "ROUGE-L F1"' in script
     assert 'kind=' in script
+    assert 'compare-best' in script and 'compare-worst' in script
+    assert 'compare-best' in css and 'compare-worst' in css
+    assert 'compare-title' in css

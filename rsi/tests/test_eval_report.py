@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from rsi.eval_report import inside_directory, read_eval_report, scores_from_report
+from rsi.eval_report import inside_directory, newest_reports_dir, read_eval_report, scores_from_report
 
 
 def _report(bleu_1=0.11, rouge_l_f=0.32):
@@ -83,6 +83,18 @@ def test_read_eval_report_uses_newest_directory(tmp_path):
     assert inside_directory(tmp_path, leaked) is None
 
 
+def test_newest_reports_dir_skips_base_subdir(tmp_path):
+    stage_html = _write_report(tmp_path)
+    base = tmp_path / 'base'
+    base_reports = base / 'native' / 'mock' / 'reports' / 'model'
+    base_reports.mkdir(parents=True)
+    (base_reports / 'general_qa.json').write_text(json.dumps(_report(bleu_1=0.99, rouge_l_f=0.99)), encoding='utf-8')
+    (base_reports.parent / 'report.html').write_text('<html>base</html>', encoding='utf-8')
+    assert newest_reports_dir(tmp_path) == stage_html.parent
+    assert read_eval_report(tmp_path, root=tmp_path)['bleu_1'] == 0.11
+    assert read_eval_report(base, root=tmp_path)['bleu_1'] == 0.99
+
+
 def test_stage_view_shows_report_scores_and_serves_html(tmp_path, monkeypatch):
     monkeypatch.setenv('RSI_BACKEND', 'mock')
     monkeypatch.setenv('RSI_SERVE_BACKEND', 'mock')
@@ -102,8 +114,10 @@ def test_stage_view_shows_report_scores_and_serves_html(tmp_path, monkeypatch):
         evaluated = api.post(f'/api/runs/{run_id}/stages/sft_eval/run', json={'params': {}})
         assert evaluated.status_code == 200, evaluated.text
         assert evaluated.json()['result']['metrics']['eval_rows'] == 4
-        missing = api.get(f'/api/runs/{run_id}/stages/sft_eval/report')
-        assert missing.status_code == 404
+        # Mock backend writes a report; real evalscope HTML can still overwrite later.
+        mock_body = api.get(f'/api/runs/{run_id}/stages/sft_eval/report')
+        assert mock_body.status_code == 200, mock_body.text
+        assert 'mock eval report' in mock_body.text
 
         view = api.get(f'/api/runs/{run_id}').json()
         eval_dir = Path(view['forms']['sft_eval']['values']['eval_output_dir'])
