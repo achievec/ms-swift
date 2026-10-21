@@ -395,8 +395,11 @@ function evalResultMarkup(stage, result, roundIndex) {
   const headline = table ? '' : scoreHeadline(result.metrics);
   const scores = table ? '' : scoreTable(result.metrics);
   const report = table ? '' : compareReportLinks(stage, result, roundIndex);
+  const baseNote = result.base_error
+    ? `<p class="muted">基座评测失败：${escapeHtml(result.base_error)}（本阶段检查点结果已保留）</p>`
+    : '';
   const picker = (stage === 'sft_eval' || stage === 'rl_eval') ? evalPickerMarkup() : '';
-  return `${table}${picker}${headline}${scores}${report}${outputPanel('结果', JSON.stringify(visibleResult(result), null, 2))}`;
+  return `${table}${baseNote}${picker}${headline}${scores}${report}${outputPanel('结果', JSON.stringify(visibleResult(result), null, 2))}`;
 }
 
 function visibleResult(result) {

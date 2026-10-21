@@ -189,6 +189,18 @@ def read_eval_report(eval_output_dir, root=None) -> dict:
     return result
 
 
+def eval_artifacts_usable(eval_output_dir, root=None) -> dict:
+    """Disk report worth treating as a finished eval (HTML and/or scores).
+
+    Used when ``swift eval`` exits non-zero after evalscope already wrote
+    ``reports/`` (common uvicorn / leaked-semaphore shutdown noise).
+    """
+    found = read_eval_report(eval_output_dir, root=root)
+    if found.get('report_html') or found.get('scores'):
+        return found
+    return {}
+
+
 def merge_eval_report(metrics: dict, eval_output_dir, root=None) -> dict:
     """Add report scores without replacing eval_rows or a score already recorded.
 

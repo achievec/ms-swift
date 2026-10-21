@@ -2244,23 +2244,37 @@ class Pipeline:
                 base_context = dict(context)
                 base_context['workdir'] = str(base_dir)
                 # Base eval reuses the same held-out rows / dataset args as the stage run.
-                base_produced = self.backend.execute(stage, base_params, base_context)
-                base_metrics = merge_eval_report(
-                    base_produced.get('metrics') or {}, base_params.get('eval_output_dir'), run_root)
-                base_bundle = {
-                    'metrics': base_metrics,
-                    'eval_output_dir': base_params.get('eval_output_dir') or '',
-                    'command': base_produced.get('command') or '',
-                    'report_path': base_metrics.get('report_html') or '',
-                }
-                result['compare'] = self._build_eval_compare(
-                    run, rnd, stage, params, metrics, base_bundle=base_bundle)
-                result['base_command'] = base_bundle['command']
-                base_logs = base_produced.get('logs') or ''
-                if base_logs:
-                    logs = (logs.rstrip() + '\n\n[rsi] —— 基座评测 ——\n' + base_logs.lstrip())
-                if command and base_bundle['command']:
-                    command = command.rstrip() + '\n\n# 基座评测\n' + base_bundle['command']
+                # Adapter already succeeded (incl. soft-exit-with-report); keep those
+                # metrics even if the base pass hard-fails.
+                try:
+                    base_produced = self.backend.execute(stage, base_params, base_context)
+                except BackendError as exc:
+                    result['compare'] = self._build_eval_compare(run, rnd, stage, params, metrics)
+                    result['base_error'] = str(exc)
+                    note = f'\n\n[rsi] —— 基座评测失败（本阶段检查点结果已保留）——\n{exc}\n'
+                    logs = (logs.rstrip() + note)
+                    base_cmd = stage_shell(stage, base_params)
+                    if base_cmd:
+                        result['base_command'] = base_cmd
+                        if command:
+                            command = command.rstrip() + '\n\n# 基座评测（失败）\n' + base_cmd
+                else:
+                    base_metrics = merge_eval_report(
+                        base_produced.get('metrics') or {}, base_params.get('eval_output_dir'), run_root)
+                    base_bundle = {
+                        'metrics': base_metrics,
+                        'eval_output_dir': base_params.get('eval_output_dir') or '',
+                        'command': base_produced.get('command') or '',
+                        'report_path': base_metrics.get('report_html') or '',
+                    }
+                    result['compare'] = self._build_eval_compare(
+                        run, rnd, stage, params, metrics, base_bundle=base_bundle)
+                    result['base_command'] = base_bundle['command']
+                    base_logs = base_produced.get('logs') or ''
+                    if base_logs:
+                        logs = (logs.rstrip() + '\n\n[rsi] —— 基座评测 ——\n' + base_logs.lstrip())
+                    if command and base_bundle['command']:
+                        command = command.rstrip() + '\n\n# 基座评测\n' + base_bundle['command']
             elif stage in {'sft_eval', 'rl_eval'}:
                 # Still surface a one-column compare when dual-eval is off / skipped.
                 result['compare'] = self._build_eval_compare(run, rnd, stage, params, metrics)

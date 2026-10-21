@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from rsi.commands import apply_process_env, build_argv, stage_shell
+from rsi.eval_report import eval_artifacts_usable, merge_eval_report
 from rsi.logtail import announce_log, normalize_log, run_and_tee, truncate_log_text
 from rsi.model_fetch import apply_runtime_env, configured_train_python
 
@@ -471,9 +472,25 @@ class MsSwiftBackend:
         # the step row so /api/runs/{id} stays small. Live UI tails swift.log itself.
         full = normalize_log(log_path.read_text(encoding='utf-8', errors='replace'))
         logs = truncate_log_text(full)
-        if returncode != 0:
-            raise BackendError(f'swift 退出码 {returncode}', logs=logs)
         metrics = parse_metrics(full)
+        soft_exit = False
+        if returncode != 0:
+            # Evalscope often finishes (metrics + report.html) then the process
+            # still exits 1 on uvicorn / leaked-semaphore cleanup. Prefer the
+            # on-disk report over a hard failure so dual-eval (基座) can continue.
+            if stage in {'sft_eval', 'rl_eval'}:
+                disk = eval_artifacts_usable(params.get('eval_output_dir'))
+                if disk:
+                    soft_exit = True
+                    note = (
+                        f'\n[rsi] swift 退出码 {returncode}，但 eval_output 下已有评测报告/指标，'
+                        f'按成功处理以便继续基座评测。\n')
+                    logs = truncate_log_text((full.rstrip() + note).lstrip())
+                    metrics = merge_eval_report(metrics, params.get('eval_output_dir'))
+                else:
+                    raise BackendError(f'swift 退出码 {returncode}', logs=logs)
+            else:
+                raise BackendError(f'swift 退出码 {returncode}', logs=logs)
         checkpoint = None
         if stage in {'sft', 'rl'}:
             found = find_checkpoint(Path(params['output_dir']), full)
@@ -483,7 +500,7 @@ class MsSwiftBackend:
         if stage in {'sft_eval', 'rl_eval'} and context.get('eval_rows') is not None:
             metrics = dict(metrics)
             metrics['eval_rows'] = context['eval_rows']
-        return {
+        result = {
             'ok': True,
             'logs': logs,
             'command': command,
@@ -491,6 +508,9 @@ class MsSwiftBackend:
             'checkpoint': checkpoint,
             'mock': False,
         }
+        if soft_exit:
+            result['soft_exit_code'] = returncode
+        return result
 
 
 def build_backend():
