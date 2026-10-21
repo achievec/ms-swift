@@ -168,6 +168,12 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         assert next(item['label'] for item in schema['stages'] if item['id'] == 'rl') == 'RL'
         assert schema['stage_layouts']['sft_eval']['by_id']['adapters']['locked'] is not True
         assert schema['stage_layouts']['sft_eval']['by_id']['adapters']['label'] == 'adapter id或路径(--adapters)'
+        for stage in ('sft_eval', 'rl_eval'):
+            toggle = schema['stage_layouts'][stage]['by_id']['eval_base']
+            assert toggle['widget'] == 'Checkbox'
+            assert toggle['label'] == '同时评测基座'
+            assert toggle['default'] is False
+            assert by_key(stage)['eval_base']['type'] == 'checkbox'
         assert [row['key'] for row in schema['fields']['sft_eval']] == [row['key'] for row in schema['fields']['rl_eval']]
         assert 'eval_dataset' in schema['stage_layouts']['rl_eval']['by_id']
         assert schema['stage_layouts']['sft']['by_id']['dataset']['multiselect'] is True

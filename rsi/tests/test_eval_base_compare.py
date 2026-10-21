@@ -39,6 +39,28 @@ def _preview(api, run_id, stage, params=None):
     return api.post(f'/api/runs/{run_id}/stages/{stage}/preview', json={'params': params or {}}).json()
 
 
+def test_eval_base_checkbox_sits_on_eval_forms():
+    """The form users see is stage_layouts, not the unused FIELDS table."""
+    from rsi.webui_stage_spec import stage_layout
+
+    for stage in ('sft_eval', 'rl_eval'):
+        layout = stage_layout(stage, 1)
+        widget = layout['by_id']['eval_base']
+        assert widget['widget'] == 'Checkbox'
+        assert widget['label'] == '同时评测基座'
+        assert widget['default'] is False
+        assert 'adapter' in widget['info'] and 'checkpoint' in widget['info']
+        assert '(--eval_base)' not in widget['label']
+        rows = [block for block in layout['blocks'] if block.get('kind') == 'row']
+        ids = [[item['id'] for item in row.get('widgets') or []] for row in rows]
+        limit_at = next(index for index, row in enumerate(ids) if 'eval_limit' in row)
+        assert ids[limit_at + 1] == ['eval_base']
+        assert 'eval_base' not in ids[limit_at]
+        field = next(row for row in layout['fields'] if row['key'] == 'eval_base')
+        assert field['type'] == 'checkbox'
+        assert field['default'] is False
+
+
 def test_eval_base_is_internal_and_helpers():
     assert 'eval_base' in INTERNAL_KEYS
     assert '--eval_base' not in ' '.join(build_argv('sft_eval', {

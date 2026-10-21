@@ -767,6 +767,27 @@ def _adapters_widget() -> dict:
     }
 
 
+def _eval_base_widget() -> dict:
+    """RSI-only. Not a swift CLI flag; the pipeline runs a second base eval when checked."""
+    return {
+        'id': 'eval_base',
+        'widget': 'Checkbox',
+        'label': '同时评测基座',
+        'info': '不勾选时只评测本阶段的 adapter / checkpoint；勾选后用同一套评测集再跑实验基座（无 adapter）。',
+        'default': False,
+        'minimum': None,
+        'maximum': None,
+        'step': None,
+        'lines': None,
+        'multiselect': False,
+        'allow_custom': False,
+        'is_list': False,
+        'locked': False,
+        'choices': [],
+        'choices_from': '',
+    }
+
+
 def _insert_after_model(blocks: list, widget: dict) -> bool:
     for index, block in enumerate(blocks):
         kind = block.get('kind')
@@ -778,6 +799,22 @@ def _insert_after_model(blocks: list, widget: dict) -> bool:
         if kind == 'tabs':
             for tab in block.get('tabs') or []:
                 if _insert_after_model(tab.get('blocks') or [], widget):
+                    return True
+    return False
+
+
+def _insert_row_after(blocks: list, after_id: str, widget: dict) -> bool:
+    """Place ``widget`` on its own row immediately after the row that contains ``after_id``."""
+    for index, block in enumerate(blocks):
+        kind = block.get('kind')
+        if kind == 'row' and any(item.get('id') == after_id for item in block.get('widgets') or []):
+            blocks.insert(index + 1, {'kind': 'row', 'widgets': [widget]})
+            return True
+        if kind in {'accordion', 'tab'} and _insert_row_after(block.get('blocks') or [], after_id, widget):
+            return True
+        if kind == 'tabs':
+            for tab in block.get('tabs') or []:
+                if _insert_row_after(tab.get('blocks') or [], after_id, widget):
                     return True
     return False
 
@@ -901,6 +938,10 @@ def stage_layout(stage: str, device_count: int = 0) -> dict:
     blocks = [_clone(block) for block in _unwrap_root(list(_built(key)))]
     if key == 'eval':
         _insert_after_model(blocks, _adapters_widget())
+        # The Web-UI eval tab has no base-model toggle. Keep it on the open form,
+        # directly under 评测数据集 / 评测数据个数 — not inside a collapsed accordion.
+        if not _insert_row_after(blocks, 'eval_limit', _eval_base_widget()):
+            _insert_row_after(blocks, 'eval_dataset', _eval_base_widget())
     _fill_gpu(blocks, device_count)
     if key in {'sft', 'rl'}:
         _annotate_stage(blocks)
