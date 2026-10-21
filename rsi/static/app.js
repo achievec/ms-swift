@@ -2282,7 +2282,7 @@ async function pollLive() {
         if (el.isConnected) paintLog(el, payload.text);
       });
       const current = ((state.view.forms || {})[stage] || {}).status;
-      if (payload.done && (current === 'running' || current === 'syncing')) {
+      if ((current === 'running' || current === 'syncing') && (payload.done || payload.status !== current)) {
         await flushDraft();
         const view = await api(`/api/runs/${state.view.run.id}?round=${state.view.round.round_index}`);
         state.view = view;

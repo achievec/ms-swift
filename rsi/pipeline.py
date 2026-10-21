@@ -6,6 +6,7 @@ the user chooses RL, another round, or an end. RL eval offers the same kind
 of choice. A failed eval cannot start RL.
 """
 import json
+import logging
 import re
 import shutil
 import threading
@@ -47,6 +48,7 @@ from rsi.serving import find_free_port, loopback, port_is_free
 from rsi.store import Store
 
 LABELS = {item['id']: item['label'] for item in STAGE_META}
+logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = Path(__file__).resolve().parent / 'examples'
 SWIFT_STAGES = {'sft', 'sft_eval', 'rl', 'rl_eval'}
@@ -304,7 +306,10 @@ class Pipeline:
         self.store = Store(self.home / 'rsi.sqlite')
         self.store.recover_interrupted()
         self.examples = EXAMPLES
-        self.fetcher = ModelFetcher(self.home)
+        self._resume_mu = threading.Lock()
+        self._resume_busy = False
+        self._resume_again = False
+        self.fetcher = ModelFetcher(self.home, on_settled=self._continue_after_fetch)
         from rsi.serving import ServeManager
         self.serve = ServeManager()
         self._exports = _ExportProcs()
@@ -501,9 +506,13 @@ class Pipeline:
         warnings = []
         errors = []
         syncing = None
+        repos = []
         for part in parts:
             path, report = self._resolve_public_one(part)
             if report.get('fetch_state') == '同步中':
+                repo = report.get('fetch_repo') or ''
+                if repo and repo not in repos:
+                    repos.append(repo)
                 if syncing is None:
                     syncing = (path, report)
                 continue
@@ -512,7 +521,10 @@ class Pipeline:
             warnings.extend(report.get('warnings') or [])
             resolved.append(path or part)
         if syncing is not None:
-            return syncing
+            path, report = syncing
+            report = dict(report)
+            report['fetch_repos'] = repos
+            return path, report
         joined = ' '.join(resolved)
         return joined, {
             'ok': not errors,
@@ -661,6 +673,11 @@ class Pipeline:
         if status.state == '同步中':
             side['fetch_state'] = '同步中'
             side['fetch_repo'] = status.repo_id
+            repos = list(side.get('fetch_repos') or [])
+            item = {'kind': 'model', 'repo_id': status.repo_id}
+            if item not in repos:
+                repos.append(item)
+            side['fetch_repos'] = repos
         elif strict and status.state == '失败':
             raise PipelineError(status.message or '本地没有该文件')
         elif strict and not merged.get('model_type'):
@@ -1028,6 +1045,9 @@ class Pipeline:
                 side['validation'] = report
                 if report.get('fetch_state') == '同步中':
                     dataset_repo = report.get('fetch_repo') or ''
+                    names = list(report.get('fetch_repos') or ([] if not dataset_repo else [dataset_repo]))
+                    side['fetch_repos'] = [
+                        {'kind': 'dataset', 'repo_id': repo} for repo in names if repo]
                     self._rewrite_model(merged, run, side, strict)
                     if side.get('fetch_state') != '同步中':
                         side['fetch_state'] = '同步中'
@@ -1455,6 +1475,13 @@ class Pipeline:
     def _stage_log_path(self, run_id: str, round_index: int, stage: str, step) -> Path | None:
         params = _loads(step['params_json']) if step else {}
         base = self.home / 'runs' / run_id / f'round_{int(round_index)}' / stage
+        # While hope is still writing, the panel must read that file. A custom
+        # output_dir that already has a swift.log would otherwise replace it.
+        if step and step.get('status') == 'syncing':
+            canonical = self.stage_log_dir(run_id, round_index, stage) / 'swift.log'
+            owned = self._owned_log(run_id, canonical)
+            if owned is not None and owned.is_file():
+                return owned
         candidates = []
         if params.get('output_dir'):
             candidates.append(Path(str(params['output_dir'])) / 'swift.log')
@@ -1508,6 +1535,81 @@ class Pipeline:
         stored = self.store.list_drafts(run_id, round_index).get(stage) or {}
         return {'ok': True, 'stage': stage, 'round': round_index, 'params': stored}
 
+    def _sync_verdict(self, repos: list) -> tuple:
+        """``ready`` when every listed repo is on disk, ``wait`` while one is still cloning, else ``fail``."""
+        if not repos:
+            return 'wait', ''
+        for item in repos:
+            kind = item.get('kind') or 'model'
+            repo = item.get('repo_id') or ''
+            if not repo:
+                return 'wait', ''
+            status = self.fetcher.status_of(kind, repo)
+            if status.state == '失败':
+                return 'fail', status.message or '拉取失败'
+            if status.state != '就绪':
+                return 'wait', ''
+        return 'ready', ''
+
+    def _continue_after_fetch(self) -> None:
+        """Start a stage that was waiting on hope once every repo it asked for is local."""
+        with self._resume_mu:
+            if self._resume_busy:
+                self._resume_again = True
+                return
+            self._resume_busy = True
+        try:
+            while True:
+                self._resume_syncing_steps()
+                with self._resume_mu:
+                    if not self._resume_again:
+                        self._resume_busy = False
+                        return
+                    self._resume_again = False
+        except Exception:
+            logger.exception('同步完成后继续阶段失败')
+            with self._resume_mu:
+                self._resume_busy = False
+                self._resume_again = False
+
+    def _resume_syncing_steps(self) -> None:
+        for step in self.store.list_steps_with_status('syncing'):
+            self._resume_one(step)
+
+    def _resume_one(self, step: dict) -> None:
+        run = self.store.get_run(step['run_id'])
+        if not run or run.get('status') != 'active' or run.get('round_index') != step.get('round_index'):
+            return
+        stage = step.get('stage')
+        if stage not in SWIFT_STAGES:
+            return
+        result = _loads(step.get('result_json'))
+        repos = list((result.get('fetch') or {}).get('repos') or [])
+        verdict, message = self._sync_verdict(repos)
+        if verdict == 'wait':
+            return
+        if verdict == 'fail':
+            note = (message or '拉取失败') + '\n'
+            with self.store.transaction() as conn:
+                current = conn.execute('SELECT status FROM steps WHERE id=?', (step['id'], )).fetchone()
+                if current and current['status'] == 'syncing':
+                    self.store.finish_step(conn, step['id'], 'failed', {
+                        'error': message or '拉取失败',
+                        'fetch': result.get('fetch') or {},
+                    }, note, '')
+            return
+        params = result.get('resume_params')
+        if not isinstance(params, dict):
+            params = {}
+        try:
+            self.run_stage(step['run_id'], stage, params)
+        except PipelineError as exc:
+            logger.info('拉取完成后开训失败：%s', exc)
+            with self.store.transaction() as conn:
+                current = conn.execute('SELECT status FROM steps WHERE id=?', (step['id'], )).fetchone()
+                if current and current['status'] == 'syncing':
+                    self.store.finish_step(conn, step['id'], 'failed', {'error': str(exc)}, str(exc) + '\n', '')
+
     def run_stage(self, run_id: str, stage: str, params: dict) -> dict:
         run = self._require_run(run_id)
         self._assert_can_run(run, stage)
@@ -1540,21 +1642,37 @@ class Pipeline:
         self._block_hub_model(stage, merged, side)
         if side.get('fetch_state') == '同步中':
             repo = side.get('fetch_repo') or ''
+            repos = list(side.get('fetch_repos') or [])
+            if not repos and repo:
+                repos = [{'kind': 'model', 'repo_id': repo}]
             note = '同步中\n' + repo + '\n'
             if fetch_log is not None and fetch_log.is_file():
                 written = fetch_log.read_text(encoding='utf-8', errors='replace')
                 if written.strip():
                     note = written
+            result = {
+                'fetch': {'state': '同步中', 'repo_id': repo, 'repos': repos},
+                'resume_params': params or {},
+            }
             with self.store.transaction() as conn:
-                self.store.finish_step(conn, step_id, 'syncing', {
-                    'fetch': {'state': '同步中', 'repo_id': repo},
-                }, note, '')
+                self.store.finish_step(conn, step_id, 'syncing', result, note, '')
+            self._continue_after_fetch()
+            latest = self.store.latest_active_steps(run_id, rnd['round_index']).get(stage)
+            if latest and latest.get('status') != 'syncing':
+                return {
+                    'ok': True,
+                    'status': latest['status'],
+                    'step_id': latest['id'],
+                    'command': latest.get('command') or '',
+                    'result': _loads(latest.get('result_json')),
+                    'view': self.view(run_id),
+                }
             return {
                 'ok': True,
                 'status': 'syncing',
                 'step_id': step_id,
                 'command': '',
-                'result': {'fetch': {'state': '同步中', 'repo_id': repo}},
+                'result': {'fetch': result['fetch']},
                 'view': self.view(run_id),
             }
 
