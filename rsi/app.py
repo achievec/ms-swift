@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -47,6 +48,8 @@ def create_app(home: Path | None = None) -> FastAPI:
         app.state.pipeline.serve.stop_all()
 
     app = FastAPI(title='大模型训练平台', version=__version__, lifespan=lifespan)
+    # /api/schema is ~350KB uncompressed; browsers send Accept-Encoding: gzip.
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
     app.state.pipeline = pipeline
     app.state.home = home
 

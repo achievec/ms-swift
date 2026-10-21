@@ -349,14 +349,30 @@ def presets() -> dict:
     return load_preset_file()
 
 
-def public_schema() -> dict:
+# Built once per (GPU count, model source). Cold build walks Web-UI AST + catalogs;
+# the JSON is ~350KB so we also trim wire duplicates below.
+_SCHEMA_CACHE: dict[tuple, dict] = {}
+
+
+def clear_public_schema_cache() -> None:
+    _SCHEMA_CACHE.clear()
+
+
+def _wire_export_layout(device_count: int) -> dict:
+    """Client renders ``sections`` + ``by_id``; drop triplicate ``blocks`` / ``fields``."""
+    layout = export_layout(device_count)
+    return {key: value for key, value in layout.items() if key not in {'blocks', 'fields'}}
+
+
+def _build_public_schema(device_count: int) -> dict:
     preset = presets()
     catalog = load_catalog()
-    device_count = len((detect_gpu().get('devices') or []))
     stage_layouts = {stage: stage_layout(stage, device_count) for stage in ('sft', 'sft_eval', 'rl', 'rl_eval')}
     fields = {key: list(value) for key, value in FIELDS.items()}
     for stage, layout in stage_layouts.items():
         fields[stage] = layout['fields']
+        # Top-level ``fields`` already carries the flat list; omit the copy in layouts.
+        layout.pop('fields', None)
     datasets = list(catalog['datasets'])
     seen = set(datasets)
     for item in PUBLIC_DATASETS:
@@ -385,7 +401,7 @@ def public_schema() -> dict:
         'base_model_default': 'Qwen/Qwen2.5-7B-Instruct',
         'model_source': model_source(),
         'llm_infer': llm_infer_layout(device_count),
-        'llm_export': export_layout(device_count),
+        'llm_export': _wire_export_layout(device_count),
         'catalog': {
             'models': sorted(catalog['models']),
             'model_types': sorted(catalog['model_types']),
@@ -397,3 +413,14 @@ def public_schema() -> dict:
             'by_model': catalog['by_model'],
         },
     }
+
+
+def public_schema() -> dict:
+    device_count = len((detect_gpu().get('devices') or []))
+    key = (device_count, model_source())
+    cached = _SCHEMA_CACHE.get(key)
+    if cached is not None:
+        return cached
+    schema = _build_public_schema(device_count)
+    _SCHEMA_CACHE[key] = schema
+    return schema
