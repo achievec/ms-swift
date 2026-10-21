@@ -26,6 +26,17 @@ const state = {
   metricsCache: {},
   // stage|round → { next, start, truncated } for incremental /stages/.../log follow.
   logCursors: {},
+  // Flexible same-run eval report picker (GET /api/runs/{id}/eval-reports).
+  evalPicker: {
+    runId: null,
+    round: null,
+    scope: 'round', // 'round' | 'all'
+    reports: [],
+    selected: {},
+    tableHtml: '',
+    loading: false,
+    error: '',
+  },
 };
 
 // Same keys as swift.ui Runtime.sft_plot / grpo_plot (placeholder until TB arrives).
@@ -211,14 +222,15 @@ function compareHighlightClasses(values) {
   return classes;
 }
 
-function compareTable(stage, result, roundIndex) {
-  const rows = result && Array.isArray(result.compare) ? result.compare.filter((row) => row && row.label) : [];
-  if (rows.length < 2) return '';
-  const keys = compareMetricKeys(rows);
+function buildCompareTableHtml(rows, opts) {
+  const options = opts || {};
+  const filtered = (rows || []).filter((row) => row && row.label);
+  if (filtered.length < 2) return '';
+  const keys = compareMetricKeys(filtered);
   if (!keys.length) return '';
-  const head = `<tr><th>指标</th>${rows.map((row) => `<th>${escapeHtml(row.label)}</th>`).join('')}</tr>`;
+  const head = `<tr><th>指标</th>${filtered.map((row) => `<th>${escapeHtml(row.label)}</th>`).join('')}</tr>`;
   const body = keys.map((key) => {
-    const values = rows.map((row) => compareCellRaw(row, key));
+    const values = filtered.map((row) => compareCellRaw(row, key));
     const highlights = compareHighlightClasses(values);
     const cells = values.map((value, index) => {
       const cls = highlights[index] ? ` class="${highlights[index]}"` : '';
@@ -226,8 +238,154 @@ function compareTable(stage, result, roundIndex) {
     }).join('');
     return `<tr><td>${escapeHtml(compareMetricLabel(key))}</td>${cells}</tr>`;
   }).join('');
+  const title = options.title || '对比';
+  const sub = options.sub || '越高越好（浅色标出最优 / 最弱）';
+  const links = options.linksHtml || '';
+  return `<div class="compare-block"><p class="compare-title">${escapeHtml(title)}</p><p class="muted compare-sub">${escapeHtml(sub)}</p><table class="score-table compare-table"><thead>${head}</thead><tbody>${body}</tbody></table>${links}</div>`;
+}
+
+function compareTable(stage, result, roundIndex) {
+  const rows = result && Array.isArray(result.compare) ? result.compare.filter((row) => row && row.label) : [];
+  if (rows.length < 2) return '';
   const reports = compareReportLinks(stage, result, roundIndex);
-  return `<div class="compare-block"><p class="compare-title">基座对比</p><p class="muted compare-sub">同一评测集 · 越高越好（浅色标出最优 / 最弱）</p><table class="score-table compare-table"><thead>${head}</thead><tbody>${body}</tbody></table>${reports}</div>`;
+  return buildCompareTableHtml(rows, {
+    title: '基座对比',
+    sub: '同一评测集 · 越高越好（浅色标出最优 / 最弱）',
+    linksHtml: reports,
+  });
+}
+
+function evalPickerCacheKey(runId, round, scope) {
+  return `${runId}|${scope === 'all' ? 'all' : (round == null ? '' : round)}`;
+}
+
+function evalPickerMarkup() {
+  const picker = state.evalPicker || {};
+  const scope = picker.scope === 'all' ? 'all' : 'round';
+  return `<div class="compare-block eval-picker" data-eval-picker="1">
+    <p class="compare-title">自选对比</p>
+    <p class="muted compare-sub">勾选同实验里已有的评测报告，再点对比。可选本轮或全部轮次（含历史重跑）。</p>
+    <div class="eval-picker-toolbar">
+      <label class="eval-picker-scope"><input type="radio" name="eval-picker-scope" value="round" data-action="eval-picker-scope" ${scope === 'round' ? 'checked' : ''}/> 本轮</label>
+      <label class="eval-picker-scope"><input type="radio" name="eval-picker-scope" value="all" data-action="eval-picker-scope" ${scope === 'all' ? 'checked' : ''}/> 全部轮次</label>
+      <button type="button" class="ghost" data-action="eval-picker-refresh">刷新列表</button>
+      <button type="button" class="primary" data-action="eval-picker-compare">对比</button>
+    </div>
+    <div class="eval-picker-list" data-eval-picker-list="1"><p class="muted">加载评测报告…</p></div>
+    <div class="eval-picker-result" data-eval-picker-result="1">${picker.tableHtml || ''}</div>
+  </div>`;
+}
+
+function paintEvalPickerList() {
+  const root = document.querySelector('[data-eval-picker-list]');
+  if (!root) return;
+  const picker = state.evalPicker || {};
+  if (picker.loading) {
+    root.innerHTML = '<p class="muted">加载评测报告…</p>';
+    return;
+  }
+  if (picker.error) {
+    root.innerHTML = `<p class="muted">${escapeHtml(picker.error)}</p>`;
+    return;
+  }
+  const reports = picker.reports || [];
+  if (!reports.length) {
+    root.innerHTML = '<p class="muted">还没有可对比的评测报告。先跑完 SFT/RL 评测。</p>';
+    return;
+  }
+  const chips = reports.map((report) => {
+    const id = report.id;
+    const checked = picker.selected && picker.selected[id] ? ' checked' : '';
+    const meta = [];
+    if (report.metrics && report.metrics.accuracy != null) meta.push(`acc ${report.metrics.accuracy}`);
+    if (report.metrics && report.metrics.bleu_1 != null) meta.push(`BLEU-1 ${report.metrics.bleu_1}`);
+    const hint = meta.length ? `<span class="eval-picker-meta">${escapeHtml(meta.join(' · '))}</span>` : '';
+    const link = report.has_report && report.report_url
+      ? `<a class="ghost eval-picker-open" href="${escapeHtml(report.report_url)}" target="_blank" rel="noopener">报告</a>`
+      : '';
+    return `<label class="eval-picker-chip"><input type="checkbox" data-eval-report-id="${escapeHtml(id)}"${checked}/> <span class="eval-picker-label">${escapeHtml(report.label)}</span>${hint}${link}</label>`;
+  }).join('');
+  root.innerHTML = `<div class="eval-picker-chips">${chips}</div>`;
+}
+
+function paintEvalPickerResult() {
+  const slot = document.querySelector('[data-eval-picker-result]');
+  if (!slot) return;
+  slot.innerHTML = (state.evalPicker && state.evalPicker.tableHtml) || '';
+}
+
+async function loadEvalReports(force) {
+  if (!state.view || (state.stage !== 'sft_eval' && state.stage !== 'rl_eval')) return;
+  if (!document.querySelector('[data-eval-picker]')) return;
+  const runId = state.view.run.id;
+  const round = state.view.round.round_index;
+  const picker = state.evalPicker;
+  const scope = picker.scope === 'all' ? 'all' : 'round';
+  const cacheKey = evalPickerCacheKey(runId, round, scope);
+  if (!force && picker._cacheKey === cacheKey && picker.reports && picker.reports.length && !picker.error) {
+    paintEvalPickerList();
+    paintEvalPickerResult();
+    return;
+  }
+  picker.runId = runId;
+  picker.round = round;
+  picker.loading = true;
+  picker.error = '';
+  paintEvalPickerList();
+  try {
+    const query = scope === 'round' ? `?round=${encodeURIComponent(round)}` : '';
+    const payload = await api(`/api/runs/${encodeURIComponent(runId)}/eval-reports${query}`);
+    const reports = (payload && payload.reports) || [];
+    const keep = {};
+    reports.forEach((report) => {
+      if (picker.selected && picker.selected[report.id]) keep[report.id] = true;
+    });
+    picker.reports = reports;
+    picker.selected = keep;
+    picker._cacheKey = cacheKey;
+    picker.error = '';
+  } catch (err) {
+    picker.reports = [];
+    picker.error = (err && err.message) || '加载评测报告失败';
+  } finally {
+    picker.loading = false;
+    paintEvalPickerList();
+    paintEvalPickerResult();
+  }
+}
+
+function runEvalPickerCompare() {
+  const picker = state.evalPicker || {};
+  const selectedIds = Object.keys(picker.selected || {}).filter((id) => picker.selected[id]);
+  if (selectedIds.length < 2) {
+    toast('请至少勾选两份报告再对比');
+    return;
+  }
+  const byId = {};
+  (picker.reports || []).forEach((report) => { byId[report.id] = report; });
+  const rows = selectedIds.map((id) => byId[id]).filter(Boolean).map((report) => ({
+    label: report.label,
+    role: report.role,
+    metrics: report.metrics || {},
+    report_path: report.report_path || '',
+    report_url: report.report_url || '',
+  }));
+  if (rows.length < 2) {
+    toast('勾选的报告已失效，请刷新列表');
+    return;
+  }
+  const links = rows
+    .filter((row) => row.report_url)
+    .map((row) => `<a class="ghost" href="${escapeHtml(row.report_url)}" target="_blank" rel="noopener">${escapeHtml(row.label)} 报告</a>`);
+  const linksHtml = links.length
+    ? `<p class="row-actions compare-reports">${links.join(' · ')}</p>`
+    : '';
+  picker.tableHtml = buildCompareTableHtml(rows, {
+    title: '自选对比结果',
+    sub: `已选 ${rows.length} 份报告 · 越高越好（浅色标出最优 / 最弱）`,
+    linksHtml,
+  }) || '<p class="muted">选中的报告没有可对比的数值指标。</p>';
+  paintEvalPickerResult();
 }
 
 function evalResultMarkup(stage, result, roundIndex) {
@@ -237,7 +395,8 @@ function evalResultMarkup(stage, result, roundIndex) {
   const headline = table ? '' : scoreHeadline(result.metrics);
   const scores = table ? '' : scoreTable(result.metrics);
   const report = table ? '' : compareReportLinks(stage, result, roundIndex);
-  return `${table}${headline}${scores}${report}${outputPanel('结果', JSON.stringify(visibleResult(result), null, 2))}`;
+  const picker = (stage === 'sft_eval' || stage === 'rl_eval') ? evalPickerMarkup() : '';
+  return `${table}${picker}${headline}${scores}${report}${outputPanel('结果', JSON.stringify(visibleResult(result), null, 2))}`;
 }
 
 function visibleResult(result) {
@@ -880,7 +1039,9 @@ function renderStage(stage) {
   const validate = stage === 'sft'
     ? `<button type="button" class="ghost" data-action="validate"${viewTip} ${view.mutable ? '' : 'disabled'}>校验格式</button>`
     : '';
-  const result = form.result ? evalResultMarkup(stage, form.result) : '';
+  const result = form.result
+    ? evalResultMarkup(stage, form.result)
+    : ((stage === 'sft_eval' || stage === 'rl_eval') ? evalPickerMarkup() : '');
   const streaming = form.status === 'running' || form.status === 'syncing';
   const finished = form.status === 'succeeded' || form.status === 'failed';
   // Completed stages still fetch /stages/.../log so「加载更早」can reach full swift.log
@@ -1541,6 +1702,9 @@ function render() {
   if (state.tab === 'export' && !state.exportLog && state.view.export_job && state.view.export_job.status && state.view.export_job.status !== 'idle') {
     refreshExportLog().catch(() => {});
   }
+  if (state.tab === 'flow' && (state.stage === 'sft_eval' || state.stage === 'rl_eval')) {
+    loadEvalReports(false).catch(() => {});
+  }
 }
 
 async function runCurrent() {
@@ -2016,6 +2180,14 @@ document.addEventListener('click', async (event) => {
       applyPreset();
       return;
     }
+    if (target.dataset.action === 'eval-picker-refresh') {
+      await loadEvalReports(true);
+      return;
+    }
+    if (target.dataset.action === 'eval-picker-compare') {
+      runEvalPickerCompare();
+      return;
+    }
     if (target.dataset.action === 'refetch') {
       await flushDraft();
       const params = collectParams();
@@ -2336,6 +2508,22 @@ document.addEventListener('change', async (event) => {
     const name = event.target.parentElement && event.target.parentElement.querySelector('.drop-name');
     if (name) name.textContent = event.target.files[0].name;
     syncSendButton();
+  }
+  if (event.target.dataset && event.target.dataset.action === 'eval-picker-scope') {
+    const next = event.target.value === 'all' ? 'all' : 'round';
+    if (state.evalPicker.scope !== next) {
+      state.evalPicker.scope = next;
+      state.evalPicker.tableHtml = '';
+      await loadEvalReports(true);
+    }
+    return;
+  }
+  if (event.target.dataset && event.target.dataset.evalReportId) {
+    const id = event.target.dataset.evalReportId;
+    if (!state.evalPicker.selected) state.evalPicker.selected = {};
+    if (event.target.checked) state.evalPicker.selected[id] = true;
+    else delete state.evalPicker.selected[id];
+    return;
   }
   rememberServeDraft(event);
   if (draftEvent(event.target)) scheduleDraftSave();

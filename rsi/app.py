@@ -133,9 +133,16 @@ def create_app(home: Path | None = None) -> FastAPI:
     def stage_metrics(run_id: str, stage: str, round: int | None = None):
         return pipeline.stage_metrics(run_id, stage, round)
 
+    @app.get('/api/runs/{run_id}/eval-reports')
+    def list_eval_reports(run_id: str, round: int | None = None):
+        """Comparable eval reports for the flexible picker (not embedded in /api/runs)."""
+        return pipeline.list_eval_reports(run_id, round)
+
     @app.get('/api/runs/{run_id}/stages/{stage}/report')
-    def stage_report(run_id: str, stage: str, round: int | None = None, kind: str | None = None):
-        return FileResponse(pipeline.eval_report_file(run_id, stage, round, kind), media_type='text/html')
+    def stage_report(run_id: str, stage: str, round: int | None = None, kind: str | None = None,
+                     step: int | None = None):
+        return FileResponse(
+            pipeline.eval_report_file(run_id, stage, round, kind, step), media_type='text/html')
 
     @app.post('/api/datasets/validate')
     async def validate_dataset(request: Request):

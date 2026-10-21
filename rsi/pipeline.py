@@ -1367,11 +1367,20 @@ class Pipeline:
             changed = True
         return updated if changed else result
 
-    def eval_report_file(self, run_id: str, stage: str, round_index=None, kind: str | None = None) -> Path:
+    def _eval_step_by_id(self, run_id: str, stage: str, round_index: int, step_id: int) -> dict | None:
+        for row in self.store.list_steps(run_id, round_index):
+            if int(row['id']) == int(step_id) and row.get('stage') == stage:
+                return row
+        return None
+
+    def eval_report_file(self, run_id: str, stage: str, round_index=None, kind: str | None = None,
+                         step_id=None) -> Path:
         """HTML report for this stage, only if it sits inside the run directory.
 
         ``kind`` selects a compare row (``base`` / ``sft`` / ``rl``). Empty kind
         serves the stage checkpoint report (current SFT or RL eval).
+        ``step_id`` selects a historical (possibly superseded) step instead of
+        the latest active one — used by the flexible report picker.
         """
         if stage not in {'sft_eval', 'rl_eval'}:
             raise PipelineError('这一阶段没有评测报告', 404)
@@ -1380,7 +1389,10 @@ class Pipeline:
             round_index = run['round_index']
         else:
             round_index = int(round_index)
-        step = self.store.latest_active_steps(run_id, round_index).get(stage)
+        if step_id is not None:
+            step = self._eval_step_by_id(run_id, stage, round_index, int(step_id))
+        else:
+            step = self.store.latest_active_steps(run_id, round_index).get(stage)
         if not step:
             raise PipelineError('还没有评测报告', 404)
         root = self.home / 'runs' / run_id
@@ -1402,6 +1414,102 @@ class Pipeline:
         if path is None or path.suffix.lower() not in {'.html', '.htm'}:
             raise PipelineError('还没有评测报告', 404)
         return path
+
+    _EVAL_STAGE_SHORT = {'sft_eval': 'SFT评测', 'rl_eval': 'RL评测'}
+    _EVAL_ROLE_SHORT = {'base': '基座', 'sft': 'SFT', 'rl': 'RL'}
+
+    def _eval_report_label(self, round_index: int, stage: str, role: str, status: str, step_id: int) -> str:
+        stage_name = self._EVAL_STAGE_SHORT.get(stage, stage)
+        role_name = self._EVAL_ROLE_SHORT.get(role, role or '报告')
+        label = f'第{round_index}轮 · {stage_name}/{role_name}'
+        if status == 'superseded':
+            label = f'{label} · 历史#{step_id}'
+        return label
+
+    def _eval_report_entry(self, run_id: str, step: dict, role: str, label: str, metrics: dict,
+                           report_path: str | None, eval_output_dir: str = '') -> dict | None:
+        """One picker row. Skip empty shells with neither scores nor an HTML report."""
+        compact = compact_eval_metrics(metrics or {})
+        html = report_path or (metrics or {}).get('report_html') or ''
+        if not compact and not html:
+            return None
+        stage = step['stage']
+        step_id = int(step['id'])
+        round_index = int(step['round_index'])
+        role_key = (role or '').strip().lower() or ('sft' if stage == 'sft_eval' else 'rl')
+        query = f'round={round_index}&step={step_id}'
+        if role_key:
+            query += f'&kind={role_key}'
+        entry = {
+            'id': f'{step_id}:{role_key}',
+            'step_id': step_id,
+            'round_index': round_index,
+            'stage': stage,
+            'role': role_key,
+            'label': label,
+            'status': step.get('status') or '',
+            'metrics': compact,
+            'eval_output_dir': eval_output_dir or '',
+            'report_url': f'/api/runs/{run_id}/stages/{stage}/report?{query}',
+            'has_report': bool(html),
+        }
+        if html:
+            entry['report_path'] = html
+        return entry
+
+    def list_eval_reports(self, run_id: str, round_index=None) -> dict:
+        """Comparable eval reports for this run (picker UI). Does not bloat ``/api/runs``.
+
+        Walks ``sft_eval`` / ``rl_eval`` steps (including superseded history). Each
+        compare row (基座 / SFT / RL) becomes one entry; steps without compare still
+        contribute the stage checkpoint. Metrics are compact scores only.
+        """
+        self._require_run(run_id)
+        if round_index is not None:
+            round_index = int(round_index)
+        reports = []
+        for step in self.store.list_steps(run_id, round_index):
+            stage = step.get('stage')
+            if stage not in {'sft_eval', 'rl_eval'}:
+                continue
+            if step.get('status') not in {'succeeded', 'superseded', 'failed'}:
+                continue
+            if not step.get('result_json'):
+                continue
+            params = _loads(step.get('params_json')) or {}
+            shown = self._with_eval_report(
+                run_id, stage, _loads(step.get('result_json')), params) or {}
+            if not isinstance(shown, dict):
+                continue
+            compare = [row for row in (shown.get('compare') or []) if isinstance(row, dict)]
+            if compare:
+                for row in compare:
+                    role = str(row.get('role') or '').strip().lower()
+                    if not role:
+                        continue
+                    label = self._eval_report_label(
+                        int(step['round_index']), stage, role, step.get('status') or '', int(step['id']))
+                    entry = self._eval_report_entry(
+                        run_id, step, role, label,
+                        row.get('metrics') or {},
+                        row.get('report_path'),
+                        row.get('eval_output_dir') or '',
+                    )
+                    if entry:
+                        reports.append(entry)
+            else:
+                role = 'sft' if stage == 'sft_eval' else 'rl'
+                label = self._eval_report_label(
+                    int(step['round_index']), stage, role, step.get('status') or '', int(step['id']))
+                entry = self._eval_report_entry(
+                    run_id, step, role, label,
+                    shown.get('metrics') or {},
+                    shown.get('report_path'),
+                    params.get('eval_output_dir') or '',
+                )
+                if entry:
+                    reports.append(entry)
+        return {'reports': reports}
 
     def _want_base_eval(self, run: dict, params: dict) -> bool:
         if not _flag((params or {}).get('eval_base'), True):
