@@ -15,8 +15,12 @@
 #   and num_generations before trying it.
 # - 32B online RL is out of range for a single 80GB GPU.
 # - dataset_num_proc 8 and dataloader_num_workers 4 leave cores for vLLM.
-# - GRPO uses vLLM colocate + sleep_level 1 so training and rollout share the
-#   one GPU instead of reserving a second card.
+# - GRPO uses vLLM colocate so training and rollout share the one GPU instead
+#   of reserving a second card. With vllm_enable_lora only the adapter is synced
+#   each rollout, so the preset keeps base weights resident
+#   (sleep_level 0 / offload_model false / offload_optimizer false). The old
+#   sleep+offload triple copied the 7B weights through CPU RAM every rollout
+#   cycle and dominated step time (~8s/step on the documented box).
 # - One GPU does not use DeepSpeed, DDP, or sequence parallel. Those controls
 #   stay hidden until two GPUs are selected, and the command leaves them out.
 #   Tuner tabs other than the selected method are hidden the same way.
@@ -133,9 +137,11 @@ rl:
   vllm_max_model_len: 4096
   vllm_enable_lora: true
   vllm_max_lora_rank: 8
-  sleep_level: 1
-  offload_model: true
-  offload_optimizer: true
+  # LoRA + vllm_enable_lora keeps the base weights resident on both sides; the
+  # sleep/offload round trip only cost step time. Reset with 恢复预设.
+  sleep_level: 0
+  offload_model: false
+  offload_optimizer: false
   log_completions: true
   # LoRA GRPO must not pass --ref_model (ms-swift rejects it). Keep empty so sticky
   # Gradio <select> first-option junk (e.g. Yi-1.5-34B / aya) is not the preset.
