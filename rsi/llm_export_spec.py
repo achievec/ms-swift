@@ -18,6 +18,17 @@ LOCKED_FIELDS = ('model', 'model_type', 'template')
 # shows the dataclass default.
 QUANT_N_SAMPLES = 256
 
+# Methods that need a calibration ``--dataset`` (see ExportArguments / QuantEngine).
+CALIB_QUANT_METHODS = frozenset({'awq', 'gptq', 'gptq_v2'})
+
+QUANT_METHOD_INFO = (
+    '留空表示不量化（仅合并 LoRA）。选 AWQ/GPTQ 时必须填写下方校准数据集。'
+)
+QUANT_BITS_INFO = '不量化时请留空；AWQ/GPTQ 通常填 4。'
+DATASET_INFO = (
+    'AWQ/GPTQ 量化的校准数据，可多选或填本地路径。仅合并 LoRA 时可不填。'
+)
+
 
 def _widget(**kwargs):
     item = {
@@ -163,8 +174,12 @@ def _shape(device_count: int):
     _each(blocks, lambda item: item.__setitem__('locked', item['id'] in LOCKED_FIELDS))
 
     def tune(item):
-        if item['id'] in {'quant_bits', 'quant_method'}:
+        if item['id'] == 'quant_method':
             _blank_choice(item)
+            item['info'] = QUANT_METHOD_INFO
+        if item['id'] == 'quant_bits':
+            _blank_choice(item)
+            item['info'] = QUANT_BITS_INFO
         if item['id'] == 'quant_n_samples' and item.get('default') is None:
             item['default'] = QUANT_N_SAMPLES
         if item['id'] == 'output_dir':
@@ -172,6 +187,7 @@ def _shape(device_count: int):
         if item['id'] == 'dataset':
             item['multiselect'] = True
             item['allow_custom'] = True
+            item['info'] = DATASET_INFO
 
     _each(blocks, tune)
     blocks = _split_gpu(blocks)

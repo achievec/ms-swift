@@ -1475,9 +1475,10 @@ function renderInferControl(item, values, running, fill) {
       const current = String(value ?? '');
       choice.entries = current ? [current] : [];
       choice.selected = new Set(current ? [current] : []);
-    } else if (item.default == null) {
-      // Gradio value=None: keep an empty first option so the browser does not
-      // submit the first catalog id (e.g. ref_model → 01ai/Yi-1.5-34B).
+    } else if (item.default == null || item.default === '') {
+      // Gradio value=None / RSI blank default: keep an empty first option so the
+      // browser does not submit the first catalog id (e.g. quant_method → awq,
+      // or ref_model → 01ai/Yi-1.5-34B).
       if (!choice.entries.includes('')) {
         choice.entries = ['', ...choice.entries];
       }

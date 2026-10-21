@@ -38,6 +38,7 @@ from rsi.commands import (
     strip_form_quant,
     strip_rl_slider_midpoints,
 )
+from rsi.llm_export_spec import CALIB_QUANT_METHODS
 from rsi.llm_infer_spec import chat_request_body, cuda_visible_devices, template_default_system
 from rsi.dataset_validate import MAX_BYTES, validate_file, validate_public_id
 from rsi.flow import ACTION_LABELS, assemble_flow, blocked_message, decision_actions, stage_unlocked
@@ -1058,6 +1059,40 @@ class Pipeline:
         self._rewrite_model(preset, run, {}, strict=False, fetch=False)
         return preset
 
+    def _normalize_export_quant(self, merged: dict) -> None:
+        """Empty quant = merge-only. Drop orphan bits/samples so they never reach swift."""
+        method = str(merged.get('quant_method') or '').strip()
+        if not method or method == 'none':
+            merged['quant_method'] = ''
+            merged['quant_bits'] = ''
+            # Keep the Web-UI sample count as a form default; argv strips it when idle.
+            if str(merged.get('quant_n_samples') or '') in {'', '256'}:
+                merged['quant_n_samples'] = 256
+            return
+        merged['quant_method'] = method
+        bits = merged.get('quant_bits')
+        if bits in (None, '', 'none'):
+            merged['quant_bits'] = ''
+        else:
+            merged['quant_bits'] = bits
+
+    def _validate_export_quant(self, merged: dict) -> None:
+        """AWQ/GPTQ need a calib dataset; block before swift raises the English ValueError."""
+        method = str(merged.get('quant_method') or '').strip()
+        if not method or method == 'none':
+            return
+        if method != 'fp8' and merged.get('quant_bits') in (None, '', 'none'):
+            raise PipelineError('已选择量化方法，请填写量化比特数(--quant_bits)，或不量化时将量化方法留空。')
+        if method not in CALIB_QUANT_METHODS:
+            return
+        dataset = merged.get('dataset')
+        if isinstance(dataset, list):
+            dataset = ' '.join(str(item).strip() for item in dataset if str(item).strip())
+        if not str(dataset or '').strip():
+            raise PipelineError(
+                'AWQ/GPTQ 量化需要校准数据集。请填写「校准数据集(--dataset)」，'
+                '或将「量化方法」留空，仅合并 LoRA。')
+
     def _export_argv(self, merged: dict) -> list:
         """``swift export`` argv. A full checkpoint is ``--model``; a LoRA stays ``--adapters``."""
         params = dict(merged)
@@ -1074,11 +1109,12 @@ class Pipeline:
                 params.pop('merge_lora', None)
         if params.get('merge_lora') not in {True, 'true', 'True', 1, '1'}:
             params.pop('merge_lora', None)
-        if not params.get('quant_method'):
+        method = str(params.get('quant_method') or '').strip()
+        if not method or method == 'none':
             params.pop('quant_method', None)
             params.pop('quant_bits', None)
-            if str(params.get('quant_n_samples') or '') in {'', '256'}:
-                params.pop('quant_n_samples', None)
+            params.pop('quant_n_samples', None)
+            params.pop('dataset', None)
         return build_argv('export', params)
 
     def candidates(self, run: dict, rnd: dict):
@@ -1690,6 +1726,11 @@ class Pipeline:
             export_values[key] = value
         for key in ('model', 'model_type', 'template'):
             export_values[key] = export_fill.get(key) if export_fill.get(key) is not None else ''
+        # Empty-meaning quant: do not show a sticky method that was never set.
+        method = str(export_values.get('quant_method') or '').strip()
+        if not method or method == 'none':
+            export_values['quant_method'] = ''
+            export_values['quant_bits'] = ''
         export_running = self._exports.running(run_id)
         export_status = 'running' if export_running else (export_step['status'] if export_step else 'idle')
         export_job = {
@@ -2636,8 +2677,15 @@ class Pipeline:
                 merged['more_params'] = text
             else:
                 merged.pop('more_params', None)
+        if isinstance(merged.get('dataset'), list):
+            merged['dataset'] = ' '.join(
+                str(item).strip() for item in merged['dataset'] if str(item).strip())
+        self._normalize_export_quant(merged)
         if strict and not str(merged.get('model') or '').strip() and not str(merged.get('adapters') or '').strip():
             raise PipelineError('还没有可导出的模型')
+        # Always validate calib requirements (preview and run) so AWQ without
+        # --dataset never reaches swift's English ValueError.
+        self._validate_export_quant(merged)
         try:
             cuda_visible_devices(merged.get('gpu_id'))
         except ValueError as exc:

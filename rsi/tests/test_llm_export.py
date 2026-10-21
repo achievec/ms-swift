@@ -40,10 +40,15 @@ def test_layout_matches_the_webui_llm_export_tab():
     assert by_id['device_map']['label'] == '合并LoRA使用的device_map(--device_map)'
     assert by_id['quant_bits']['label'] == '量化比特数(--quant_bits)'
     assert by_id['quant_bits']['choices'][0] == ''
+    assert by_id['quant_bits']['default'] == ''
     assert '4' in by_id['quant_bits']['choices']
     assert 'float8' in by_id['quant_bits']['choices']
+    assert '不量化时请留空' in by_id['quant_bits']['info']
     assert by_id['quant_method']['choices'][0] == ''
+    assert by_id['quant_method']['default'] == ''
     assert by_id['quant_method']['choices'][1:] == ['awq', 'gptq', 'bnb', 'fp8', 'gptq_v2']
+    assert '留空表示不量化' in by_id['quant_method']['info']
+    assert '校准数据集' in by_id['quant_method']['info']
     assert by_id['quant_n_samples']['label'] == '量化集采样数(--quant_n_samples)'
     assert by_id['quant_n_samples']['default'] == 256
     assert by_id['max_length']['label'] == '量化集的max-length(--max_length)'
@@ -53,6 +58,8 @@ def test_layout_matches_the_webui_llm_export_tab():
     assert by_id['dataset']['multiselect'] is True
     assert by_id['dataset']['allow_custom'] is True
     assert by_id['dataset']['choices_from'] == 'datasets'
+    assert 'AWQ/GPTQ' in by_id['dataset']['info']
+    assert '仅合并 LoRA' in by_id['dataset']['info']
     assert by_id['more_params']['label'] == '更多参数'
     assert '(--more_params)' not in by_id['more_params']['label']
     assert by_id['more_params']['lines'] == 4
@@ -78,6 +85,7 @@ def test_layout_matches_the_webui_llm_export_tab():
     assert 'llm_export' in page
     assert '填入本轮权重' in page
     assert '填入本轮晋级 checkpoint' in page
+    assert "item.default == null || item.default === ''" in page
 
 
 def test_gpu_choices_follow_device_count():
@@ -137,6 +145,8 @@ def test_export_fills_lora_and_ignores_model_edits(client):
     assert fill['output_dir'].endswith(f'{checkpoint.name}-merged')
     assert view['export_form']['model'] == ARGS_BASE
     assert view['export_form']['adapters'] == str(checkpoint)
+    assert view['export_form']['quant_method'] in ('', None)
+    assert view['export_form']['quant_bits'] in ('', None)
     assert view['export_job']['status'] == 'idle'
 
     preview = api.post(f'/api/runs/{run_id}/export/preview', json={'params': {
@@ -160,6 +170,11 @@ def test_export_fills_lora_and_ignores_model_edits(client):
     assert 'other/model' not in command
     assert f'--model {BASE}' not in command
     assert '--more_params' not in command
+    # Default is merge-only: never inject AWQ/GPTQ without an explicit opt-in.
+    assert '--quant_method' not in command
+    assert '--quant_bits' not in command
+    assert '--quant_n_samples' not in command
+    assert '--dataset' not in command
 
     cleared = api.post(f'/api/runs/{run_id}/export/preview', json={'params': {
         'adapters': '',
@@ -210,6 +225,76 @@ def test_rl_weights_win_and_a_full_checkpoint_becomes_model(client):
     assert '--adapters' not in command
     assert full.json()['params']['model'] == BASE
     assert full.json()['params']['model_type'] == 'qwen2'
+
+
+def test_merge_only_drops_orphan_quant_knobs(client):
+    """quant_bits / quant_n_samples alone must not reach the command."""
+    api = client
+    run_id = _create(api)
+    trained = _run(api, run_id, 'sft', {'source': 'bundled', 'bundled': 'itops_mix'})
+    checkpoint = Path(trained['result']['checkpoint'])
+    (checkpoint / 'adapter_config.json').write_text('{"peft_type": "LORA"}', encoding='utf-8')
+
+    preview = api.post(f'/api/runs/{run_id}/export/preview', json={'params': {
+        'quant_method': '',
+        'quant_bits': 4,
+        'quant_n_samples': 256,
+        'dataset': '',
+    }})
+    assert preview.status_code == 200, preview.text
+    command = preview.json()['command']
+    assert '--merge_lora true' in command
+    assert '--quant_method' not in command
+    assert '--quant_bits' not in command
+    assert '--quant_n_samples' not in command
+    assert '--dataset' not in command
+
+
+def test_awq_without_dataset_is_blocked(client):
+    api = client
+    run_id = _create(api)
+    trained = _run(api, run_id, 'sft', {'source': 'bundled', 'bundled': 'itops_mix'})
+    checkpoint = Path(trained['result']['checkpoint'])
+    (checkpoint / 'adapter_config.json').write_text('{"peft_type": "LORA"}', encoding='utf-8')
+
+    blocked = api.post(f'/api/runs/{run_id}/export/run', json={'params': {
+        'quant_method': 'awq',
+        'quant_bits': 4,
+        'quant_n_samples': 256,
+    }})
+    assert blocked.status_code == 400, blocked.text
+    detail = blocked.json()['detail']
+    assert '校准数据集' in detail
+    assert '量化方法' in detail
+
+    preview = api.post(f'/api/runs/{run_id}/export/preview', json={'params': {
+        'quant_method': 'awq',
+        'quant_bits': 4,
+    }})
+    assert preview.status_code == 400
+    assert '校准数据集' in preview.json()['detail']
+
+
+def test_awq_with_dataset_builds_quant_command(client):
+    api = client
+    run_id = _create(api)
+    trained = _run(api, run_id, 'sft', {'source': 'bundled', 'bundled': 'itops_mix'})
+    checkpoint = Path(trained['result']['checkpoint'])
+    (checkpoint / 'adapter_config.json').write_text('{"peft_type": "LORA"}', encoding='utf-8')
+
+    preview = api.post(f'/api/runs/{run_id}/export/preview', json={'params': {
+        'quant_method': 'awq',
+        'quant_bits': 4,
+        'quant_n_samples': 128,
+        'dataset': 'modelscope/gsm8k',
+    }})
+    assert preview.status_code == 200, preview.text
+    command = preview.json()['command']
+    assert '--quant_method awq' in command
+    assert '--quant_bits 4' in command
+    assert '--quant_n_samples 128' in command
+    assert '--dataset modelscope/gsm8k' in command
+    assert '--merge_lora true' in command
 
 
 def test_export_prefills_hope_local_base_path(tmp_path, monkeypatch):
