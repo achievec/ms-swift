@@ -93,7 +93,7 @@ def test_dataset_notice_when_eval_still_uses_itops(tmp_path):
     data.write_text(SAMPLE, encoding='utf-8')
     view = {
         'steps': [{
-            'stage': 'data',
+            'stage': 'sft',
             'status': 'succeeded',
             'round_index': 1,
             'params': {'dataset': str(data)},
