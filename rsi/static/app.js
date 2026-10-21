@@ -960,9 +960,64 @@ function renderBlock(block, values) {
     return `<details class="infer-runtime"${open}><summary>${escapeHtml(block.label || '设置')}</summary><div class="body">${renderBlocks(block.blocks, values)}</div></details>`;
   }
   if (block.kind === 'tabs') {
-    return (block.tabs || []).map((tab, index) => `<details class="infer-runtime"${index === 0 ? ' open' : ''}><summary>${escapeHtml(tab.label || '参数')}</summary><div class="body">${renderBlocks(tab.blocks, values)}</div></details>`).join('');
+    let opened = false;
+    return (block.tabs || []).map((tab) => {
+      const visible = tabVisible(tab, values);
+      const open = visible && !opened ? ' open' : '';
+      if (visible) opened = true;
+      const gate = tab.show_key
+        ? ` data-show-key="${escapeHtml(tab.show_key)}" data-show-values="${escapeHtml((tab.show_values || []).join(','))}"`
+        : '';
+      const hidden = visible ? '' : ' hidden';
+      return `<details class="infer-runtime"${open}${gate}${hidden}><summary>${escapeHtml(tab.label || '参数')}</summary><div class="body">${renderBlocks(tab.blocks, values)}</div></details>`;
+    }).join('');
   }
   return '';
+}
+
+function gpuCountFrom(raw) {
+  if (raw == null || raw === '') return 1;
+  const items = Array.isArray(raw) ? raw : String(raw).split(/[\s,]+/);
+  return items.map((item) => String(item).trim()).filter((item) => item && item !== 'cpu').length;
+}
+
+function withGpuGate(html, item, values) {
+  if (!html || !item || !item.min_gpus) return html;
+  const hidden = gpuCountFrom(values ? values.gpu_id : '') < Number(item.min_gpus) ? ' hidden' : '';
+  return html.replace('>', ` data-min-gpus="${Number(item.min_gpus)}"${hidden}>`);
+}
+
+function stageFieldValue(key, fallback) {
+  const el = document.querySelector(`#main [data-field="${key}"]`);
+  if (!el) return fallback == null ? '' : fallback;
+  if (el.type === 'checkbox') return el.checked ? 'true' : 'false';
+  return el.value;
+}
+
+function stageChoice(key, raw) {
+  const value = raw == null ? '' : String(raw);
+  if (value) return value;
+  if (key === 'tuner_type') return 'lora';
+  if (key === 'task_type') return 'causal_lm';
+  if (key === 'vllm_mode') return 'colocate';
+  return '';
+}
+
+function tabVisible(tab, values) {
+  if (!tab || !tab.show_key) return true;
+  const current = stageChoice(tab.show_key, values ? values[tab.show_key] : '');
+  return (tab.show_values || []).map(String).includes(current);
+}
+
+function syncStageFields() {
+  const gpus = gpuCountFrom(stageFieldValue('gpu_id', ''));
+  document.querySelectorAll('#main [data-min-gpus]').forEach((el) => {
+    el.hidden = gpus < Number(el.dataset.minGpus);
+  });
+  document.querySelectorAll('#main [data-show-key]').forEach((el) => {
+    const allowed = (el.dataset.showValues || '').split(',').filter(Boolean);
+    el.hidden = !allowed.includes(stageChoice(el.dataset.showKey, stageFieldValue(el.dataset.showKey, '')));
+  });
 }
 
 function renderInferRow(row, values, running, fill) {
@@ -970,7 +1025,7 @@ function renderInferRow(row, values, running, fill) {
   const fields = [];
   const sides = [];
   row.forEach((item) => {
-    const control = renderInferControl(item, values, running, fill);
+    const control = withGpuGate(renderInferControl(item, values, running, fill), item, values);
     if (item.widget === 'Button') sides.push(control);
     else fields.push(control);
   });
@@ -1100,6 +1155,7 @@ function render() {
     </div>
     ${body}`;
   syncSource();
+  syncStageFields();
   syncLive();
   syncLogScrollLock();
   syncSendButton();
@@ -1424,6 +1480,7 @@ document.addEventListener('keydown', (event) => {
   paintDatasetChips(box);
   showCombo(input, true);
   scheduleDraftSave();
+  syncStageFields();
 });
 
 document.addEventListener('click', async (event) => {
@@ -1436,6 +1493,7 @@ document.addEventListener('click', async (event) => {
     hidden.value = datasetTokens(hidden.value).filter((item) => item !== drop).join(' ');
     paintDatasetChips(box);
     scheduleDraftSave();
+    syncStageFields();
     return;
   }
   const clearAll = event.target.closest('[data-action="chip-clear"], [data-action="dataset-clear"]');
@@ -1448,6 +1506,7 @@ document.addEventListener('click', async (event) => {
     if (query) query.value = '';
     paintDatasetChips(box);
     scheduleDraftSave();
+    syncStageFields();
     return;
   }
   const caret = event.target.closest('[data-action="chip-menu"], [data-action="dataset-menu"]');
@@ -1868,6 +1927,7 @@ document.addEventListener('input', (event) => {
   if (target && target.id === 'chat-input') syncSendButton();
   rememberServeDraft(event);
   if (draftEvent(target)) scheduleDraftSave();
+  if (target && target.dataset && target.dataset.field) syncStageFields();
 });
 
 document.addEventListener('change', async (event) => {
@@ -1882,6 +1942,7 @@ document.addEventListener('change', async (event) => {
   rememberServeDraft(event);
   if (draftEvent(event.target)) scheduleDraftSave();
   if (event.target.dataset && event.target.dataset.field === 'source') syncSource();
+  if (event.target.dataset && event.target.dataset.field) syncStageFields();
   if (event.target.dataset && event.target.dataset.field === 'eval_backend') {
     const scope = event.target.closest('section, form') || document;
     scope.querySelectorAll('[data-choices-from="eval_datasets_by_backend"]').forEach((input) => {
@@ -2104,6 +2165,7 @@ document.addEventListener('mousedown', (event) => {
     input.value = '';
     paintDatasetChips(box);
     showCombo(input, true);
+    syncStageFields();
     return;
   }
   if (input.dataset.multi === '1') {

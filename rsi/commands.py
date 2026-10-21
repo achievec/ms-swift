@@ -56,6 +56,49 @@ STAGE_COMMAND = {
     'export': 'export',
 }
 
+# Same maps as swift.ui LLMTrain.remove_useless_args. A filled AdaLoRA / VeRA / embedding
+# tab must not ride along on a LoRA causal-LM command.
+_TUNER_TABS = {
+    'lora': ['lora_rank', 'lora_alpha', 'lora_dropout', 'lora_dtype', 'use_rslora', 'use_dora'],
+    'llamapro': ['llamapro_num_new_blocks', 'llamapro_num_groups'],
+    'lisa': ['lisa_activated_layers', 'lisa_step_interval'],
+    'adalora': [
+        'adalora_target_r', 'adalora_init_r', 'adalora_tinit', 'adalora_tfinal', 'adalora_deltaT', 'adalora_beta1',
+        'adalora_beta2', 'adalora_orth_reg_weight'
+    ],
+    'lora_ga': [
+        'lora_ga_batch_size', 'lora_ga_iters', 'lora_ga_max_length', 'lora_ga_direction', 'lora_ga_scale',
+        'lora_ga_stable_gamma'
+    ],
+    'reft': ['reft_layers', 'reft_rank', 'reft_intervention_type'],
+    'vera': ['vera_rank', 'vera_projection_prng_key', 'vera_dropout', 'vera_d_initial'],
+    'boft': ['boft_block_size', 'boft_block_num', 'boft_dropout'],
+    'fourierft': ['fourier_n_frequency', 'fourier_scaling'],
+}
+_OPTIMIZER_TABS = {
+    'galore': ['use_galore', 'galore_with_embedding', 'galore_rank', 'galore_update_proj_gap'],
+    'lorap': ['lorap_lr_ratio'],
+    'multimodal': ['vit_lr', 'aligner_lr'],
+    'muon': ['use_muon'],
+}
+_TASK_TABS = {
+    'embedding': ['loss_type'],
+    'seq_cls': ['num_labels', 'use_chat_template'],
+}
+_VLLM_TABS = {
+    'colocate': [
+        'vllm_enable_prefix_caching', 'vllm_gpu_memory_utilization', 'vllm_tensor_parallel_size',
+        'vllm_max_model_len', 'sleep_level', 'offload_model', 'offload_optimizer'
+    ],
+    'server': ['async_generate', 'vllm_server_host', 'vllm_server_port', 'vllm_server_timeout'],
+    'llm_rollout': [
+        'tensor_parallel_size', 'data_parallel_size', 'max_model_len', 'gpu_memory_utilization', 'port'
+    ],
+}
+# One visible GPU cannot run DeepSpeed, FSDP, or sequence parallel. Passing --deepspeed
+# still imports the package, including the zero0 preset.
+_MULTI_GPU_ARGS = ('deepspeed', 'sequence_parallel_size', 'fsdp', 'deepspeed_autotp_size', 'zero_hpz_partition_size')
+
 
 def _repeat_value(key, value):
     if isinstance(value, (list, tuple)):
@@ -67,11 +110,99 @@ def _repeat_value(key, value):
     return None
 
 
+def _whole_number(value):
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value == int(value) else None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        number = float(text)
+    except ValueError:
+        return None
+    return int(number) if number == int(number) else None
+
+
+def selected_gpu_count(params: dict) -> int:
+    """How many CUDA devices this command will see. Missing GPU stays on device 0."""
+    gpu = (params or {}).get('gpu_id')
+    if gpu is None or gpu == '':
+        return 1
+    if isinstance(gpu, (list, tuple)):
+        devices = [str(item).strip() for item in gpu if str(item).strip() and str(item).strip() != 'cpu']
+        return len(devices)
+    text = str(gpu).strip()
+    if text == 'cpu':
+        return 0
+    return len([part for part in text.replace(',', ' ').split() if part and part != 'cpu'])
+
+
+def _drop_inactive_args(params: dict, stage: str) -> None:
+    """Drop tuner / optimizer / task args the Web-UI would omit for the selected tab."""
+    if stage not in {'sft', 'rl'}:
+        return
+    relations = {'tuner_type': _TUNER_TABS}
+    if stage == 'sft':
+        relations['optimizer'] = _OPTIMIZER_TABS
+        relations['task_type'] = _TASK_TABS
+    else:
+        relations['vllm_mode'] = _VLLM_TABS
+    for target, tabs in relations.items():
+        current = params.get(target)
+        if target == 'tuner_type' and not current:
+            current = 'lora'
+        elif target == 'vllm_mode' and not current:
+            current = 'colocate'
+        elif target == 'optimizer':
+            current = None
+            if params.get('use_galore'):
+                current = 'galore'
+            if params.get('lorap_lr_ratio'):
+                current = 'lorap'
+            if params.get('vit_lr') or params.get('aligner_lr'):
+                current = 'multimodal'
+            if params.get('use_muon'):
+                current = 'muon'
+        for tab, args in tabs.items():
+            if tab == 'lora' and current in {'longlora', 'adalora'}:
+                continue
+            if tab == 'lisa' and current == 'full' and params.get('lisa_activated_layers'):
+                continue
+            if tab == 'lora_ga' and current == 'lora' and params.get('init_weights') == 'lora-ga':
+                continue
+            if tab == current:
+                continue
+            for arg in args:
+                params.pop(arg, None)
+
+
+def _drop_single_gpu_args(params: dict) -> None:
+    size = _whole_number(params.get('sequence_parallel_size'))
+    if size is not None and size <= 1:
+        params.pop('sequence_parallel_size', None)
+    if selected_gpu_count(params) > 1:
+        return
+    for key in _MULTI_GPU_ARGS:
+        params.pop(key, None)
+
+
+def _command_params(stage: str, params: dict) -> dict:
+    cleaned = dict(params or {})
+    _drop_inactive_args(cleaned, stage)
+    _drop_single_gpu_args(cleaned)
+    return cleaned
+
+
 def build_argv(stage: str, params: dict) -> list:
     subcommand = STAGE_COMMAND.get(stage)
     if not subcommand:
         return []
-    if stage == 'sft' and str((params or {}).get('train_stage') or '').strip() == 'pt':
+    params = _command_params(stage, params)
+    if stage == 'sft' and str(params.get('train_stage') or '').strip() == 'pt':
         subcommand = 'pt'
     argv = ['swift', subcommand]
     for key, value in params.items():
@@ -159,8 +290,7 @@ def env_prefix(params: dict) -> str:
             parts.append(f'CUDA_VISIBLE_DEVICES={visible}')
         elif visible is None:
             parts.append('CUDA_VISIBLE_DEVICES=0')
-    use_ddp = params.get('use_ddp')
-    if use_ddp in {True, 'true', 'True', 1, '1'}:
+    if selected_gpu_count(params) > 1 and params.get('use_ddp') in {True, 'true', 'True', 1, '1'}:
         parts.append(f"NPROC_PER_NODE={params.get('ddp_num') or 1}")
     extra = str(params.get('envs') or '').strip()
     if extra:
@@ -180,7 +310,7 @@ def apply_process_env(env: dict, params: dict) -> dict:
             env.pop('CUDA_VISIBLE_DEVICES', None)
         elif visible:
             env['CUDA_VISIBLE_DEVICES'] = visible
-    if params.get('use_ddp') in {True, 'true', 'True', 1, '1'}:
+    if selected_gpu_count(params) > 1 and params.get('use_ddp') in {True, 'true', 'True', 1, '1'}:
         env['NPROC_PER_NODE'] = str(params.get('ddp_num') or 1)
     for token in str(params.get('envs') or '').split():
         if '=' not in token:

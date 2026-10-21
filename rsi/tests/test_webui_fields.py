@@ -90,7 +90,11 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         assert 'dora' not in sft['tuner_type']['choices']
         assert sft['torch_dtype']['choices'] == ['', 'bfloat16', 'float16', 'float32']
         assert 'flash_attention_2' in sft['attn_impl']['choices']
+        assert sft['deepspeed']['choices'][0] == ''
         assert 'zero3_offload' in sft['deepspeed']['choices']
+        assert schema['stage_layouts']['sft']['by_id']['deepspeed']['min_gpus'] == 2
+        assert schema['stage_layouts']['sft']['by_id']['use_ddp']['min_gpus'] == 2
+        assert schema['stage_layouts']['rl']['by_id']['sequence_parallel_size']['min_gpus'] == 2
 
         panel = schema['stage_layouts']['sft']['dataset_fields']
         data = {field['key']: field for field in panel}
@@ -136,6 +140,9 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         assert '内置示例' not in page
         assert '由实验创建时决定，不能在这里修改' in page
         assert 'renderBlocks' in page
+        assert 'syncStageFields' in page
+        assert 'data-min-gpus' in page
+        assert 'data-show-key' in page
         assert 'chip-clear' in page
         assert 'if (item.locked) return raw == null ? \'\' : raw;' in page
         assert '在线 RL' not in page

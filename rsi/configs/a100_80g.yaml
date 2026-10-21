@@ -17,6 +17,9 @@
 # - dataset_num_proc 8 and dataloader_num_workers 4 leave cores for vLLM.
 # - GRPO uses vLLM colocate + sleep_level 1 so training and rollout share the
 #   one GPU instead of reserving a second card.
+# - One GPU does not use DeepSpeed, DDP, or sequence parallel. Those controls
+#   stay hidden until two GPUs are selected, and the command leaves them out.
+#   Tuner tabs other than the selected method are hidden the same way.
 
 hardware:
   gpu: "1x NVIDIA A100-80G"
@@ -60,8 +63,6 @@ sft:
   neftune_noise_alpha: 0
   attn_impl: sdpa
   use_liger_kernel: false
-  deepspeed: ""
-  sequence_parallel_size: 1
   dataset_num_proc: 8
   dataloader_num_workers: 4
   load_from_cache_file: true
@@ -129,7 +130,6 @@ rl:
   offload_model: true
   offload_optimizer: true
   log_completions: true
-  deepspeed: ""
   quant_method: ""
   quant_bits: 4
   ref_model: ""

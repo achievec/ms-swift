@@ -782,6 +782,52 @@ def _insert_after_model(blocks: list, widget: dict) -> bool:
     return False
 
 
+# Shown only when at least two GPUs are selected. One card does not use them.
+_MULTI_GPU_WIDGETS = frozenset({'deepspeed', 'sequence_parallel_size', 'use_ddp', 'ddp_num'})
+
+# Tuner and task tabs that do not apply to the current selection stay off the form.
+# Keys match swift.ui.llm_train Tuner.tabs_to_filter / Task.tabs_to_filter.
+_TAB_SHOW = {
+    'lora_tab': ('tuner_type', ('lora', 'longlora', 'adalora')),
+    'llamapro_tab': ('tuner_type', ('llamapro', )),
+    'lisa_tab': ('tuner_type', ('full', )),
+    'adalora_tab': ('tuner_type', ('adalora', )),
+    'lora_ga_tab': ('init_weights', ('lora-ga', )),
+    'reft_tab': ('tuner_type', ('reft', )),
+    'vera_tab': ('tuner_type', ('vera', )),
+    'boft_tab': ('tuner_type', ('boft', )),
+    'fourierft_tab': ('tuner_type', ('fourierft', )),
+    'embed_tab': ('task_type', ('embedding', )),
+    'seq_cls_tab': ('task_type', ('seq_cls', )),
+}
+
+
+def _annotate_stage(blocks: list) -> None:
+    for block in blocks:
+        kind = block.get('kind')
+        if kind == 'row':
+            for item in block.get('widgets') or []:
+                if item.get('id') in _MULTI_GPU_WIDGETS:
+                    item['min_gpus'] = 2
+                # Gradio leaves this dropdown unset. An HTML select would otherwise
+                # submit the first entry, which is zero0, and swift then requires deepspeed.
+                if item.get('id') == 'deepspeed':
+                    choices = [str(choice) for choice in item.get('choices') or []]
+                    if '' not in choices:
+                        item['choices'] = ['', *choices]
+            continue
+        if kind in {'accordion', 'tab'}:
+            _annotate_stage(block.get('blocks') or [])
+            continue
+        if kind == 'tabs':
+            for tab in block.get('tabs') or []:
+                spec = _TAB_SHOW.get(tab.get('id') or '')
+                if spec:
+                    tab['show_key'] = spec[0]
+                    tab['show_values'] = list(spec[1])
+                _annotate_stage(tab.get('blocks') or [])
+
+
 def stage_layout(stage: str, device_count: int = 0) -> dict:
     """``sft`` mirrors LLM预训练/微调, ``rl`` mirrors LLM GRPO, ``eval`` mirrors LLM评测."""
     key = {'sft': 'sft', 'sft_eval': 'eval', 'rl': 'rl', 'rl_eval': 'eval'}[stage]
@@ -789,6 +835,8 @@ def stage_layout(stage: str, device_count: int = 0) -> dict:
     if key == 'eval':
         _insert_after_model(blocks, _adapters_widget())
     _fill_gpu(blocks, device_count)
+    if key in {'sft', 'rl'}:
+        _annotate_stage(blocks)
     return _layout(blocks)
 
 
