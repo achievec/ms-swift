@@ -819,6 +819,27 @@ def _insert_row_after(blocks: list, after_id: str, widget: dict) -> bool:
     return False
 
 
+def _append_to_row(blocks: list, row_id: str, widget: dict) -> bool:
+    """Append ``widget`` onto the existing row that already contains ``row_id``."""
+    for block in blocks:
+        kind = block.get('kind')
+        if kind == 'row':
+            widgets = block.get('widgets') or []
+            if any(item.get('id') == row_id for item in widgets):
+                if any(item.get('id') == widget.get('id') for item in widgets):
+                    return True
+                widgets.append(widget)
+                block['widgets'] = widgets
+                return True
+        elif kind in {'accordion', 'tab'} and _append_to_row(block.get('blocks') or [], row_id, widget):
+            return True
+        elif kind == 'tabs':
+            for tab in block.get('tabs') or []:
+                if _append_to_row(tab.get('blocks') or [], row_id, widget):
+                    return True
+    return False
+
+
 # Shown only when at least two GPUs are selected. One card does not use them.
 _MULTI_GPU_WIDGETS = frozenset({'deepspeed', 'sequence_parallel_size', 'use_ddp', 'ddp_num'})
 
@@ -938,10 +959,11 @@ def stage_layout(stage: str, device_count: int = 0, devices=None) -> dict:
     blocks = [_clone(block) for block in _unwrap_root(list(_built(key)))]
     if key == 'eval':
         _insert_after_model(blocks, _adapters_widget())
-        # The Web-UI eval tab has no base-model toggle. Keep it on the open form,
-        # directly under 评测数据集 / 评测数据个数 — not inside a collapsed accordion.
-        if not _insert_row_after(blocks, 'eval_limit', _eval_base_widget()):
-            _insert_row_after(blocks, 'eval_dataset', _eval_base_widget())
+        # Sit with 更多参数 / GPU — a lone checkbox under 评测数据个数 looked orphaned.
+        if not _append_to_row(blocks, 'more_params', _eval_base_widget()):
+            if not _append_to_row(blocks, 'gpu_id', _eval_base_widget()):
+                if not _insert_row_after(blocks, 'eval_limit', _eval_base_widget()):
+                    _insert_row_after(blocks, 'eval_dataset', _eval_base_widget())
     _fill_gpu(blocks, device_count, devices=devices)
     if key in {'sft', 'rl'}:
         _annotate_stage(blocks)

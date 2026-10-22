@@ -53,9 +53,10 @@ def test_eval_base_checkbox_sits_on_eval_forms():
         assert '(--eval_base)' not in widget['label']
         rows = [block for block in layout['blocks'] if block.get('kind') == 'row']
         ids = [[item['id'] for item in row.get('widgets') or []] for row in rows]
-        limit_at = next(index for index, row in enumerate(ids) if 'eval_limit' in row)
-        assert ids[limit_at + 1] == ['eval_base']
-        assert 'eval_base' not in ids[limit_at]
+        more_at = next(index for index, row in enumerate(ids) if 'more_params' in row)
+        assert 'eval_base' in ids[more_at]
+        assert 'gpu_id' in ids[more_at]
+        assert ['eval_base'] not in ids
         field = next(row for row in layout['fields'] if row['key'] == 'eval_base')
         assert field['type'] == 'checkbox'
         assert field['default'] is False
