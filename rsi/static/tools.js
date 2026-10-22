@@ -307,12 +307,8 @@ document.getElementById('load-data').addEventListener('click', async () => {
     const coverage = saved.inspect && saved.inspect.coverage ? saved.inspect.coverage : {};
     setCards((saved.inspect && saved.inspect.rows) || []);
     document.getElementById('data-meta').textContent = `第 ${saved.round_index} 轮 ${saved.filename || ''}，${describeCoverage(coverage)}`;
-    const pairs = [['本轮数据', saved.path]];
-    (saved.checkpoints || []).forEach((row) => {
-      pairs.push([`第${row.round_index}轮 ${row.kind}`, row.path]);
-    });
-    const note = `${saved.notice ? saved.notice + ' ' : ''}${saved.how_to}`;
-    showPaths('data-out', note, pairs);
+    const note = [saved.notice, saved.how_to].filter(Boolean).join(' ');
+    showPaths('data-out', note, [['正在查看', saved.path]]);
   } catch (err) {
     show('data-out', err.message);
   }

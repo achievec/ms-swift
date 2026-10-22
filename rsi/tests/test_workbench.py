@@ -85,7 +85,7 @@ def test_load_dataset_recorded_by_the_data_step(tmp_path, monkeypatch):
     body = found.json()
     assert body['path'].endswith('itops_mix.jsonl')
     assert 'VPN' in body['text'] or body['inspect']['coverage']['num_rows'] == 6
-    assert '服务器本地路径' in body['how_to']
+    assert '逐条看' in body['how_to']
 
 
 def test_dataset_notice_when_eval_still_uses_itops(tmp_path):
@@ -103,7 +103,7 @@ def test_dataset_notice_when_eval_still_uses_itops(tmp_path):
         'checkpoints': [],
     }
     body = latest_dataset(view)
-    assert 'IT 留出集' in body['notice']
+    assert '不是一套' in body['notice']
 
 
 def test_complete_reads_only_workbench_files(tmp_path, monkeypatch):

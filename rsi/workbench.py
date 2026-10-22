@@ -150,7 +150,7 @@ def write_split(home: Path, text: str, filename: str = 'data.jsonl', eval_ratio:
         'train_path': str((folder / 'train.jsonl').resolve()),
         'eval_path': str((folder / 'eval.jsonl').resolve()),
         'seed': int(seed),
-        'how_to': 'SFT 的数据集设置把来源选成「服务器本地路径」，粘贴训练路径。留出路径填到评测的自定义配置。',
+        'how_to': '不会改当前实验。下一轮 SFT 把数据来源选成「服务器本地路径」，粘贴训练集。评测数据集选「服务器上的文件」，粘贴留出集。',
     }
 
 
@@ -187,7 +187,7 @@ def pack_next_round(home: Path, text: str, filename: str = 'data.jsonl', min_sco
         'kept_path': str((folder / 'kept.jsonl').resolve()),
         'retry_path': str((folder / 'retry_prompts.jsonl').resolve()),
         'min_score': threshold,
-        'how_to': 'kept.jsonl 可直接当下一轮数据。retry_prompts.jsonl 只有题目，先在推理页启动服务，再点「用当前推理补全」。',
+        'how_to': '可继续用的文件能当下一轮训练集。待补全文件只有题目。先在训练页部署推理，再点「用当前推理补全」。',
     }
 
 
@@ -234,7 +234,7 @@ def latest_dataset(view: dict) -> dict:
         'text': text,
         'inspect': report,
         'checkpoints': checkpoints,
-        'how_to': '文本已填入上方输入框，可以直接检查、拆分或筛选。拆分结果用「服务器本地路径」填回 SFT 的数据集设置。',
+        'how_to': '上面可以逐条看问题和回答。要准备下一轮文件，用本页的拆分或筛选。',
         'notice': _eval_mismatch(path, view),
     }
 
@@ -246,7 +246,7 @@ def _eval_mismatch(dataset: Path, view: dict) -> str:
     if not configured or dataset.name == 'itops_mix.jsonl':
         return ''
     if 'itops_eval' in configured and dataset.name not in configured:
-        return '当前评测仍指向内置 IT 留出集，和这份训练数据不是同一套。拆分后把留出路径填到评测的自定义配置。'
+        return '评测还在用 IT 运维冒烟的留出集，和这份训练数据不是一套。下一轮评测请改成同一套题的留出集。'
     return ''
 
 
@@ -401,7 +401,7 @@ def write_completed(home: Path, rows: list, answer_fn, limit: int = FILL_LIMIT) 
         'pending_rows': pending,
         'next_path': str(next_path.resolve()),
         'waiting_path': waiting_path,
-        'how_to': 'SFT 的数据集设置把来源选成「服务器本地路径」，粘贴 next.jsonl。不会替换当前实验正在用的数据集。',
+        'how_to': '不会替换当前实验的数据集。下一轮 SFT 把数据来源选成「服务器本地路径」，粘贴 next.jsonl。',
     }
 
 

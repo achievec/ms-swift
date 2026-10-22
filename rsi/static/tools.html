@@ -13,20 +13,21 @@
     <a href="/">返回训练</a>
   </header>
   <main>
+    <section class="intro">
+      <h1>看本轮的题，并准备下一轮要用的文件</h1>
+      <p>这一页不训练，也不改当前实验。训练、评测、推理和日常导出都在训练页。这里只做三件事：查看题目和回答、写出下一轮的数据文件、查看报告并确认推理是否已经打开。</p>
+    </section>
+
     <section class="panel">
-      <h2>数据检查</h2>
-      <p class="muted">按条查看问题和回答，并标出缺的关键词。拆分和筛选只生成文件，SFT 的数据集设置里选「服务器本地路径」粘贴，不会自动改当前实验。</p>
+      <h2>1. 看本轮学过的题</h2>
+      <p class="muted">先选实验，再读取这一轮 SFT 用过的数据。每条显示问题和回答。红色关键词是回答里没有出现的。</p>
       <label>实验<select id="run"></select></label>
       <div class="row-actions">
         <button type="button" id="load-data" class="primary">读取本轮数据</button>
-        <button type="button" id="pick-file" class="ghost">选择文件</button>
+        <button type="button" id="pick-file" class="ghost">从电脑打开一份 jsonl</button>
         <input id="file" type="file" accept=".jsonl,.json,.txt" hidden />
       </div>
       <p id="data-meta" class="muted">还没有载入数据。</p>
-      <details>
-        <summary>粘贴 jsonl</summary>
-        <textarea id="data-text" placeholder="需要手工贴入时再打开"></textarea>
-      </details>
       <div class="row-actions" id="filters" hidden>
         <button type="button" data-filter="all" class="primary">全部</button>
         <button type="button" data-filter="miss">缺关键词</button>
@@ -34,30 +35,54 @@
       </div>
       <div id="row-list"></div>
       <div id="pager" class="pager"></div>
-      <label>留出比例<input id="eval-ratio" type="number" min="0.05" max="0.9" step="0.05" value="0.2" /></label>
-      <div class="row-actions">
-        <button type="button" id="inspect">重新检查</button>
-        <button type="button" id="split">拆分</button>
-        <button type="button" id="pack">筛下一轮候选</button>
-        <button type="button" id="complete">用当前推理补全</button>
+      <details>
+        <summary>手工粘贴 jsonl</summary>
+        <textarea id="data-text" placeholder="只有没法选文件时才用"></textarea>
+        <div class="row-actions">
+          <button type="button" id="inspect">检查粘贴的内容</button>
+        </div>
+      </details>
+    </section>
+
+    <section class="panel">
+      <h2>2. 准备下一轮的文件</h2>
+      <p class="muted">这三个操作只在服务器上写出新文件，并给出路径。当前实验的数据集不会被换掉。下一轮到训练页后，SFT 选「服务器本地路径」粘贴训练集，评测选「服务器上的文件」粘贴留出集。</p>
+      <div class="steps">
+        <article class="step">
+          <h3>拆成训练集和留出集</h3>
+          <p>按比例切开。训练集给下一轮 SFT，留出集给评测，两边题目不重复。</p>
+          <label>留出比例<input id="eval-ratio" type="number" min="0.05" max="0.9" step="0.05" value="0.2" /></label>
+          <div class="row-actions"><button type="button" id="split" class="primary">拆分</button></div>
+        </article>
+        <article class="step">
+          <h3>挑出答得不好的题</h3>
+          <p>关键词都命中的留下，下一轮可以继续用。没答全的只保留题目，方便重写回答。</p>
+          <div class="row-actions"><button type="button" id="pack" class="primary">筛下一轮候选</button></div>
+        </article>
+        <article class="step">
+          <h3>用已经开着的推理补回答</h3>
+          <p>先在训练页部署推理。这里只补本页生成的待补全文件，一次最多 20 条，不会再开一轮训练。</p>
+          <div class="row-actions"><button type="button" id="complete" class="primary">用当前推理补全</button></div>
+        </article>
       </div>
       <div class="log-panel">
         <div class="log-head"><h3>生成的文件</h3><span class="log-tools"><button type="button" class="ghost" data-log-copy>复制</button><button type="button" class="ghost" data-log-fullscreen>全屏</button></span></div>
-        <div id="data-out" class="result">还没有新文件。</div>
+        <div id="data-out" class="result">还没有新文件。先读取数据，再拆分或筛选。</div>
       </div>
     </section>
+
     <section class="panel">
-      <h2>实验报告与导出</h2>
-      <p class="muted">只读报告，内容来自实验记录。日常导出用训练页的「模型导出」。这里在还没晋级时也可以合并本轮 SFT 或 RL 检查点，写到单独目录，不替换训练结果。使用上方选中的实验。</p>
+      <h2>3. 看结果，确认推理</h2>
+      <p class="muted">报告和训练页的实验记录是同一份。推理检查只看服务开了没有。合并后的模型，日常在训练页「模型导出」里做；这里的导出写到另一个目录，不替换训练检查点。</p>
       <div class="row-actions">
-        <button type="button" id="report">生成报告</button>
+        <button type="button" id="report" class="primary">生成报告</button>
         <button type="button" id="ready">检查推理是否就绪</button>
         <button type="button" id="export">合并导出 LoRA</button>
         <button type="button" id="export-status">查看导出状态</button>
       </div>
       <div class="log-panel">
         <div class="log-head"><h3>输出</h3><span class="log-tools"><button type="button" class="ghost" data-log-copy>复制</button><button type="button" class="ghost" data-log-fullscreen>全屏</button></span></div>
-        <div id="run-out" class="result">选择一个实验。</div>
+        <div id="run-out" class="result">选择上方的实验后再操作。</div>
       </div>
     </section>
   </main>
