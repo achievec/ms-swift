@@ -69,7 +69,7 @@ def swift_ui_fallback_page(error: str) -> str:
     {hint}
     <p>启动时的错误（也写在 rsi/.rsi.log）：</p>
     <pre>{detail}</pre>
-    <p><a href="/">返回大模型训练平台</a></p>
+    <p><a href="/">返回大模型微调工作台</a></p>
   </main>
 </body>
 </html>

@@ -369,7 +369,7 @@ def test_swift_ui_fallback_on_same_port(tmp_path, monkeypatch):
         page = api.get('/swift-ui/')
         assert page.status_code == 200
         assert 'SWIFT Web-UI' in page.text
-        assert '返回大模型训练平台' in page.text
+        assert '返回大模型微调工作台' in page.text
         if not mounted:
             import html
             assert app.state.swift_ui is False
