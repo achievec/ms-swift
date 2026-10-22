@@ -68,13 +68,9 @@ Local files are checked against the shapes ms-swift's `AutoPreprocessor` accepts
 
 A `solution` or `answer` field is kept for GRPO, including rows that only have a user turn. Public dataset ids are recorded and not downloaded in mock mode; ms-swift resolves them when the real CLI runs. Upload also accepts `.zip` / `.tar` / `.tar.gz` / `.tgz`: the server extracts under `$RSI_HOME/uploads/<uuid>/`, rewrites relative `images`/`videos`/`audios` paths to absolute ones, and points training at the resolved jsonl. Text uploads stay at 20MB; archives default to 500MB (`RSI_UPLOAD_ARCHIVE_MAX_BYTES`). Packing notes: [`docs/rsi/dataset-archive-upload.md`](../docs/rsi/dataset-archive-upload.md). The sample files are:
 
-- `rsi/examples/itops_mix.jsonl` — six IT tickets, messages + `solution`. Smoke path only.
-- `rsi/examples/itops_eval.jsonl` — four held-out tickets for that smoke set.
-- `rsi/examples/helpdesk_train.jsonl` — 480 IT helpdesk tickets for an acceptance run (VPN, mail, disk, print, domain account, Wi-Fi, share, Git, laptop, meeting audio, badge, expense login).
-- `rsi/examples/helpdesk_eval.jsonl` — 120 held-out tickets. No user prompt is shared with the training file.
-- `rsi/examples/itops_reward.py` — GRPO reward plugin (`itops_checklist`). It scores `solution` keywords, so it covers both the smoke tickets and `helpdesk_*.jsonl`. Mock mode never imports it. Real `swift rlhf` loads it via `--external_plugins`.
-
-Acceptance run: base `Qwen/Qwen2.5-7B-Instruct` (`model_type=qwen2`, `template=qwen2_5`). On SFT set 数据来源 to 服务器本地路径 and `--dataset` to this checkout's `helpdesk_train.jsonl`. Leave 验证集拆分比例 at 0 and 句子最大长度 at 2048. On SFT eval and RL eval set `custom_eval_config` to `helpdesk_eval.jsonl` and `eval_limit` to 120 (the preset default 20 only scores 20 rows). Check 同时评测基座 when you want the base-vs-checkpoint table. Pass line stays 0.5: at or above unlocks RL; below only unlocks 开启下一轮. RL keeps `reward_funcs=itops_checklist format` and `external_plugins=rsi/examples/itops_reward.py`.
+- `rsi/examples/itops_mix.jsonl` — six IT tickets, messages + `solution`
+- `rsi/examples/itops_eval.jsonl` — four held-out tickets
+- `rsi/examples/itops_reward.py` — GRPO reward plugin (`itops_checklist`). Mock mode never imports it. Real `swift rlhf` loads it via `--external_plugins`.
 
 ## Backend
 
@@ -125,7 +121,7 @@ rsi_home: /opt/meituan/dolphinfs_liubo108/ms-swift/workspace
 
 实验目录（`rsi.sqlite`、每次运行的日志和检查点、上传文件）默认用 `fetch.yaml` 的 `rsi_home`：`/opt/meituan/dolphinfs_liubo108/ms-swift/workspace`。环境变量 `RSI_HOME` 优先。这个目录不存在、并且上一级也不存在或不可写时（Mac 上没有 dolphinfs），改用仓库里的 `rsi/workspace`，不会去创建 `/opt/meituan/...`。实验记录库写失败时，接口返回的中文错误里带数据库绝对路径，这时把 `RSI_HOME` 指到别的可写目录即可。
 
-冒烟可以用仓库里的 `rsi/examples/itops_mix.jsonl`（6 条）。整轮验收用同目录的 `helpdesk_train.jsonl`（480 条）和 `helpdesk_eval.jsonl`（120 条）。训练命令里的绝对路径是当前机器上这份检出的路径。GPU 上若仓库在 `/home/hadoop-sailorqa-ai/ms-swift`，SFT 就填 `/home/hadoop-sailorqa-ai/ms-swift/rsi/examples/helpdesk_train.jsonl`；另一台机器换成自己的检出根目录。评测不要沿用默认的 4 条 `itops_eval.jsonl` 和取样数 20，把自定义评测配置指到 `helpdesk_eval.jsonl`，取样数改为 120。验证集拆分比例保持 0。
+内置训练集是仓库里的 `rsi/examples/itops_mix.jsonl`（6 条 IT 工单）。训练命令里的绝对路径是当前机器上这份检出的路径，不是另一台电脑的家目录。例如 GPU 上会写成 `/home/hadoop-sailorqa-ai/ms-swift/rsi/examples/itops_mix.jsonl`，文件就在该仓库的 `rsi/examples/` 下。
 
 在 Linux 上，`./run.sh` 用 `fetch.yaml` 的 `train_python`（`/usr/local/conda/envs/model-train/bin/python`）启动 RSI 本身，并先 `conda activate model-train`。这个文件存在时不会改用 `rsi/.venv`。文件不存在时日志会写明路径，再退回 `.venv`。`RSI_TRAIN_PYTHON` 覆盖解释器。`RSI_CONDA_ENV` 换环境名；设为空字符串则不激活。macOS 仍用 `rsi/.venv`。
 
