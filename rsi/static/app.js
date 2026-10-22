@@ -2962,20 +2962,26 @@ function showCombo(input, browse) {
   const chip = input.dataset.chip === '1';
   const query = (browse && (multi || chip) ? '' : (chip ? input.value.trim() : (multi ? comboFilterText(input) : input.value.trim()))).toLowerCase();
   const all = catalogEntries(input.dataset.choicesFrom, input);
-  const cap = input.dataset.choicesFrom === 'eval_datasets_by_backend' ? all.length : 40;
+  // Model / type / template catalogs are large; match Gradio and show the full
+  // list when browsing. Keep a filter cap so typing stays snappy.
+  const source = input.dataset.choicesFrom || '';
+  const fullCatalog = source === 'eval_datasets_by_backend'
+    || source === 'models' || source === 'model_types' || source === 'templates' || source === 'datasets';
+  const filterCap = fullCatalog ? 80 : 40;
   const exact = !multi && !chip && query
     ? all.findIndex((item) => item.value.toLowerCase() === query || item.label.toLowerCase() === query)
     : -1;
   let shown;
   if (browse && exact >= 0) {
+    const window = fullCatalog ? 40 : filterCap;
     const start = Math.max(0, exact - 8);
-    shown = all.slice(start, start + cap);
+    shown = all.slice(start, start + window);
   } else if (!query) {
-    shown = all.slice(0, cap);
+    shown = fullCatalog ? all : all.slice(0, filterCap);
   } else {
     shown = all.filter((item) => (
       item.value.toLowerCase().includes(query) || item.label.toLowerCase().includes(query)
-    )).slice(0, cap);
+    )).slice(0, filterCap);
   }
   if (!shown.length) {
     list.hidden = true;

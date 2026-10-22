@@ -447,9 +447,10 @@ def _build_public_schema(devices) -> dict:
         'llm_infer': llm_infer_layout(device_count, devices=device_list),
         'llm_export': _wire_export_layout(device_count, device_list),
         'catalog': {
-            'models': sorted(catalog['models']),
-            'model_types': sorted(catalog['model_types']),
-            'templates': sorted(catalog['templates']),
+            # Keep Web-UI / ModelType registration order (Qwen first). Do not sort.
+            'models': list(catalog['models']),
+            'model_types': list(catalog['model_types']),
+            'templates': list(catalog['templates']),
             'datasets': datasets,
             'hf_datasets': hf_dataset_choices(),
             'eval_datasets': eval_datasets_by_backend()['Native'],

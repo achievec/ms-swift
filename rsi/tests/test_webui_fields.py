@@ -47,10 +47,14 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         catalog = schema['catalog']
         assert len(catalog['models']) > 100
         assert 'Qwen/Qwen2.5-7B-Instruct' in catalog['models']
+        # Match Web-UI get_model_list(): ModelType starts with qwen, not A-Z sort.
+        assert catalog['models'][0].startswith('Qwen/')
+        assert catalog['models'][0] != '01ai/Yi-1.5-34B'
         assert catalog['by_model']['Qwen/Qwen2.5-7B-Instruct']['model_type'] == 'qwen2'
         assert catalog['by_model']['Qwen/Qwen2.5-7B-Instruct']['template'] == 'qwen2_5'
         assert 'qwen2' in catalog['model_types']
         assert 'qwen2_5' in catalog['templates']
+        assert catalog['model_types'][0] == 'qwen'
         assert catalog['datasets'][:14] == [
             'AI-ModelScope/alpaca-gpt4-data-zh',
             'AI-ModelScope/LongAlpaca-12k',

@@ -575,7 +575,7 @@ dialog {
 .combo-anchor { position: relative; }
 .combo-list {
   position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 2px);
-  max-height: 168px; overflow: auto;
+  max-height: min(42vh, 320px); overflow: auto;
   background: #ffffff;
   border: 1px solid #e5e7eb;
   border-radius: 8px;

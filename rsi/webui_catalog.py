@@ -133,12 +133,18 @@ def _first_string(body):
 
 
 def _parse_models(type_names):
+    """Build the model id list in the same order as ``get_model_list()``.
+
+    Web-UI walks ``ModelType.get_model_name_list()`` then each type's groups.
+    Sorting alphabetically would put ``01ai/...`` first and bury Qwen.
+    """
     known_types = set(type_names)
-    models = []
+    by_type = {name: [] for name in type_names}
+    unknown = []
     mapping = {}
     seen = set()
     if not MODEL_DIR.is_dir():
-        return models, mapping
+        return [], mapping
     for path in sorted(MODEL_DIR.glob('*.py')):
         try:
             calls = _find_calls(path.read_text(encoding='utf-8'))
@@ -175,8 +181,11 @@ def _parse_models(type_names):
                     if not model_id or model_id in seen:
                         continue
                     seen.add(model_id)
-                    models.append(model_id)
                     mapping[model_id] = {'model_type': model_type, 'template': template}
+                    if model_type in by_type:
+                        by_type[model_type].append(model_id)
+                    else:
+                        unknown.append(model_id)
             masked = _mask(body, group_spans)
             meta_template = _META_TEMPLATE.search(masked)
             fallback = meta_template.group(1) if meta_template else None
@@ -193,6 +202,10 @@ def _parse_models(type_names):
                     current = mapping.get(model_id)
                     if current and current['template'] is None:
                         current['template'] = fallback
+    models = []
+    for type_name in type_names:
+        models.extend(by_type[type_name])
+    models.extend(unknown)
     return models, mapping
 
 
