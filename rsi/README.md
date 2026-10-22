@@ -2,7 +2,7 @@
 
 Click-through recursive self-improvement on top of ms-swift:
 
-**SFT → SFT eval**. Dataset settings live on SFT. A passed SFT eval can enter online RL, open the next round, or finish the run. A failed SFT eval can only open the next round. After RL eval, a pass can finish or open the next round; a failure only opens the next round. There is no separate stop action.
+**SFT → SFT eval**. Dataset settings live on SFT. A passed SFT eval can enter online RL, open the next round, or finish the run. A failed SFT eval can only open the next round. After RL eval, a pass can finish or open the next round; a failure only opens the next round. Finishing marks the experiment complete but does not lock「下一轮数据」: you can still promote and start another round from prior checkpoints. There is no separate stop action.
 
 The UI speaks Chinese. Parameter names match the existing Gradio Web-UI and the `swift sft` / `swift rlhf` / `swift eval` / `swift deploy` CLIs. ms-swift itself is not modified; this app shells out to it only when you ask.
 

@@ -1957,10 +1957,17 @@ class Pipeline:
 
     def decide(self, run_id: str, action: str) -> dict:
         run = self._require_run(run_id)
-        if run.get('status') != 'active':
+        status = run.get('status')
+        if status not in {'active', 'completed'}:
             raise PipelineError('实验已结束')
         rnd = self.store.get_round(run_id, run['round_index'])
-        if not rnd or rnd['status'] != 'active':
+        if not rnd:
+            raise PipelineError('当前轮次已结束，不能再改')
+        # After 「完成」, only 「下一轮数据」may reopen this round; other actions stay closed.
+        if status == 'completed':
+            if action != 'next' or rnd.get('status') != 'closed':
+                raise PipelineError('实验已结束')
+        elif rnd.get('status') != 'active':
             raise PipelineError('当前轮次已结束，不能再改')
         active = self.store.latest_active_steps(run_id, rnd['round_index'])
         allowed = {item['id'] for item in decision_actions(run, rnd, active)[0]}
@@ -1971,6 +1978,9 @@ class Pipeline:
             if action == 'finish':
                 self.store.close_round(conn, run_id, rnd['round_index'], '完成')
                 self.store.set_run_status(conn, run_id, 'completed')
+            elif action == 'next' and status == 'completed':
+                self.store.reopen_round(conn, run_id, rnd['round_index'])
+                self.store.set_run_status(conn, run_id, 'active')
             self.store.set_current_stage(conn, run_id, focus)
             step_id = self.store.insert_step(conn, run_id, rnd['round_index'], 'decide', {'action': action}, 'rsi')
             self.store.finish_step(conn, step_id, 'succeeded', {'action': action}, ACTION_LABELS[action] + '\n', '')

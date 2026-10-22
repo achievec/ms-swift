@@ -342,6 +342,13 @@ class Store:
             'UPDATE rounds SET status=?, note=?, closed_at=? WHERE run_id=? AND round_index=? AND status=?',
             ('closed', note, utcnow(), run_id, round_index, 'active'))
 
+    def reopen_round(self, conn, run_id, round_index):
+        """Undo 「完成」so the same round can promote and open the next one."""
+        conn.execute(
+            'UPDATE rounds SET status=?, note=NULL, closed_at=NULL '
+            'WHERE run_id=? AND round_index=? AND status=?',
+            ('active', run_id, round_index, 'closed'))
+
     def clear_promotion(self, conn, run_id, round_index):
         conn.execute(
             'UPDATE rounds SET promoted_checkpoint=NULL, promoted_kind=NULL, promoted_score=NULL '

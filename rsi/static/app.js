@@ -1224,9 +1224,13 @@ function renderTerminal() {
     model_type: run.model_type || '',
     template: run.template || '',
   };
-  return `<section class="panel"><h2>${completed ? '实验已完成' : '实验已结束'}</h2><p>本轮到此结束。已有检查点仍留在记录里。</p>
+  const canNext = completed && (state.view.flow.actions || []).some((item) => item.id === 'next');
+  return `<section class="panel"><h2>${completed ? '实验已完成' : '实验已结束'}</h2>
+    <p>${canNext ? '本轮已标记完成。仍可点「下一轮数据」晋级并开下一轮，检查点都还在。' : '本轮到此结束。已有检查点仍留在记录里。'}</p>
     <div class="infer-form">${renderLockedModelRow([], values)}</div>
-    <div class="row-actions"><button type="button" class="primary" data-action="open-serve">去部署推理服务</button><button type="button" class="ghost" data-action="open-export">去模型导出</button></div>
+    <div class="row-actions">${canNext ? '<button type="button" class="primary" data-decision="next">下一轮数据</button>' : ''}
+      <button type="button" class="${canNext ? 'ghost' : 'primary'}" data-action="open-serve">去部署推理服务</button>
+      <button type="button" class="ghost" data-action="open-export">去模型导出</button></div>
   </section>`;
 }
 
@@ -2224,6 +2228,19 @@ document.addEventListener('click', async (event) => {
         stage = 'finish';
       }
       if (stage === 'next_data' || stage === 'sft_next' || stage === 'rl_next' || stage === 'promote') {
+        // 「完成」closes the run; choosing 下一轮数据 reopens it before promote/next_round.
+        if (state.view.run.status === 'completed') {
+          const payload = await api(`/api/runs/${state.view.run.id}/decide`, {
+            method: 'POST',
+            body: JSON.stringify({ action: 'next' }),
+          });
+          state.view = payload.view;
+          state.stage = payload.stage || 'promote';
+          state.tab = 'flow';
+          toast(payload.view.flow && payload.view.flow.prompt ? payload.view.flow.prompt : '已开启下一轮入口');
+          render();
+          return;
+        }
         const promoted = state.view.round && state.view.round.promoted_checkpoint;
         stage = promoted ? 'next_round' : 'promote';
       }

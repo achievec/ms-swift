@@ -109,13 +109,28 @@ def _round_open(run, rnd) -> bool:
                 and rnd.get('round_index') == run.get('round_index'))
 
 
+def _round_finished(run, rnd) -> bool:
+    """True when this run ended on the round we are viewing (「完成」)."""
+    return bool(run and rnd and run.get('status') == 'completed'
+                and rnd.get('round_index') == run.get('round_index'))
+
+
 def decision_actions(run: dict, rnd: dict | None, active: dict) -> tuple:
-    """Buttons for the frontier gate. Empty when this round is not waiting on a choice."""
-    if not _round_open(run, rnd):
-        return [], ''
+    """Buttons for the frontier gate. Empty when this round is not waiting on a choice.
+
+    After 「完成」, the run is closed but 「下一轮数据」stays available so a later
+    round can still start from prior checkpoints. Fail-only gates are unchanged.
+    """
     rl_verdict = eval_verdict(active.get('rl_eval'))
     sft_verdict = eval_verdict(active.get('sft_eval'))
     rl_step = active.get('rl') or {}
+    if _round_finished(run, rnd):
+        # Finish only opens on a pass; keep offering next so completion is not a dead end.
+        if rl_verdict is True or (rl_verdict is None and sft_verdict is True):
+            return _actions(['next']), '实验已完成，仍可开启下一轮。'
+        return [], ''
+    if not _round_open(run, rnd):
+        return [], ''
     if rl_verdict is not None:
         if rl_verdict:
             return _actions(['next', 'finish']), 'RL 评测已通过。'
@@ -215,15 +230,17 @@ def assemble_flow(run, rnd, active, status_of, metric_of) -> dict:
     action_ids = {item['id'] for item in actions}
     open_round = _round_open(run, rnd)
     went_next = _done(active, 'next_round')
-    finished = run.get('status') == 'completed' and rnd and rnd.get('round_index') == run.get('round_index')
+    finished = _round_finished(run, rnd)
+    # A finished round still exposes the same eval frontier so sibling exits stay lit.
+    frontier_open = open_round or (finished and not went_next)
     finished_after_rl = bool(finished and rl_verdict is not None)
     finished_from_sft = bool(finished and rl_verdict is None)
     next_from_rl = bool(went_next and rl_verdict is not None)
     next_from_sft = bool(went_next and rl_verdict is None)
 
-    if open_round and rl_verdict is not None:
+    if frontier_open and rl_verdict is not None:
         frontier = 'rl'
-    elif open_round and not rl_started and sft_verdict is not None:
+    elif frontier_open and not rl_started and sft_verdict is not None:
         frontier = 'sft'
     else:
         frontier = None

@@ -162,13 +162,32 @@ def test_finish_ends_the_run_and_rl_eval_splits_pass_and_fail(client):
     assert view['run']['status'] == 'completed'
     assert finished.json()['stage'] == 'finish'
     assert view['mutable'] is False
-    assert view['flow']['actions'] == []
+    # 「完成」must not permanently lock the next-round exit.
+    assert _ids(view) == ['next']
     node = {item['id']: item for item in view['flow']['nodes']}
     assert node['sft_finish']['status'] == 'succeeded'
+    assert node['sft_next']['status'] == 'ready'
+    assert node['sft_next']['clickable'] is True
     assert node['rl_finish']['status'] == 'locked'
+    assert node['sft_fail']['status'] == 'locked'
     assert 'stop' not in node
     assert any(item['kind'] == 'sft' for item in view['checkpoints'])
     assert _run(api, run_id, 'rl', {}).status_code == 400
+    assert api.post(f'/api/runs/{run_id}/decide', json={'action': 'finish'}).status_code == 400
+    assert api.post(f'/api/runs/{run_id}/decide', json={'action': 'rl'}).status_code == 400
+    reopened = api.post(f'/api/runs/{run_id}/decide', json={'action': 'next'})
+    assert reopened.status_code == 200, reopened.text
+    assert reopened.json()['stage'] == 'promote'
+    opened = reopened.json()['view']
+    assert opened['run']['status'] == 'active'
+    assert opened['round']['status'] == 'active'
+    assert opened['mutable'] is True
+    sft_path = next(row['path'] for row in opened['candidates'] if row['kind'] == 'sft')
+    assert _run(api, run_id, 'promote', {'choice': 'sft', 'reason': '完成后继续'}).status_code == 200
+    nxt = _run(api, run_id, 'next_round', {'reuse_dataset': True})
+    assert nxt.status_code == 200, nxt.text
+    assert nxt.json()['view']['run']['round_index'] == 2
+    assert nxt.json()['view']['round']['base_model'] == sft_path
 
     continued = _create(api, 'RL 评测未通过')
     _through_sft_eval(api, continued)
@@ -212,6 +231,24 @@ def test_finish_ends_the_run_and_rl_eval_splits_pass_and_fail(client):
     assert passed_nodes['rl_fail']['status'] == 'locked'
     assert any(edge['from'] == 'rl_eval' and edge['to'] == 'rl_finish' and edge['live'] for edge in passed_view['flow']['edges'])
     assert any(edge['from'] == 'rl_eval' and edge['to'] == 'rl_fail' and not edge['live'] for edge in passed_view['flow']['edges'])
+
+    # Screenshot case: RL → RL 评测通过 → 完成 must leave 下一轮数据 unlocked.
+    done_rl = api.post(f'/api/runs/{passed_rl}/decide', json={'action': 'finish'})
+    assert done_rl.status_code == 200, done_rl.text
+    after = done_rl.json()['view']
+    assert after['run']['status'] == 'completed'
+    assert _ids(after) == ['next']
+    after_nodes = {item['id']: item for item in after['flow']['nodes']}
+    assert after_nodes['rl_finish']['status'] == 'succeeded'
+    assert after_nodes['rl_next']['status'] == 'ready'
+    assert after_nodes['rl_next']['clickable'] is True
+    assert after_nodes['rl_fail']['status'] == 'locked'
+    assert any(edge['from'] == 'rl_eval' and edge['to'] == 'rl_next' and edge['live'] for edge in after['flow']['edges'])
+    assert any(edge['from'] == 'rl_eval' and edge['to'] == 'rl_fail' and not edge['live'] for edge in after['flow']['edges'])
+    resume = api.post(f'/api/runs/{passed_rl}/decide', json={'action': 'next'})
+    assert resume.status_code == 200, resume.text
+    assert resume.json()['view']['run']['status'] == 'active'
+    assert resume.json()['stage'] == 'promote'
 
 
 def test_guide_draws_every_branch_before_evaluation(client):
@@ -273,6 +310,9 @@ def test_page_hides_hardware_and_stop_copy():
     assert '递归自改进' not in html
     assert '新建 RSI' not in html
     assert '>RSI<' not in html
+    assert "action: 'next'" in script
+    assert '仍可点「下一轮数据」' in script
+    assert "status === 'completed'" in script
 
 
 def _js_function(source, name):
