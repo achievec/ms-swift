@@ -13,6 +13,8 @@ import json
 import re
 from pathlib import Path
 
+# Plain text / jsonl upload and validation ceiling. Archives use a higher
+# limit via RSI_UPLOAD_ARCHIVE_MAX_BYTES (see dataset_archive.archive_max_bytes).
 MAX_BYTES = 20 * 1024 * 1024
 ROLES = {'system', 'user', 'assistant', 'tool', 'tool_call'}
 PUBLIC_ID_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*(?:#[0-9]+)?$')

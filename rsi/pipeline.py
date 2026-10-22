@@ -40,7 +40,14 @@ from rsi.commands import (
 )
 from rsi.llm_export_spec import CALIB_QUANT_METHODS, EXPORT_QUANT_KEYS, export_quant_available
 from rsi.llm_infer_spec import chat_request_body, cuda_visible_devices, template_default_system
-from rsi.dataset_validate import MAX_BYTES, validate_file, validate_public_id
+from rsi.dataset_archive import (
+    archive_max_bytes,
+    extract_archive,
+    is_archive_filename,
+    process_extracted_dataset,
+    text_upload_max_bytes,
+)
+from rsi.dataset_validate import validate_file, validate_public_id
 from rsi.flow import ACTION_LABELS, assemble_flow, blocked_message, decision_actions, stage_unlocked
 from rsi.logtail import (
     LIVE_TAIL_BYTES,
@@ -533,9 +540,33 @@ class Pipeline:
         return run
 
     def save_upload(self, filename: str, data: bytes) -> dict:
-        if len(data) > MAX_BYTES:
-            raise PipelineError('文件超过 20MB')
-        suffix = Path(filename or 'data.jsonl').suffix.lower()
+        name = filename or 'data.jsonl'
+        if is_archive_filename(name):
+            limit = archive_max_bytes()
+            if len(data) > limit:
+                raise PipelineError(f'压缩包超过 {limit // (1024 * 1024)}MB')
+            dest_dir = self.home / 'uploads' / uuid.uuid4().hex
+            try:
+                extract_archive(name, data, dest_dir)
+                resolved, media_warnings = process_extracted_dataset(dest_dir)
+            except ValueError as exc:
+                shutil.rmtree(dest_dir, ignore_errors=True)
+                raise PipelineError(str(exc)) from exc
+            except Exception:
+                shutil.rmtree(dest_dir, ignore_errors=True)
+                raise
+            report = validate_file(resolved)
+            if media_warnings:
+                warnings = list(report.get('warnings') or [])
+                for item in media_warnings[:20]:
+                    warnings.append(item)
+                report['warnings'] = warnings
+            return {'path': str(resolved), 'filename': name, 'validation': report}
+
+        limit = text_upload_max_bytes()
+        if len(data) > limit:
+            raise PipelineError(f'文件超过 {limit // (1024 * 1024)}MB')
+        suffix = Path(name).suffix.lower()
         if suffix not in {'.jsonl', '.json', '.txt'}:
             suffix = '.jsonl'
         dest_dir = self.home / 'uploads'
@@ -543,7 +574,7 @@ class Pipeline:
         dest = dest_dir / f'{uuid.uuid4().hex}{suffix}'
         dest.write_bytes(data)
         report = validate_file(dest)
-        return {'path': str(dest), 'filename': filename, 'validation': report}
+        return {'path': str(dest), 'filename': name, 'validation': report}
 
     def _upload_path(self, raw: str) -> Path:
         uploads = (self.home / 'uploads').resolve()

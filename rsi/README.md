@@ -68,7 +68,7 @@ Local files are checked against the shapes ms-swift's `AutoPreprocessor` accepts
 - alpaca `instruction` + `output`
 - `query` + `response`
 
-A `solution` or `answer` field is kept for GRPO, including rows that only have a user turn. Public dataset ids are recorded and not downloaded in mock mode; ms-swift resolves them when the real CLI runs. The sample files are:
+A `solution` or `answer` field is kept for GRPO, including rows that only have a user turn. Public dataset ids are recorded and not downloaded in mock mode; ms-swift resolves them when the real CLI runs. Upload also accepts `.zip` / `.tar` / `.tar.gz` / `.tgz`: the server extracts under `$RSI_HOME/uploads/<uuid>/`, rewrites relative `images`/`videos`/`audios` paths to absolute ones, and points training at the resolved jsonl. Text uploads stay at 20MB; archives default to 500MB (`RSI_UPLOAD_ARCHIVE_MAX_BYTES`). Packing notes: [`docs/rsi/dataset-archive-upload.md`](../docs/rsi/dataset-archive-upload.md). The sample files are:
 
 - `rsi/examples/itops_mix.jsonl` — six IT tickets, messages + `solution`
 - `rsi/examples/itops_eval.jsonl` — four held-out tickets
