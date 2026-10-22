@@ -947,6 +947,9 @@ def test_run_sh_exits_when_hope_cli_is_missing():
     env = os.environ.copy()
     env.pop('RSI_MODEL_SOURCE', None)
     env.pop('RSI_FETCH_CONFIG', None)
+    env.pop('RSI_SKIP_HOPE', None)
+    # Darwin skips hope by default; force the gate so Linux and Mac share this check.
+    env['RSI_REQUIRE_HOPE'] = '1'
     env['PATH'] = '/usr/bin:/bin'
     if shutil.which('hope', path=env['PATH']):
         return
@@ -959,12 +962,75 @@ def test_run_sh_exits_when_hope_cli_is_missing():
     assert 'pip3 install hope==3.6.6' in output
 
 
+def test_run_sh_skips_hope_when_rsi_skip_hope():
+    import os
+    import shutil
+    import subprocess
+    env = os.environ.copy()
+    env.pop('RSI_MODEL_SOURCE', None)
+    env.pop('RSI_FETCH_CONFIG', None)
+    env.pop('RSI_REQUIRE_HOPE', None)
+    env['RSI_SKIP_HOPE'] = '1'
+    env['PATH'] = '/usr/bin:/bin'
+    if shutil.which('hope', path=env['PATH']):
+        return
+    root = Path(__file__).resolve().parents[2]
+    # Source only the gate helper: full start needs deps/port; we only care it does not exit 1 for hope.
+    script = (
+        'source ./run.sh\n'
+        'LOG_FILE=/dev/null\n'
+        'require_hope_if_needed\n'
+        'echo SKIP_OK\n'
+    )
+    completed = subprocess.run(
+        ['bash', '-c', script], cwd=root, env=env, capture_output=True, text=True, timeout=10, check=False)
+    output = completed.stdout + completed.stderr
+    assert completed.returncode == 0, output
+    assert 'RSI_SKIP_HOPE=1：跳过 hope 依赖' in output
+    assert 'SKIP_OK' in output
+    assert '未找到 hope' not in output
+
+
+def test_run_sh_skips_hope_on_darwin():
+    import os
+    import platform
+    import shutil
+    import subprocess
+    if platform.system() != 'Darwin':
+        return
+    env = os.environ.copy()
+    env.pop('RSI_MODEL_SOURCE', None)
+    env.pop('RSI_FETCH_CONFIG', None)
+    env.pop('RSI_REQUIRE_HOPE', None)
+    env.pop('RSI_SKIP_HOPE', None)
+    env['PATH'] = '/usr/bin:/bin'
+    if shutil.which('hope', path=env['PATH']):
+        return
+    root = Path(__file__).resolve().parents[2]
+    script = (
+        'source ./run.sh\n'
+        'LOG_FILE=/dev/null\n'
+        'require_hope_if_needed\n'
+        'echo SKIP_OK\n'
+    )
+    completed = subprocess.run(
+        ['bash', '-c', script], cwd=root, env=env, capture_output=True, text=True, timeout=10, check=False)
+    output = completed.stdout + completed.stderr
+    assert completed.returncode == 0, output
+    assert '本地 Mac：跳过 hope 依赖' in output
+    assert 'SKIP_OK' in output
+    assert '未找到 hope' not in output
+
+
 def test_run_sh_does_not_install_hope():
     text = Path(__file__).resolve().parents[2].joinpath('run.sh').read_text(encoding='utf-8')
     assert 'command -v hope' in text
     assert 'fetch.yaml' in text
     assert 'pip3 install hope==3.6.6' in text
     assert 'exit 1' in text
+    assert 'RSI_SKIP_HOPE' in text
+    assert 'RSI_REQUIRE_HOPE' in text
+    assert '本地 Mac：跳过 hope 依赖' in text
     executable = '\n'.join(line for line in text.splitlines() if not line.strip().startswith('echo '))
     assert 'pip3 install hope' not in executable
     readme = Path(__file__).resolve().parents[1].joinpath('README.md').read_text(encoding='utf-8')
@@ -972,6 +1038,8 @@ def test_run_sh_does_not_install_hope():
     assert 'RSI_MODEL_SOURCE' in readme
     assert 'RSI_MODEL_SOURCE=modelscope' in readme
     assert 'RSI_HOPE_TOKEN' in readme
+    assert 'RSI_SKIP_HOPE' in readme
+    assert 'RSI_REQUIRE_HOPE' in readme
     page = Path(__file__).resolve().parents[1].joinpath('static', 'app.js').read_text(encoding='utf-8')
     html = Path(__file__).resolve().parents[1].joinpath('static', 'index.html').read_text(encoding='utf-8')
     assert '模型来源：' not in page

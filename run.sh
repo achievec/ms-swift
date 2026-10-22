@@ -32,6 +32,7 @@ usage() {
 不带参数时等同于 restart。
 日志：rsi/.rsi.log    进程号：rsi/.rsi.pid
 Linux 会先激活 fetch.yaml 的 conda_env（model-train），并用 train_python 启动 RSI。该文件不存在时才用 rsi/.venv。RSI_CONDA_ENV 覆盖环境名（空字符串不激活）。RSI_TRAIN_PYTHON 覆盖解释器。macOS 仍用 .venv。
+hope：macOS 默认跳过（本地只起 Web-UI）。Linux 且 model_source=hope 时仍要求 hope CLI。RSI_SKIP_HOPE=1 任意平台跳过；RSI_REQUIRE_HOPE=1 强制检查。
 EOF
 }
 
@@ -375,6 +376,17 @@ configured_model_source() {
 
 require_hope_if_needed() {
   local source
+  # Local Mac only needs the Web-UI; hope is for company training-box fetch.
+  # RSI_REQUIRE_HOPE=1 forces the check; RSI_SKIP_HOPE=1 skips on Linux too.
+  if [[ "${RSI_REQUIRE_HOPE:-}" == "1" ]]; then
+    :
+  elif [[ "${RSI_SKIP_HOPE:-}" == "1" ]]; then
+    echo "[依赖] RSI_SKIP_HOPE=1：跳过 hope 依赖" | tee -a "${LOG_FILE}"
+    return 0
+  elif [[ "$(uname -s 2>/dev/null || true)" == "Darwin" ]]; then
+    echo "[依赖] 本地 Mac：跳过 hope 依赖" | tee -a "${LOG_FILE}"
+    return 0
+  fi
   source="$(configured_model_source | tr '[:upper:]' '[:lower:]')"
   if [[ "${source}" == "hope" ]] && ! command -v hope >/dev/null 2>&1; then
     echo "[依赖] 未找到 hope。安装：pip3 install hope==3.6.6 --no-cache-dir -i https://pypi.sankuai.com/simple" | tee -a "${LOG_FILE}"
@@ -476,4 +488,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

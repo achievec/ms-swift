@@ -135,11 +135,13 @@ SFT、评测和 RL 也不用界面那个精简 `rsi/.venv`。同一个 `train_py
 
 平台登录由 RSI 自己执行，而且只在某次拉取真正要 `hope clone` 之前跑。`./run.sh` 启动进程、依赖检查都不会执行 `hope login`，也不会发大象消息。开始下载时会跑 `hope login liyuhao03`（标准输入关闭，最多等约 90 秒）。hope 会往大象发确认；页面上显示「已向大象发送登录确认，请在大象里确认」。确认后 hope 打印「登录成功」，接着才会 clone。已经登录且本次进程里登录仍有效时，这条命令大约 1 秒返回，随后的 clone 不再重复调用，除非这次 clone 又打出登录认证。同一时间只跑一次登录。失败或超时后几分钟内不会再次发给大象，点「重新拉取」可以马上再发一次。超时或未确认时，拉取状态是「hope 登录未确认：请点重新拉取再发一次，或在终端执行 hope login liyuhao03」。没有配置 misid 时会提示设置 `hope_username`。
 
-hope 本身要事先装好（`./run.sh` 不会安装它）。来源是 hope 但找不到 `hope` 命令时，`./run.sh` 打印下面这一行并立刻以非 0 退出，不会把服务拉起来：
+hope 本身要事先装好（`./run.sh` 不会安装它）。**本地 Mac（Darwin）默认跳过 hope 检查**，Web-UI 可正常启动；真正做 hope 拉取时若缺 CLI 会在阶段里报错。Linux 训练机上，来源是 hope 但找不到 `hope` 命令时，`./run.sh` 打印下面这一行并立刻以非 0 退出，不会把服务拉起来：
 
 ```text
 pip3 install hope==3.6.6 --no-cache-dir -i https://pypi.sankuai.com/simple
 ```
+
+覆盖：`RSI_SKIP_HOPE=1` 在任意平台跳过检查；`RSI_REQUIRE_HOPE=1` 强制检查（含 Mac）。
 
 `./run.sh` 把本进程的标准输出写进 `rsi/.rsi.log`（每次 `start` 成功启动前会删掉重建）。页面上没有「进程日志」。`hope login` 会把命令、目录、退出码和输出追加进这个文件。`hope clone` 一开始就写命令和目录，随后把 stdout/stderr 原样追加（不等进程结束，用户名和 token 会抹掉），结束时再写退出码。hope 的标准输入是关闭的，不会停在密码提示上。某阶段触发的拉取会把同一份已抹掉密钥的输出再追加到该阶段的 `swift.log`，进程日志仍然保留。
 
