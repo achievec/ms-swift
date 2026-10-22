@@ -123,10 +123,16 @@ def decision_actions(run: dict, rnd: dict | None, active: dict) -> tuple:
 
     After 「完成」, the run is closed but 「开启下一轮」stays available so a later
     round can still start from prior checkpoints. Fail-only gates are unchanged.
+
+    Once 「开启下一轮」has succeeded for this round (``promote`` / legacy
+    ``next_round``), the gate is consumed: do not keep offering RL / 完成 /
+    开启下一轮 that would no-op or fight an already-opened next round.
     """
     rl_verdict = eval_verdict(active.get('rl_eval'))
     sft_verdict = eval_verdict(active.get('sft_eval'))
     rl_step = active.get('rl') or {}
+    if _went_next(active):
+        return [], ''
     if _round_finished(run, rnd):
         # Finish only opens on a pass; keep offering next so completion is not a dead end.
         if rl_verdict is True or (rl_verdict is None and sft_verdict is True):
@@ -238,8 +244,9 @@ def assemble_flow(run, rnd, active, status_of, metric_of) -> dict:
     open_round = _round_open(run, rnd)
     went_next = _went_next(active)
     finished = _round_finished(run, rnd)
-    # A finished round still exposes the same eval frontier so sibling exits stay lit.
-    frontier_open = open_round or (finished and not went_next)
+    # Eval exits stay lit only while this round still needs a choice. After promote
+    # succeeds, sibling RL/完成 must not look "可运行" beside an already-taken next.
+    frontier_open = (open_round or finished) and not went_next
     finished_after_rl = bool(finished and rl_verdict is not None)
     finished_from_sft = bool(finished and rl_verdict is None)
     next_from_rl = bool(went_next and rl_verdict is not None)

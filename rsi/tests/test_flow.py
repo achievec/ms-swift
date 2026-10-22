@@ -111,6 +111,115 @@ def test_passed_sft_eval_offers_rl_next_or_finish_and_skip_keeps_checkpoint(clie
     assert any(step['stage'] == 'sft' and step['result']['checkpoint'] == sft_path for step in body['steps'])
 
 
+def test_decide_bar_clears_after_promote_and_round2_can_open_round3(client):
+    """After promote succeeds, the decide strip must not keep dead RL/完成/开启下一轮.
+
+    Round 2 with a fresh SFT pass should offer a ready「开启下一轮」again (→ round 3).
+    Viewing the closed round that already promoted shows promote succeeded and no actions.
+    """
+    api = client
+    run_id = _create(api, '晋级后决策条')
+    _through_sft_eval(api, run_id)
+    assert api.post(f'/api/runs/{run_id}/decide', json={'action': 'next'}).status_code == 200
+    assert _run(api, run_id, 'promote', {
+        'choice': 'sft', 'reason': '进第 2 轮', 'reuse_dataset': True,
+    }).status_code == 200
+
+    # Historical round 1: promote done → no decide buttons; next node succeeded.
+    closed = api.get(f'/api/runs/{run_id}?round=1').json()
+    assert closed['round']['round_index'] == 1
+    assert closed['round']['status'] == 'closed'
+    assert closed['forms']['promote']['status'] == 'succeeded'
+    assert _ids(closed) == []
+    nodes = {item['id']: item for item in closed['flow']['nodes']}
+    assert nodes['sft_next']['status'] == 'succeeded'
+    # Sibling exits must not stay lit as 可运行 after the gate was taken.
+    assert nodes['sft_finish']['status'] == 'locked'
+    assert not any(
+        edge['from'] == 'sft_eval' and edge['to'] == 'sft_finish' and edge['live']
+        for edge in closed['flow']['edges'])
+
+    # Round 2 after SFT+eval: frontier open again, promote ready for round 3.
+    view = _through_sft_eval(api, run_id)
+    assert view['run']['round_index'] == 2
+    assert _ids(view) == ['rl', 'next', 'finish']
+    assert view['forms']['promote']['status'] == 'ready'
+    nodes2 = {item['id']: item for item in view['flow']['nodes']}
+    assert nodes2['sft_next']['status'] == 'ready'
+    assert nodes2['sft_finish']['status'] == 'ready'
+
+    assert api.post(f'/api/runs/{run_id}/decide', json={'action': 'next'}).status_code == 200
+    opened = _run(api, run_id, 'promote', {
+        'choice': 'sft', 'reason': '进第 3 轮', 'reuse_dataset': True,
+    })
+    assert opened.status_code == 200, opened.text
+    body = opened.json()['view']
+    assert body['run']['round_index'] == 3
+    assert _ids(body) == []
+    assert body['forms']['promote']['status'] == 'locked'
+
+    # Closed round 2 still has no decide strip; UI copy points at「再次开启」/「前往」.
+    round2 = api.get(f'/api/runs/{run_id}?round=2').json()
+    assert round2['forms']['promote']['status'] == 'succeeded'
+    assert _ids(round2) == []
+    page = Path(__file__).resolve().parents[1].joinpath('static', 'app.js').read_text(encoding='utf-8')
+    assert '再次开启下一轮' in page
+    assert '前往第' in page
+    assert 'goto-round' in page
+    assert '会作废本轮后续并重新晋级' in page
+
+
+def test_decision_actions_empty_once_promote_succeeded():
+    """Open round + succeeded promote must not keep offering RL / next / finish."""
+    run = {'status': 'active', 'round_index': 2, 'current_stage': 'promote'}
+    rnd = {'status': 'active', 'round_index': 2}
+    active = {
+        'sft': {'status': 'succeeded'},
+        'sft_eval': {
+            'status': 'succeeded',
+            'params_json': '{}',
+            'result_json': '{"metrics":{"accuracy":0.9}}',
+        },
+        'promote': {'status': 'succeeded', 'params_json': '{}', 'result_json': '{}'},
+    }
+    actions, prompt = decision_actions(run, rnd, active)
+    assert actions == []
+    assert prompt == ''
+
+
+def test_repromote_resets_existing_next_round(client):
+    """Re-running promote after the next round already exists must not IntegrityError."""
+    api = client
+    run_id = _create(api, '再晋级')
+    _through_sft_eval(api, run_id)
+    assert api.post(f'/api/runs/{run_id}/decide', json={'action': 'next'}).status_code == 200
+    first = _run(api, run_id, 'promote', {'choice': 'sft', 'reason': '第一次', 'reuse_dataset': True})
+    assert first.status_code == 200, first.text
+    assert first.json()['view']['run']['round_index'] == 2
+
+    # Force the inconsistent UI state: round 1 active again while round 2 exists,
+    # with promote still marked succeeded — then re-run promote.
+    pipe = api.app.state.pipeline
+    with pipe.store.transaction() as conn:
+        conn.execute(
+            "UPDATE rounds SET status='active', closed_at=NULL WHERE run_id=? AND round_index=1",
+            (run_id,))
+        conn.execute(
+            "UPDATE runs SET round_index=1, current_stage='promote', status='active' WHERE id=?",
+            (run_id,))
+    stuck = pipe.view(run_id, 1)
+    assert stuck['forms']['promote']['status'] == 'succeeded'
+    assert _ids(stuck) == []
+
+    again = _run(api, run_id, 'promote', {'choice': 'sft', 'reason': '第二次', 'reuse_dataset': True})
+    assert again.status_code == 200, again.text
+    body = again.json()['view']
+    assert body['run']['round_index'] == 2
+    assert [row['round_index'] for row in body['rounds']] == [1, 2]
+    assert body['rounds'][0]['status'] == 'closed'
+    assert body['rounds'][1]['status'] == 'active'
+
+
 def test_promote_candidate_labels_show_starting_weights_not_foundation(client):
     """Radio cards pick one starting adapter path; labels must not say 「当前基座」for a LoRA."""
     api = client

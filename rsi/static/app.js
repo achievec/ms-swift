@@ -1100,6 +1100,12 @@ async function fetchStageMetrics(stage, round) {
   }
 }
 
+function nextRoundAfter(view) {
+  const index = view && view.round ? view.round.round_index : null;
+  if (index == null) return null;
+  return (view.rounds || []).find((round) => round.round_index === index + 1) || null;
+}
+
 function renderStage(stage) {
   const view = state.view;
   const form = view.forms[stage];
@@ -1109,11 +1115,13 @@ function renderStage(stage) {
   const blockReason = !view.mutable
     ? '历史轮次只能查看'
     : (form.status === 'running' ? '运行中' : (form.status === 'locked' ? '请先完成上一阶段' : ''));
+  const nextRound = stage === 'promote' ? nextRoundAfter(view) : null;
+  const promoteDone = stage === 'promote' && form.status === 'succeeded';
   const buttonLabel = stage === 'promote'
     ? ({
       ready: '开启下一轮',
       failed: '重试开启下一轮',
-      succeeded: '重新开启并作废后续阶段',
+      succeeded: '再次开启下一轮',
       running: '开启中',
       locked: '请先完成评测',
     }[form.status] || '开启下一轮')
@@ -1155,6 +1163,15 @@ function renderStage(stage) {
   const kicker = form.status === 'running'
     ? `${escapeHtml(meta.label)} · ${runningMarkup(form.started_at)}`
     : `${escapeHtml(meta.label)} · ${escapeHtml(statusText(form.status))}`;
+  const gotoNext = promoteDone && nextRound
+    ? `<button type="button" class="primary" data-action="goto-round" data-round="${nextRound.round_index}">前往第 ${nextRound.round_index} 轮</button>`
+    : '';
+  const runClass = promoteDone && nextRound ? 'ghost' : 'primary';
+  const promoteHint = promoteDone
+    ? `<p class="muted run-reason">${nextRound
+      ? `下一轮已开。点「前往第 ${nextRound.round_index} 轮」继续；「再次开启下一轮」会作废本轮后续并重新晋级。`
+      : '会作废本轮后续并重新晋级。'}</p>`
+    : '';
   return `
     <section class="panel">
       <p class="kicker">${kicker}</p>
@@ -1170,13 +1187,15 @@ function renderStage(stage) {
       </details>`}
       ${fetchNote()}
       <div class="row-actions">
-        <button type="button" class="primary" data-action="run"${tipAttr(mutable ? '' : blockReason)} ${mutable ? '' : 'disabled'}>${buttonLabel}</button>
+        ${gotoNext}
+        <button type="button" class="${runClass}" data-action="run"${tipAttr(mutable ? '' : blockReason)} ${mutable ? '' : 'disabled'}>${buttonLabel}</button>
         ${stop}
         ${refetchButton()}
         ${validate}
         <button type="button" class="ghost" data-action="preview"${viewTip} ${view.mutable ? '' : 'disabled'}>预览命令</button>
         <button type="button" class="ghost" data-action="preset"${viewTip} ${view.mutable ? '' : 'disabled'}>恢复预设</button>
       </div>
+      ${promoteHint}
       ${blockReason ? `<p class="muted run-reason">${escapeHtml(blockReason)}</p>` : ''}
       <div id="live-command"></div>
       ${result}
@@ -1258,7 +1277,11 @@ function renderGraph() {
     const tip = node.clickable ? '' : tipAttr(flowNodeTitle(node));
     return `<button type="button" class="flow-node ${node.status} ${selected} ${minor}" data-stage="${node.id}"${tip} ${disabled}${busy} style="left:${node.x}px;top:${node.y}px;width:${node.w}px;height:${node.h}px"><b>${escapeHtml(node.label)}</b><small>${caption}</small></button>`;
   }).join('');
-  const actions = (flow.actions || []).map((action) => `<button type="button" class="${action.danger ? 'danger' : 'primary'}" data-decision="${action.id}">${escapeHtml(action.label)}</button>`).join('');
+  // Hide the decide strip once promote already succeeded for this viewing round —
+  // leftover RL/完成/开启下一轮 buttons only no-op or confuse.
+  const promoteDone = ((state.view.forms || {}).promote || {}).status === 'succeeded';
+  const pending = promoteDone ? [] : (flow.actions || []);
+  const actions = pending.map((action) => `<button type="button" class="${action.danger ? 'danger' : 'primary'}" data-decision="${action.id}">${escapeHtml(action.label)}</button>`).join('');
   const actionBar = actions
     ? `<div class="flow-actions">${flow.prompt ? `<p class="muted">${escapeHtml(flow.prompt)}</p>` : ''}<div class="row-actions">${actions}</div></div>`
     : '';
@@ -1866,7 +1889,11 @@ async function runCurrent() {
     if (payload.status === 'succeeded' && payload.view.mutable) {
       state.stage = payload.view.run.current_stage;
     }
-    const outcome = payload.status === 'syncing' ? '模型同步中' : payload.status === 'running' ? '已在后台启动' : '已完成';
+    let outcome = payload.status === 'syncing' ? '模型同步中' : payload.status === 'running' ? '已在后台启动' : '已完成';
+    if (stage === 'promote' && payload.status === 'succeeded') {
+      const opened = payload.view.round && payload.view.round.round_index;
+      outcome = opened ? `已开启第 ${opened} 轮` : outcome;
+    }
     toast(`${labelOf(stage)} ${outcome}`);
     render();
     touchRunList();
@@ -2329,13 +2356,23 @@ document.addEventListener('click', async (event) => {
       await stopStage();
       return;
     }
+    if (target.dataset.action === 'goto-round') {
+      const round = Number(target.dataset.round);
+      if (!round || !state.view) return;
+      await openRun(state.view.run.id, round, false);
+      toast(`已切换到第 ${round} 轮`);
+      return;
+    }
     if (target.dataset.action === 'run') {
       const form = (state.view.forms || {})[state.stage] || {};
       if (form.status === 'succeeded') {
+        const isPromote = state.stage === 'promote';
         const confirmed = await askConfirm({
-          title: '重新运行并作废后续阶段',
-          body: '这一阶段会重跑。本轮后面已经完成的阶段和晋级结果会作废，需要重新再跑。',
-          okLabel: '重新运行',
+          title: isPromote ? '再次开启下一轮' : '重新运行并作废后续阶段',
+          body: isPromote
+            ? '会作废本轮后续并重新晋级；若下一轮已存在，也会清空并重开。'
+            : '这一阶段会重跑。本轮后面已经完成的阶段和晋级结果会作废，需要重新再跑。',
+          okLabel: isPromote ? '再次开启' : '重新运行',
           danger: true,
         });
         if (!confirmed) return;

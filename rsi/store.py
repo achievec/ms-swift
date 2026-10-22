@@ -384,13 +384,46 @@ class Store:
             (checkpoint, kind, score, run_id, round_index))
 
     def close_round_and_open_next(self, conn, run_id, round_index, note, next_base):
+        """Close this round and make ``round_index + 1`` the active starting point.
+
+        Re-running 「开启下一轮」after a prior success must not hit UNIQUE on the
+        next round: reset that round's base, void its steps, and drop any rounds
+        beyond it so the tab strip matches the new frontier.
+        """
         now = utcnow()
-        conn.execute('UPDATE rounds SET status=?, note=?, closed_at=? WHERE run_id=? AND round_index=? AND status=?',
-                     ('closed', note, now, run_id, round_index, 'active'))
-        next_index = round_index + 1
         conn.execute(
-            'INSERT INTO rounds (run_id, round_index, base_model, status, created_at) VALUES (?, ?, ?, ?, ?)',
-            (run_id, next_index, next_base, 'active', now))
+            'UPDATE rounds SET status=?, note=?, closed_at=? WHERE run_id=? AND round_index=?',
+            ('closed', note, now, run_id, round_index))
+        next_index = round_index + 1
+        existing = conn.execute(
+            'SELECT id FROM rounds WHERE run_id=? AND round_index=?',
+            (run_id, next_index)).fetchone()
+        if existing:
+            later = [
+                int(row['round_index']) for row in conn.execute(
+                    'SELECT round_index FROM rounds WHERE run_id=? AND round_index>? ORDER BY round_index',
+                    (run_id, next_index)).fetchall()
+            ]
+            for later_index in later:
+                conn.execute(
+                    "UPDATE steps SET status='superseded' WHERE run_id=? AND round_index=? AND status!='superseded'",
+                    (run_id, later_index))
+                conn.execute('DELETE FROM drafts WHERE run_id=? AND round_index=?', (run_id, later_index))
+                conn.execute('DELETE FROM checkpoints WHERE run_id=? AND round_index=?', (run_id, later_index))
+                conn.execute('DELETE FROM rounds WHERE run_id=? AND round_index=?', (run_id, later_index))
+            conn.execute(
+                "UPDATE steps SET status='superseded' WHERE run_id=? AND round_index=? AND status!='superseded'",
+                (run_id, next_index))
+            conn.execute('DELETE FROM drafts WHERE run_id=? AND round_index=?', (run_id, next_index))
+            conn.execute('DELETE FROM checkpoints WHERE run_id=? AND round_index=?', (run_id, next_index))
+            conn.execute(
+                'UPDATE rounds SET base_model=?, status=?, note=NULL, closed_at=NULL, '
+                'promoted_checkpoint=NULL, promoted_kind=NULL, promoted_score=NULL WHERE run_id=? AND round_index=?',
+                (next_base, 'active', run_id, next_index))
+        else:
+            conn.execute(
+                'INSERT INTO rounds (run_id, round_index, base_model, status, created_at) VALUES (?, ?, ?, ?, ?)',
+                (run_id, next_index, next_base, 'active', now))
         conn.execute('UPDATE runs SET round_index=?, current_stage=?, updated_at=? WHERE id=?',
                      (next_index, 'sft', now, run_id))
         return next_index
