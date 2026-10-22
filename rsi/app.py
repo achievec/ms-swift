@@ -6,11 +6,12 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from rsi import __version__
 from rsi.backends import build_backend, cached_gpu
+from rsi.eval_report import read_report_html
 from rsi.model_fetch import resolve_rsi_home
 from rsi.pipeline import Pipeline, PipelineError
 from rsi.schemas import presets, public_schema_wire
@@ -141,8 +142,12 @@ def create_app(home: Path | None = None) -> FastAPI:
     @app.get('/api/runs/{run_id}/stages/{stage}/report')
     def stage_report(run_id: str, stage: str, round: int | None = None, kind: str | None = None,
                      step: int | None = None):
-        return FileResponse(
-            pipeline.eval_report_file(run_id, stage, round, kind, step), media_type='text/html')
+        path = pipeline.eval_report_file(run_id, stage, round, kind, step)
+        try:
+            body = read_report_html(path)
+        except OSError as exc:
+            raise HTTPException(status_code=404, detail='还没有评测报告') from exc
+        return HTMLResponse(body)
 
     @app.post('/api/datasets/validate')
     async def validate_dataset(request: Request):

@@ -14,6 +14,27 @@ _SCORE_ORDER = (
     'rouge-l-r', 'rouge-l-p', 'rouge-l-f',
 )
 _MAX_REPORT_BYTES = 2_000_000
+_MAX_REPORT_HTML_BYTES = 8_000_000
+
+# Visible chrome / outbound links that identify the upstream HTML template.
+_BRAND_BAR = re.compile(r'<div\s+class=["\']brand-bar["\'][^>]*>.*?</div>\s*', re.IGNORECASE | re.DOTALL)
+_REPORT_FOOTER = re.compile(
+    r'<footer\s+class=["\']report-footer["\'][^>]*>.*?</footer>\s*', re.IGNORECASE | re.DOTALL)
+_HEADER_BADGE = re.compile(
+    r'<span\s+class=["\']header-badge["\'][^>]*>.*?</span>\s*', re.IGNORECASE | re.DOTALL)
+_DOCS_LINK = re.compile(
+    r'<a\b[^>]*href=["\']https?://(?:[\w.-]+\.)?evalscope\.readthedocs\.io[^"\']*["\'][^>]*>(.*?)</a>',
+    re.IGNORECASE | re.DOTALL,
+)
+_MODELSCOPE_SCRIPT = re.compile(
+    r'(<script\b[^>]*\bsrc=["\'])https?://resources\.modelscope\.cn/[^"\']*(["\'][^>]*>\s*</script>)',
+    re.IGNORECASE,
+)
+_STORAGE_KEY = re.compile(r"(['\"])evalscope-(theme|lang)\1")
+_I18N_FOOTER = re.compile(
+    r"[ \t]*['\"]footer\.generated_by['\"]\s*:\s*['\"][^'\"]*['\"],?\s*\n?",
+    re.IGNORECASE,
+)
 
 
 def canonical_score_name(raw: str) -> str:
@@ -255,3 +276,27 @@ def base_eval_output_dir(eval_output_dir) -> Path | None:
     if root.name == 'adapter':
         return root.parent / 'base'
     return root / 'base'
+
+
+def sanitize_eval_report_html(html: str) -> str:
+    """Normalize served report HTML: drop template chrome and rewrite a few asset URLs."""
+    if not html:
+        return html
+    text = _BRAND_BAR.sub('', html)
+    text = _REPORT_FOOTER.sub('', text)
+    text = _HEADER_BADGE.sub('', text)
+    text = _DOCS_LINK.sub(r'\1', text)
+    # Prefer a public Plotly CDN when the template pins modelscope's mirror.
+    text = _MODELSCOPE_SCRIPT.sub(
+        r'\1https://cdn.plot.ly/plotly-2.35.2.min.js\2', text)
+    text = _STORAGE_KEY.sub(r'\1report-\2\1', text)
+    text = _I18N_FOOTER.sub('', text)
+    return text
+
+
+def read_report_html(path) -> str:
+    """Read an on-disk report and return the served (sanitized) HTML body."""
+    file_path = Path(path)
+    if file_path.stat().st_size > _MAX_REPORT_HTML_BYTES:
+        raise OSError('report html too large')
+    return sanitize_eval_report_html(file_path.read_text(encoding='utf-8', errors='replace'))
