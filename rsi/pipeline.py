@@ -510,7 +510,14 @@ class Pipeline:
             preset['template'] = run['template']
 
     def list_runs(self) -> list:
-        return self.store.list_runs()
+        runs = self.store.list_runs()
+        for run in runs:
+            if run.get('list_status') == 'running':
+                continue
+            # A live training or export process wins over a stale step row.
+            if self._stages.running(run['id']) or self._exports.running(run['id']):
+                run['list_status'] = 'running'
+        return runs
 
     def delete_run(self, run_id: str) -> dict:
         if not self.store.get_run(run_id):

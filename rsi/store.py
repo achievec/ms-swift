@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from rsi.flow import LIST_JOB_STAGES, experiment_list_status
 from rsi.logtail import TAIL_BYTES, truncate_log_text
 
 logger = logging.getLogger(__name__)
@@ -225,9 +226,32 @@ class Store:
         conn.execute('UPDATE runs SET updated_at=? WHERE id=?', (utcnow(), run_id))
 
     def list_runs(self) -> list:
+        """Runs newest first, each with a lightweight ``list_status``.
+
+        Job rows are id/stage/status only — step logs stay out of ``/api/runs``.
+        """
+        stages = tuple(LIST_JOB_STAGES)
+        marks = ','.join('?' for _ in stages)
         with self.transaction() as conn:
-            rows = conn.execute('SELECT * FROM runs ORDER BY updated_at DESC').fetchall()
-        return [dict(row) for row in rows]
+            runs = [dict(row) for row in conn.execute('SELECT * FROM runs ORDER BY updated_at DESC').fetchall()]
+            steps = [
+                dict(row) for row in conn.execute(
+                    'SELECT id, run_id, round_index, stage, status FROM steps '
+                    f"WHERE status != 'superseded' AND stage IN ({marks})", stages).fetchall()
+            ]
+            round_status = {
+                row['run_id']: row['status']
+                for row in conn.execute(
+                    'SELECT rounds.run_id AS run_id, rounds.status AS status FROM rounds '
+                    'JOIN runs ON runs.id = rounds.run_id AND runs.round_index = rounds.round_index').fetchall()
+            }
+        grouped: dict = {}
+        for step in steps:
+            grouped.setdefault(step['run_id'], []).append(step)
+        for run in runs:
+            run['list_status'] = experiment_list_status(
+                run, grouped.get(run['id'], []), round_status.get(run['id']))
+        return runs
 
     def delete_run(self, run_id) -> bool:
         with self.transaction() as conn:

@@ -104,6 +104,16 @@ a.ghost { display: inline-block; text-decoration: none; }
 }
 .run-card b { display: block; }
 .run-card small { color: var(--muted); }
+.run-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+.run-list-status { font-size: 11px; font-weight: 600; line-height: 1.5; }
+.badge.pending { color: var(--muted); }
+.badge.completed { background: var(--green-soft); color: #166534; }
 .run-delete {
   position: absolute; top: 6px; right: 6px;
   width: 26px; height: 26px; padding: 0;

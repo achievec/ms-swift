@@ -12,6 +12,11 @@ ACTION_LABELS = {
     'finish': '完成',
 }
 
+# Stage jobs that can put an experiment card into 运行中 / 失败.
+# ``syncing`` is an in-progress model or dataset fetch on one of these stages.
+LIST_JOB_STAGES = frozenset({'sft', 'sft_eval', 'rl', 'rl_eval', 'export'})
+_BUSY_STEP_STATUS = frozenset({'running', 'syncing'})
+
 # The guide is a fixed template. Every branch is drawn on every round.
 # Unreached nodes stay gray; reachable and taken edges are highlighted.
 NODE_W = 108
@@ -342,3 +347,34 @@ def assemble_flow(run, rnd, active, status_of, metric_of) -> dict:
             True, True,
         ))
     return {'canvas': dict(CANVAS), 'nodes': nodes, 'edges': edges, 'actions': actions, 'prompt': prompt}
+
+
+def experiment_list_status(run: dict, steps: list | None = None, round_status: str | None = None) -> str:
+    """Compact experiment-list status: ``running``, ``completed``, ``failed``, or ``pending``.
+
+    ``steps`` are lightweight rows for this run (``id``, ``round_index``, ``stage``,
+    ``status``). Logs and params are not read. A ``syncing`` step is a fetch still
+    in progress. Busy work on any round wins. Otherwise a failed latest job on the
+    current round is 失败. A completed run or a closed current round is 已完成.
+    """
+    jobs = []
+    for step in steps or []:
+        if step.get('stage') not in LIST_JOB_STAGES:
+            continue
+        if step.get('status') == 'superseded':
+            continue
+        jobs.append(step)
+    if (run or {}).get('status') == 'running' or any(step.get('status') in _BUSY_STEP_STATUS for step in jobs):
+        return 'running'
+    current = (run or {}).get('round_index')
+    latest = None
+    for step in jobs:
+        if current is not None and step.get('round_index') != current:
+            continue
+        if latest is None or (step.get('id') or 0) >= (latest.get('id') or 0):
+            latest = step
+    if latest and latest.get('status') == 'failed':
+        return 'failed'
+    if (run or {}).get('status') == 'completed' or round_status == 'closed':
+        return 'completed'
+    return 'pending'

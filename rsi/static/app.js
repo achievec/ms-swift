@@ -10,6 +10,8 @@ const state = {
   busy: false,
   liveTimer: null,
   liveBusy: false,
+  runListTimer: null,
+  runListGen: 0,
   serveDraft: null,
   serveDraftRun: null,
   inferLog: '',
@@ -504,9 +506,25 @@ function labelOf(stage) {
   return stage;
 }
 
-function runStatusLabel(run) {
-  if (run.status === 'completed') return '已完成';
-  return labelOf(run.current_stage);
+function listStatusOf(run) {
+  const code = run && run.list_status;
+  if (code === 'running' || code === 'completed' || code === 'failed' || code === 'pending') return code;
+  if (run && run.status === 'completed') return 'completed';
+  if (run && run.status === 'running') return 'running';
+  return 'pending';
+}
+
+function listStatusLabel(code) {
+  if (code === 'running') return '运行中';
+  if (code === 'completed') return '已完成';
+  if (code === 'failed') return '失败';
+  return '待运行';
+}
+
+function runListFingerprint(runs) {
+  return (runs || []).map((run) => [
+    run.id, run.name, run.round_index, run.current_stage, run.status, listStatusOf(run),
+  ].join('\t')).join('\n');
 }
 
 function statusText(status) {
@@ -542,10 +560,38 @@ function runningMarkup(startedAt) {
   return `<i class="spin" aria-hidden="true"></i><span data-started="${escapeHtml(startedAt || '')}">${escapeHtml(elapsedLabel(startedAt))}</span>`;
 }
 
-async function refreshRuns(selectId) {
+function ensureRunListPoll() {
+  const running = (state.runs || []).some((run) => listStatusOf(run) === 'running');
+  if (!running) {
+    if (state.runListTimer) {
+      clearInterval(state.runListTimer);
+      state.runListTimer = null;
+    }
+    return;
+  }
+  if (state.runListTimer) return;
+  state.runListTimer = setInterval(() => {
+    refreshRunList().catch(() => {});
+  }, 2000);
+}
+
+async function refreshRunList() {
+  const gen = ++state.runListGen;
   const payload = await api('/api/runs');
-  state.runs = payload.runs || [];
-  renderRuns();
+  if (gen !== state.runListGen) return;
+  const next = payload.runs || [];
+  const changed = runListFingerprint(state.runs) !== runListFingerprint(next);
+  state.runs = next;
+  if (changed) renderRuns();
+  ensureRunListPoll();
+}
+
+function touchRunList() {
+  refreshRunList().catch(() => {});
+}
+
+async function refreshRuns(selectId) {
+  await refreshRunList();
   if (selectId) {
     await openRun(selectId, null, false);
   }
@@ -557,16 +603,22 @@ function renderRuns() {
     root.innerHTML = '<p class="muted">还没有实验。</p>';
     return;
   }
-  root.innerHTML = state.runs.map((run) => `
+  root.innerHTML = state.runs.map((run) => {
+    const code = listStatusOf(run);
+    return `
     <div class="run-card ${state.view && state.view.run.id === run.id ? 'active' : ''}">
       <button type="button" class="run-open" data-run="${run.id}">
         <b>${escapeHtml(run.name)}</b>
-        <small>第 ${run.round_index} 轮 · ${escapeHtml(runStatusLabel(run))}</small>
+        <span class="run-meta">
+          <small>第 ${run.round_index} 轮 · ${escapeHtml(labelOf(run.current_stage))}</small>
+          <span class="badge run-list-status ${escapeHtml(code)}">${escapeHtml(listStatusLabel(code))}</span>
+        </span>
       </button>
       <button type="button" class="run-delete" data-delete-run="${run.id}" title="删除实验" aria-label="删除 ${escapeHtml(run.name)}">
         <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M6.2 2.2h3.6l.4.8H13v1.3H3V3h2.8l.4-.8zM4.2 5.2h7.6l-.5 8.1a1 1 0 0 1-1 .9H5.7a1 1 0 0 1-1-.9l-.5-8.1z"/></svg>
       </button>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
 function askConfirm({ title, name = '', body, okLabel = '确定', danger = false }) {
@@ -1816,6 +1868,7 @@ async function runCurrent() {
     const outcome = payload.status === 'syncing' ? '模型同步中' : payload.status === 'running' ? '已在后台启动' : '已完成';
     toast(`${labelOf(stage)} ${outcome}`);
     render();
+    touchRunList();
   } finally {
     setBusy(false);
   }
@@ -1988,6 +2041,7 @@ async function startExport() {
   state.exportRuntimeOpen = true;
   toast(payload.status === 'running' ? '导出已开始' : '导出已完成');
   render();
+  touchRunList();
 }
 
 async function stopStage() {
@@ -1996,6 +2050,7 @@ async function stopStage() {
   state.view = payload.view;
   toast('本阶段已停止');
   render();
+  touchRunList();
 }
 
 async function stopExport() {
@@ -2004,6 +2059,7 @@ async function stopExport() {
   state.exportRuntimeOpen = true;
   toast('导出已停止');
   render();
+  touchRunList();
 }
 
 async function startServe() {
@@ -2214,6 +2270,7 @@ document.addEventListener('click', async (event) => {
       state.tab = 'flow';
       toast(payload.view.flow && payload.view.flow.prompt ? payload.view.flow.prompt : '已记录');
       render();
+      touchRunList();
       return;
     }
     if (target.dataset.stage) {
@@ -2230,6 +2287,7 @@ document.addEventListener('click', async (event) => {
           state.stage = payload.stage || 'finish';
           state.tab = 'flow';
           render();
+          touchRunList();
           return;
         }
         stage = 'finish';
@@ -2247,6 +2305,7 @@ document.addEventListener('click', async (event) => {
           state.tab = 'flow';
           toast(payload.view.flow && payload.view.flow.prompt ? payload.view.flow.prompt : '已开启下一轮入口');
           render();
+          touchRunList();
           return;
         }
         stage = 'promote';
@@ -2325,6 +2384,7 @@ document.addEventListener('click', async (event) => {
       state.view = payload.view;
       toast(fetchNotice() || '已提交检查');
       render();
+      touchRunList();
       return;
     }
     if (target.dataset.action === 'open-serve') {
@@ -3070,6 +3130,7 @@ async function pollFetchProgress() {
     if (failed && failed.message) toast(failed.message);
     else if (fetchRows().some((row) => row.state === '就绪')) toast('模型已在本地');
     render();
+    touchRunList();
   }
 }
 
@@ -3180,6 +3241,7 @@ async function pollLive() {
         state.round = view.round.round_index;
         toast(`${labelOf(stage)} ${statusText(payload.status)}`);
         render();
+        touchRunList();
         return;
       }
     }
@@ -3218,6 +3280,10 @@ document.addEventListener('scroll', (event) => {
 
 window.addEventListener('pagehide', () => {
   flushDraft(true);
+  if (state.runListTimer) {
+    clearInterval(state.runListTimer);
+    state.runListTimer = null;
+  }
 });
 
 async function boot() {

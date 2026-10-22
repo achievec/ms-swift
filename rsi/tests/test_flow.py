@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from rsi.flow import PASS_ACCURACY, decision_actions, eval_verdict
+from rsi.flow import PASS_ACCURACY, decision_actions, eval_verdict, experiment_list_status
 
 
 @pytest.fixture
@@ -328,6 +328,122 @@ def _js_function(source, name):
             if depth == 0:
                 return source[start:index + 1]
     raise AssertionError(f'{name} is missing its closing brace')
+
+
+def test_experiment_list_status_from_jobs():
+    run = {'status': 'active', 'round_index': 1}
+    assert experiment_list_status(run, []) == 'pending'
+    assert experiment_list_status({'status': 'running', 'round_index': 1}, []) == 'running'
+    assert experiment_list_status(run, [{'id': 1, 'round_index': 1, 'stage': 'sft', 'status': 'running'}]) == 'running'
+    assert experiment_list_status(run, [{'id': 1, 'round_index': 1, 'stage': 'sft', 'status': 'syncing'}]) == 'running'
+    assert experiment_list_status(run, [{'id': 2, 'round_index': 1, 'stage': 'export', 'status': 'running'}]) == 'running'
+    assert experiment_list_status(run, [
+        {'id': 1, 'round_index': 1, 'stage': 'sft', 'status': 'failed'},
+        {'id': 2, 'round_index': 1, 'stage': 'sft_eval', 'status': 'running'},
+    ]) == 'running'
+    assert experiment_list_status(run, [{'id': 3, 'round_index': 1, 'stage': 'sft', 'status': 'failed'}]) == 'failed'
+    assert experiment_list_status(run, [
+        {'id': 1, 'round_index': 1, 'stage': 'sft', 'status': 'failed'},
+        {'id': 2, 'round_index': 1, 'stage': 'sft', 'status': 'succeeded'},
+    ]) == 'pending'
+    # A failed job on an older round does not stain the new one; a still-running one does.
+    opened = {'status': 'active', 'round_index': 2}
+    assert experiment_list_status(opened, [
+        {'id': 1, 'round_index': 1, 'stage': 'rl', 'status': 'failed'},
+    ]) == 'pending'
+    assert experiment_list_status(opened, [
+        {'id': 4, 'round_index': 1, 'stage': 'export', 'status': 'running'},
+    ]) == 'running'
+    assert experiment_list_status(run, [
+        {'id': 1, 'round_index': 1, 'stage': 'sft_eval', 'status': 'succeeded'},
+    ], 'closed') == 'completed'
+    assert experiment_list_status({'status': 'completed', 'round_index': 1}, [
+        {'id': 1, 'round_index': 1, 'stage': 'sft_eval', 'status': 'succeeded'},
+    ]) == 'completed'
+    # Latest job failed still wins over a closed run, until that job is not the latest failure.
+    assert experiment_list_status({'status': 'completed', 'round_index': 1}, [
+        {'id': 5, 'round_index': 1, 'stage': 'export', 'status': 'failed'},
+    ]) == 'failed'
+    assert experiment_list_status({'status': 'completed', 'round_index': 1}, [
+        {'id': 5, 'round_index': 1, 'stage': 'export', 'status': 'running'},
+    ]) == 'running'
+    assert experiment_list_status(run, [
+        {'id': 1, 'round_index': 1, 'stage': 'sft', 'status': 'superseded'},
+        {'id': 2, 'round_index': 1, 'stage': 'decide', 'status': 'failed'},
+    ]) == 'pending'
+
+
+def test_runs_api_list_status_follows_stage_jobs(client):
+    api = client
+    run_id = _create(api, '列表状态')
+    card = next(row for row in api.get('/api/runs').json()['runs'] if row['id'] == run_id)
+    assert card['list_status'] == 'pending'
+    assert card['round_index'] == 1
+    assert card['current_stage'] == 'sft'
+    assert 'logs' not in card
+
+    store = api.app.state.pipeline.store
+    with store.transaction() as conn:
+        step_id = store.insert_step(conn, run_id, 1, 'sft', {}, 'mock')
+    assert _list_status(api, run_id) == 'running'
+    with store.transaction() as conn:
+        store.finish_step(conn, step_id, 'syncing', {'fetch': {'state': '同步中'}}, '同步中\n', '')
+    assert _list_status(api, run_id) == 'running'
+    with store.transaction() as conn:
+        store.finish_step(conn, step_id, 'failed', {'error': 'boom'}, 'boom\n', '')
+    failed = api.get('/api/runs')
+    assert failed.status_code == 200
+    assert _list_status(api, run_id) == 'failed'
+    assert 'boom' not in failed.text
+    with store.transaction() as conn:
+        store.finish_step(conn, step_id, 'succeeded', {}, 'ok\n', '')
+    assert _list_status(api, run_id) == 'pending'
+
+    _through_sft_eval(api, run_id)
+    assert _list_status(api, run_id) == 'pending'
+    finished = api.post(f'/api/runs/{run_id}/decide', json={'action': 'finish'})
+    assert finished.status_code == 200, finished.text
+    done = next(row for row in api.get('/api/runs').json()['runs'] if row['id'] == run_id)
+    assert done['list_status'] == 'completed'
+    assert done['current_stage'] == 'finish'
+    with store.transaction() as conn:
+        store.insert_step(conn, run_id, done['round_index'], 'export', {}, 'mock')
+    assert _list_status(api, run_id) == 'running'
+
+
+def _list_status(api, run_id):
+    rows = api.get('/api/runs').json()['runs']
+    return next(row['list_status'] for row in rows if row['id'] == run_id)
+
+
+def test_run_card_status_badge_labels():
+    page = Path(__file__).resolve().parents[1].joinpath('static', 'app.js').read_text(encoding='utf-8')
+    assert 'run-list-status' in page
+    assert 'list_status' in page
+    assert 'runListTimer' in page
+    assert '第 ${run.round_index} 轮 · ${escapeHtml(labelOf(run.current_stage))}' in page
+    script = '\n'.join(_js_function(page, name) for name in ('listStatusOf', 'listStatusLabel'))
+    script += r"""
+const cases = [
+  [{ list_status: 'running' }, 'running', '运行中'],
+  [{ list_status: 'completed' }, 'completed', '已完成'],
+  [{ list_status: 'failed' }, 'failed', '失败'],
+  [{ list_status: 'pending' }, 'pending', '待运行'],
+  [{ status: 'completed' }, 'completed', '已完成'],
+  [{ status: 'running' }, 'running', '运行中'],
+  [{ status: 'active' }, 'pending', '待运行'],
+  [null, 'pending', '待运行'],
+];
+for (const [run, code, label] of cases) {
+  const got = listStatusOf(run);
+  console.log(JSON.stringify({ code: got, label: listStatusLabel(got), want: code, wantLabel: label }));
+}
+"""
+    completed = subprocess.run(['node', '-e', script], check=True, capture_output=True, text=True)
+    for line in completed.stdout.splitlines():
+        row = json.loads(line)
+        assert row['code'] == row['want']
+        assert row['label'] == row['wantLabel']
 
 
 def test_header_base_caption_collapses_when_unchanged():
