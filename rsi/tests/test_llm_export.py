@@ -69,7 +69,7 @@ def test_layout_matches_the_webui_llm_export_tab():
     assert by_id['export_preview']['label'] == '预览命令'
     assert by_id['gpu_id']['label'] == '选择可用GPU'
     assert by_id['gpu_id']['multiselect'] is True
-    assert by_id['gpu_id']['info'] == '选择使用的GPU号，如CUDA不可用只能选择CPU'
+    assert by_id['gpu_id']['info'] == '选择要用的 GPU（编号与型号）；CUDA 不可用时只能选 CPU'
     assert by_id['running_tasks']['label'] == '运行中导出任务'
     assert by_id['refresh_tasks']['label'] == '找回导出任务'
     assert by_id['kill_task']['label'] == '停止导出'
@@ -99,10 +99,17 @@ def test_layout_matches_the_webui_llm_export_tab():
 
 def test_gpu_choices_follow_device_count():
     cpu = export_layout(0)['by_id']['gpu_id']
-    assert cpu['choices'] == ['0', 'cpu']
+    assert cpu['choices'] == [
+        {'value': '0', 'label': 'GPU 0'},
+        {'value': 'cpu', 'label': 'CPU'},
+    ]
     assert cpu['default'] == '0'
     gpu = export_layout(2)['by_id']['gpu_id']
-    assert gpu['choices'] == ['0', '1', 'cpu']
+    assert gpu['choices'] == [
+        {'value': '0', 'label': 'GPU 0'},
+        {'value': '1', 'label': 'GPU 1'},
+        {'value': 'cpu', 'label': 'CPU'},
+    ]
 
 
 @pytest.fixture

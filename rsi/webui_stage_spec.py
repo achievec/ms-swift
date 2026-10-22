@@ -696,12 +696,11 @@ def _field_from_widget(item: dict, group: str) -> dict:
     return field
 
 
-def _fill_gpu(blocks, device_count: int):
-    count = max(0, int(device_count))
-    choices = [str(index) for index in range(count)] + ['cpu']
-    if '0' not in choices:
-        choices = ['0', *choices]
-    default = '0'
+def _fill_gpu(blocks, device_count: int = 0, devices=None):
+    from rsi.gpu_options import GPU_INFO, gpu_choices, gpu_default
+
+    choices = gpu_choices(devices, device_count=device_count, ensure_gpu_zero=True)
+    default = gpu_default(choices)
     for block in blocks:
         kind = block.get('kind')
         if kind == 'row':
@@ -709,13 +708,14 @@ def _fill_gpu(blocks, device_count: int):
                 if item['id'] == 'gpu_id':
                     item['choices'] = choices
                     item['default'] = default
+                    item['info'] = GPU_INFO
                     item['multiselect'] = True
                     item['choices_from'] = ''
         elif kind in {'accordion', 'tab'}:
-            _fill_gpu(block.get('blocks') or [], device_count)
+            _fill_gpu(block.get('blocks') or [], device_count, devices=devices)
         elif kind == 'tabs':
             for tab in block.get('tabs') or []:
-                _fill_gpu(tab.get('blocks') or [], device_count)
+                _fill_gpu(tab.get('blocks') or [], device_count, devices=devices)
 
 
 def _layout(blocks) -> dict:
@@ -932,7 +932,7 @@ def _allow_even_accumulation(blocks: list) -> None:
                 _allow_even_accumulation(tab.get('blocks') or [])
 
 
-def stage_layout(stage: str, device_count: int = 0) -> dict:
+def stage_layout(stage: str, device_count: int = 0, devices=None) -> dict:
     """``sft`` mirrors LLM预训练/微调, ``rl`` mirrors LLM GRPO, ``eval`` mirrors LLM评测."""
     key = {'sft': 'sft', 'sft_eval': 'eval', 'rl': 'rl', 'rl_eval': 'eval'}[stage]
     blocks = [_clone(block) for block in _unwrap_root(list(_built(key)))]
@@ -942,7 +942,7 @@ def stage_layout(stage: str, device_count: int = 0) -> dict:
         # directly under 评测数据集 / 评测数据个数 — not inside a collapsed accordion.
         if not _insert_row_after(blocks, 'eval_limit', _eval_base_widget()):
             _insert_row_after(blocks, 'eval_dataset', _eval_base_widget())
-    _fill_gpu(blocks, device_count)
+    _fill_gpu(blocks, device_count, devices=devices)
     if key in {'sft', 'rl'}:
         _annotate_stage(blocks)
     if key == 'sft':

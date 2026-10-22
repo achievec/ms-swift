@@ -380,8 +380,10 @@ def _tune_runtime(item: dict) -> bool:
     return True
 
 
-def llm_infer_layout(device_count: int = 0) -> dict:
-    """Sections in Web-UI order. ``device_count`` is how many CUDA devices the box has."""
+def llm_infer_layout(device_count: int = 0, devices=None) -> dict:
+    """Sections in Web-UI order. ``device_count`` / ``devices`` select the GPU list."""
+    from rsi.gpu_options import GPU_INFO, gpu_choices, gpu_default
+
     parsed = _parsed()
     rows = []
     for row in parsed['rows']:
@@ -389,9 +391,11 @@ def llm_infer_layout(device_count: int = 0) -> dict:
         for item in row['widgets']:
             widget = dict(item)
             if widget['id'] == 'gpu_id':
-                count = max(0, int(device_count))
-                widget['choices'] = [str(index) for index in range(count)] + ['cpu']
-                widget['default'] = '0' if count else 'cpu'
+                choices = gpu_choices(
+                    devices, device_count=device_count, ensure_gpu_zero=False)
+                widget['choices'] = choices
+                widget['default'] = gpu_default(choices)
+                widget['info'] = GPU_INFO
                 widget['multiselect'] = True
             widgets.append(widget)
         copied = dict(row)

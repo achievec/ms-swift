@@ -846,6 +846,24 @@ function datasetTokens(value) {
   return String(value ?? '').trim().split(/\s+/).filter(Boolean);
 }
 
+function normalizeChoiceEntry(item) {
+  if (item && typeof item === 'object' && !Array.isArray(item) && 'value' in item) {
+    const value = String(item.value);
+    const label = item.label == null || item.label === '' ? value : String(item.label);
+    return { value, label: label || '（空）' };
+  }
+  const value = String(item ?? '');
+  return { value, label: value || '（空）' };
+}
+
+function choiceLabelMap(input) {
+  const map = {};
+  catalogEntries(input && input.dataset ? input.dataset.choicesFrom : '', input).forEach((entry) => {
+    map[entry.value] = entry.label;
+  });
+  return map;
+}
+
 function paintDatasetChips(box) {
   if (!box) return;
   const hidden = chipField(box);
@@ -853,7 +871,11 @@ function paintDatasetChips(box) {
   box.querySelectorAll('.chip').forEach((el) => el.remove());
   const query = box.querySelector('.chip-query');
   if (!query) return;
-  const html = tokens.map((token) => `<span class="chip"><span>${escapeHtml(token)}</span><button type="button" data-chip-remove="${escapeHtml(token)}" aria-label="移除">×</button></span>`).join('');
+  const labels = choiceLabelMap(query);
+  const html = tokens.map((token) => {
+    const label = labels[token] || token;
+    return `<span class="chip"><span>${escapeHtml(label)}</span><button type="button" data-chip-remove="${escapeHtml(token)}" aria-label="移除">×</button></span>`;
+  }).join('');
   query.insertAdjacentHTML('beforebegin', html);
   const clear = box.querySelector('[data-action="chip-clear"], [data-action="dataset-clear"]');
   if (clear) clear.hidden = tokens.length === 0;
@@ -1434,9 +1456,9 @@ function inferItemValue(item, values) {
 }
 
 function inferChoices(item, value) {
-  let entries = (item.choices || []).map((choice) => String(choice));
+  let entries = (item.choices || []).map((choice) => normalizeChoiceEntry(choice).value);
   if (!entries.length && item.choices_from && state.schema.catalog) {
-    entries = (state.schema.catalog[item.choices_from] || []).map((choice) => String(choice));
+    entries = (state.schema.catalog[item.choices_from] || []).map((choice) => normalizeChoiceEntry(choice).value);
   }
   const tokens = item.multiselect ? String(value ?? '').split(/[\s,]+/).filter(Boolean) : [String(value ?? '')];
   const selected = new Set(tokens);
@@ -1515,12 +1537,17 @@ function chipField(box) {
 }
 
 function renderChipBox(item, value) {
+  const entries = (item.choices || []).map(normalizeChoiceEntry);
+  const labels = Object.fromEntries(entries.map((entry) => [entry.value, entry.label]));
   const tokens = datasetTokens(value);
-  const chips = tokens.map((token) => `<span class="chip"><span>${escapeHtml(token)}</span><button type="button" data-chip-remove="${escapeHtml(token)}" aria-label="移除">×</button></span>`).join('');
+  const chips = tokens.map((token) => {
+    const label = labels[token] || token;
+    return `<span class="chip"><span>${escapeHtml(label)}</span><button type="button" data-chip-remove="${escapeHtml(token)}" aria-label="移除">×</button></span>`;
+  }).join('');
   const clearHidden = tokens.length ? '' : 'hidden';
   const from = item.choices_from ? ` data-choices-from="${escapeHtml(item.choices_from)}"` : '';
-  const inline = !item.choices_from && item.choices && item.choices.length
-    ? ` data-choice-list="${escapeHtml(JSON.stringify(item.choices.map((choice) => String(choice))))}"` : '';
+  const inline = !item.choices_from && entries.length
+    ? ` data-choice-list="${escapeHtml(JSON.stringify(entries))}"` : '';
   const custom = item.allow_custom ? '' : ' data-allow-custom="0"';
   const read = item.locked ? 'readonly' : '';
   const placeholder = item.allow_custom ? '选择或输入' : '选择';
@@ -2893,6 +2920,10 @@ function catalogNames(source, input) {
   return raw || [];
 }
 
+function catalogEntries(source, input) {
+  return catalogNames(source, input).map(normalizeChoiceEntry);
+}
+
 function comboFilterText(input) {
   if (input.dataset.multi !== '1') return input.value.trim();
   if (/\s$/.test(input.value)) return '';
@@ -2919,9 +2950,11 @@ function showCombo(input, browse) {
   const multi = input.dataset.multi === '1';
   const chip = input.dataset.chip === '1';
   const query = (browse && (multi || chip) ? '' : (chip ? input.value.trim() : (multi ? comboFilterText(input) : input.value.trim()))).toLowerCase();
-  const all = catalogNames(input.dataset.choicesFrom, input).map((item) => String(item));
+  const all = catalogEntries(input.dataset.choicesFrom, input);
   const cap = input.dataset.choicesFrom === 'eval_datasets_by_backend' ? all.length : 40;
-  const exact = !multi && query ? all.findIndex((item) => item.toLowerCase() === query) : -1;
+  const exact = !multi && !chip && query
+    ? all.findIndex((item) => item.value.toLowerCase() === query || item.label.toLowerCase() === query)
+    : -1;
   let shown;
   if (browse && exact >= 0) {
     const start = Math.max(0, exact - 8);
@@ -2929,7 +2962,9 @@ function showCombo(input, browse) {
   } else if (!query) {
     shown = all.slice(0, cap);
   } else {
-    shown = all.filter((item) => item.toLowerCase().includes(query)).slice(0, cap);
+    shown = all.filter((item) => (
+      item.value.toLowerCase().includes(query) || item.label.toLowerCase().includes(query)
+    )).slice(0, cap);
   }
   if (!shown.length) {
     list.hidden = true;
@@ -2944,8 +2979,8 @@ function showCombo(input, browse) {
     selected = new Set(input.value.trim().split(/\s+/).filter(Boolean));
   }
   list.innerHTML = shown.map((item) => {
-    const pressed = selected.has(item) ? ' aria-pressed="true"' : '';
-    return `<button type="button" data-combo-value="${escapeHtml(item)}"${pressed}>${escapeHtml(item)}</button>`;
+    const pressed = selected.has(item.value) ? ' aria-pressed="true"' : '';
+    return `<button type="button" data-combo-value="${escapeHtml(item.value)}"${pressed}>${escapeHtml(item.label)}</button>`;
   }).join('');
   list.hidden = false;
 }

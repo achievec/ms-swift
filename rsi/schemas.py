@@ -363,15 +363,16 @@ def clear_public_schema_cache() -> None:
         _SCHEMA_WIRE.clear()
 
 
-def _wire_export_layout(device_count: int) -> dict:
+def _wire_export_layout(device_count: int, devices: tuple = ()) -> dict:
     """Client renders ``sections`` + ``by_id``; drop triplicate ``blocks`` / ``fields``."""
-    layout = export_layout(device_count)
+    layout = export_layout(device_count, devices)
     return {key: value for key, value in layout.items() if key not in {'blocks', 'fields'}}
 
 
 def _schema_cache_key() -> tuple:
-    device_count = len((cached_gpu().get('devices') or []))
-    return (device_count, model_source())
+    # Device *names* belong in the key so GPU label text refreshes when cards change.
+    devices = tuple(cached_gpu().get('devices') or [])
+    return (devices, model_source())
 
 
 def _store_schema(key: tuple, schema: dict) -> dict:
@@ -383,10 +384,19 @@ def _store_schema(key: tuple, schema: dict) -> dict:
     return schema
 
 
-def _build_public_schema(device_count: int) -> dict:
+def _build_public_schema(devices) -> dict:
+    if isinstance(devices, int):
+        device_list: tuple = ()
+        device_count = int(devices)
+    else:
+        device_list = tuple(devices or ())
+        device_count = len(device_list)
     preset = presets()
     catalog = load_catalog()
-    stage_layouts = {stage: stage_layout(stage, device_count) for stage in ('sft', 'sft_eval', 'rl', 'rl_eval')}
+    stage_layouts = {
+        stage: stage_layout(stage, device_count, devices=device_list)
+        for stage in ('sft', 'sft_eval', 'rl', 'rl_eval')
+    }
     fields = {key: list(value) for key, value in FIELDS.items()}
     for stage, layout in stage_layouts.items():
         fields[stage] = layout['fields']
@@ -419,8 +429,8 @@ def _build_public_schema(device_count: int) -> dict:
         'hardware': preset.get('hardware', {}),
         'base_model_default': 'Qwen/Qwen2.5-7B-Instruct',
         'model_source': model_source(),
-        'llm_infer': llm_infer_layout(device_count),
-        'llm_export': _wire_export_layout(device_count),
+        'llm_infer': llm_infer_layout(device_count, devices=device_list),
+        'llm_export': _wire_export_layout(device_count, device_list),
         'catalog': {
             'models': sorted(catalog['models']),
             'model_types': sorted(catalog['model_types']),

@@ -193,9 +193,9 @@ def _sections(blocks):
     return sections
 
 
-def _shape(device_count: int):
+def _shape(device_count: int, devices=None):
     blocks = [_clone(block) for block in _unwrap_root(_walk(UI_FILE, 'LLMExport', 'ExportArguments'))]
-    _fill_gpu(blocks, device_count)
+    _fill_gpu(blocks, device_count, devices=devices)
     _each(blocks, lambda item: item.__setitem__('locked', item['id'] in LOCKED_FIELDS))
 
     def tune(item):
@@ -237,10 +237,10 @@ def _shape(device_count: int):
     return shaped
 
 
-@lru_cache(maxsize=8)
-def export_layout(device_count: int = 0) -> dict:
-    """Sections in Web-UI order. ``device_count`` selects the GPU list."""
-    blocks = _shape(int(device_count))
+@lru_cache(maxsize=16)
+def export_layout(device_count: int = 0, devices: tuple = ()) -> dict:
+    """Sections in Web-UI order. ``devices`` / ``device_count`` select the GPU list."""
+    blocks = _shape(int(device_count), devices=devices or None)
     layout = _layout(blocks)
     layout['locked'] = list(LOCKED_FIELDS)
     layout['sections'] = _sections(blocks)

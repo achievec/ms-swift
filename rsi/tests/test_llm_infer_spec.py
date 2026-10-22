@@ -62,7 +62,7 @@ def test_layout_matches_the_webui_llm_infer_tab():
     assert by_id['load_checkpoint']['label'] == '部署模型'
     assert by_id['gpu_id']['label'] == '选择可用GPU'
     assert '(--gpu_id)' not in by_id['gpu_id']['label']
-    assert by_id['gpu_id']['info'] == '选择训练使用的GPU号，如CUDA不可用只能选择CPU'
+    assert by_id['gpu_id']['info'] == '选择要用的 GPU（编号与型号）；CUDA 不可用时只能选 CPU'
     assert by_id['infer_model_type']['label'] == 'LoRA模块'
     assert 'default' in by_id['infer_model_type']['info']
     assert by_id['port']['label'] == '端口'
@@ -93,11 +93,15 @@ def test_layout_matches_the_webui_llm_infer_tab():
 
 def test_gpu_choices_follow_device_count():
     cpu = llm_infer_layout(0)['by_id']['gpu_id']
-    assert cpu['choices'] == ['cpu']
+    assert cpu['choices'] == [{'value': 'cpu', 'label': 'CPU'}]
     assert cpu['default'] == 'cpu'
     assert cpu['multiselect'] is True
     gpu = llm_infer_layout(2)['by_id']['gpu_id']
-    assert gpu['choices'] == ['0', '1', 'cpu']
+    assert gpu['choices'] == [
+        {'value': '0', 'label': 'GPU 0'},
+        {'value': '1', 'label': 'GPU 1'},
+        {'value': 'cpu', 'label': 'CPU'},
+    ]
     assert gpu['default'] == '0'
 
 
