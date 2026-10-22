@@ -158,6 +158,8 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         assert any(item['id'] == 'itops_eval' and item['rows'] == 4 for item in evals)
         assert all(item['id'].endswith('_eval') for item in evals)
         assert 'data-eval-pick' in page
+        assert '从本机上传' in page
+        assert 'eval-file-input' in page
         assert '由实验创建时决定，不能在这里修改' in page
         assert 'renderBlocks' in page
         assert 'syncStageFields' in page

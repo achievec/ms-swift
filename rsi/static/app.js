@@ -1587,19 +1587,24 @@ function renderEvalDatasetField(item, value, values) {
   if (publicTokens.length) selected = '__public__';
   else {
     const matched = items.find((entry) => evalPathMatches(custom, entry));
-    selected = matched ? matched.id : (custom ? '__path__' : ((items[0] && items[0].id) || '__path__'));
+    if (matched) selected = matched.id;
+    else if (!custom) selected = (items[0] && items[0].id) || '__path__';
+    else if (String(custom).replace(/\\/g, '/').includes('/uploads/')) selected = '__upload__';
+    else selected = '__path__';
   }
   const bundledOptions = items.map((entry) => {
     const mark = entry.id === selected ? 'selected' : '';
     return `<option value="${escapeHtml(entry.id)}" ${mark}>${escapeHtml(entry.label)}</option>`;
   }).join('');
   const publicMark = selected === '__public__' ? 'selected' : '';
+  const uploadMark = selected === '__upload__' ? 'selected' : '';
   const pathMark = selected === '__path__' ? 'selected' : '';
-  const options = `${bundledOptions}<option value="__public__" ${publicMark}>公开评测集（ceval、gsm8k 等）</option><option value="__path__" ${pathMark}>其他本地文件</option>`;
+  const options = `${bundledOptions}<option value="__upload__" ${uploadMark}>从本机上传</option><option value="__path__" ${pathMark}>服务器上的文件</option><option value="__public__" ${publicMark}>公开评测集（ceval、gsm8k 等）</option>`;
   const chipValue = selected === '__public__' ? publicTokens.join(' ') : 'itops-heldout';
   const publicStyle = selected === '__public__' ? '' : ' style="display:none"';
-  const shown = Object.assign({}, item, { info: '直接选留出题。公开基准在列表末尾。' });
-  return `<div class="field" data-key="${item.id}">${inferCaption(shown)}<div class="control"><select data-eval-pick>${options}</select><div data-eval-public${publicStyle}>${renderChipBox(item, chipValue)}</div></div><div class="extra"><small data-eval-note></small></div></div>`;
+  const uploadStyle = selected === '__upload__' ? '' : ' style="display:none"';
+  const shown = Object.assign({}, item, { info: '直接选留出题，或从电脑上传一份 jsonl。' });
+  return `<div class="field" data-key="${item.id}">${inferCaption(shown)}<div class="control"><select data-eval-pick>${options}</select><div data-eval-upload${uploadStyle}><input id="eval-file-input" type="file" accept=".jsonl,.json,.txt,.zip,.tar,.tar.gz,.tgz" /></div><div data-eval-public${publicStyle}>${renderChipBox(item, chipValue)}</div></div><div class="extra"><small data-eval-note></small></div></div>`;
 }
 
 function syncEvalPick(fromUser) {
@@ -1609,12 +1614,14 @@ function syncEvalPick(fromUser) {
   const items = (state.schema && state.schema.bundled_eval) || [];
   const bundled = items.find((item) => item.id === mode);
   const publicBox = document.querySelector('[data-eval-public]');
+  const uploadBox = document.querySelector('[data-eval-upload]');
   const pathField = document.querySelector('#main [data-key="custom_eval_config"]');
   const config = document.querySelector('#main [data-field="custom_eval_config"]');
   const box = document.querySelector('[data-key="eval_dataset"] .chip-box');
   const hidden = chipField(box);
   if (publicBox) publicBox.style.display = mode === '__public__' ? '' : 'none';
-  if (pathField) pathField.classList.toggle('eval-collapsed', mode !== '__path__');
+  if (uploadBox) uploadBox.style.display = mode === '__upload__' ? '' : 'none';
+  if (pathField) pathField.classList.toggle('eval-collapsed', mode !== '__path__' && mode !== '__upload__');
   if (bundled) {
     if (hidden) hidden.value = 'itops-heldout';
     if (config) config.value = bundledEvalLocation(bundled, config.value);
@@ -1635,6 +1642,7 @@ function syncEvalPick(fromUser) {
   const note = document.querySelector('[data-eval-note]');
   if (!note) return;
   if (bundled) note.textContent = `共 ${bundled.rows} 条留出题。切换这一项时，取样数会改成 ${bundled.rows}。`;
+  else if (mode === '__upload__') note.textContent = '从电脑选择 jsonl。上传后出现服务器路径，取样数改成文件条数。';
   else if (mode === '__public__') note.textContent = '在下面选择公开基准。';
   else note.textContent = '填写这份 jsonl 在服务器上的路径。';
 }
@@ -2058,6 +2066,28 @@ function applyPreset() {
   syncSource();
   flushDraft();
   toast('已恢复本阶段预设');
+}
+
+async function uploadEvalFile(file) {
+  const body = new FormData();
+  body.append('file', file);
+  const response = await fetch('/api/datasets/upload', { method: 'POST', body });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.detail || '上传失败');
+  const config = document.querySelector('#main [data-field="custom_eval_config"]');
+  if (config) config.value = data.path || '';
+  const box = document.querySelector('[data-key="eval_dataset"] .chip-box');
+  const hidden = chipField(box);
+  if (hidden) hidden.value = 'itops-heldout';
+  const rows = data.validation && Number(data.validation.num_rows);
+  if (rows) {
+    document.querySelectorAll('#main [data-field="eval_limit"]').forEach((el) => {
+      el.value = String(rows);
+    });
+  }
+  scheduleDraftSave();
+  const ok = Boolean(data.validation && data.validation.ok);
+  toast(ok ? '评测文件已上传' : '上传文件格式未通过');
 }
 
 async function uploadFile(file) {
@@ -2911,6 +2941,13 @@ document.addEventListener('change', async (event) => {
   if (event.target.id === 'file-input' && event.target.files[0]) {
     try {
       await uploadFile(event.target.files[0]);
+    } catch (err) {
+      toast(err.message);
+    }
+  }
+  if (event.target.id === 'eval-file-input' && event.target.files[0]) {
+    try {
+      await uploadEvalFile(event.target.files[0]);
     } catch (err) {
       toast(err.message);
     }
