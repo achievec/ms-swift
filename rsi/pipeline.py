@@ -433,12 +433,37 @@ def materialize_general_qa(source: Path, dest_dir: Path):
     return dest_dir, written
 
 
+def _sibling_workbench_eval(dataset: str) -> tuple[str, int] | None:
+    """Eval file written beside a workbench train split, if that file exists."""
+    if not dataset:
+        return None
+    try:
+        train = Path(dataset).expanduser().resolve()
+    except OSError:
+        return None
+    if train.name != 'train.jsonl' or len(train.parts) < 3 or train.parts[-3] != 'workbench':
+        return None
+    sibling = train.with_name('eval.jsonl')
+    if not sibling.is_file():
+        return None
+    with sibling.open(encoding='utf-8') as handle:
+        count = sum(1 for line in handle if line.strip())
+    if not count:
+        return None
+    return str(sibling), count
+
+
 def _bundled_eval_match(params: dict) -> tuple[str, int] | None:
     """Held-out file that pairs with a bundled training set, plus its row count."""
     params = params or {}
     name = ''
     if str(params.get('source') or '') == 'bundled':
         name = str(params.get('bundled') or '')
+    sibling = _sibling_workbench_eval(str(params.get('dataset') or ''))
+    if sibling:
+        return sibling
+    if name.startswith('wb:'):
+        return None
     if not name:
         dataset = str(params.get('dataset') or '')
         file = Path(dataset)

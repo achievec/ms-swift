@@ -88,6 +88,10 @@ def test_split_files_can_be_chosen_as_bundled(tmp_path, monkeypatch):
     })
     assert started.status_code == 200, started.text
     assert train['path'] in started.json()['command']
+    view = client.get(f'/api/runs/{run_id}').json()
+    heldout_config = view['forms']['sft_eval']['values']['custom_eval_config']
+    assert heldout_config.endswith('/eval.jsonl')
+    assert heldout_config.rsplit('/', 1)[0] == train['path'].rsplit('/', 1)[0]
     blocked = client.post(f'/api/runs/{run_id}/stages/sft/run', json={
         'params': {'source': 'bundled', 'bundled': 'wb:../../etc/passwd'},
     })

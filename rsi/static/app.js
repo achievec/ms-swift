@@ -886,7 +886,7 @@ function datasetChoices(kind) {
     ? ((state.schema && state.schema.bundled_eval) || [])
     : ((state.schema && state.schema.bundled) || []);
   const extra = (state.workbenchFiles || []).filter((item) => item.kind === kind);
-  return base.concat(extra);
+  return extra.concat(base);
 }
 
 function choiceFile(item, current) {
@@ -899,7 +899,7 @@ function choiceFile(item, current) {
 
 function bundledSelect(selected) {
   const items = datasetChoices('train');
-  const current = selected || (items[0] && items[0].id) || '';
+  const current = selected || 'helpdesk_train';
   const options = items.map((item) => {
     const mark = item.id === current ? 'selected' : '';
     return `<option value="${escapeHtml(item.id)}" ${mark}>${escapeHtml(item.label)}</option>`;

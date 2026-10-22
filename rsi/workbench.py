@@ -7,6 +7,7 @@ pipeline.run_stage.
 import json
 import random
 import threading
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -47,10 +48,11 @@ def list_generated(home: Path) -> list:
                 mtime = path.stat().st_mtime
             except OSError:
                 continue
+            stamp = time.strftime('%m-%d %H:%M', time.localtime(mtime))
             rows.append({
                 'id': f'wb:{folder.name}/{filename}',
                 'kind': kind,
-                'label': f'{label}（{count} 条）',
+                'label': f'本页生成 · {label}（{count} 条，{stamp}）',
                 'rows': count,
                 'path': str(path.resolve()),
                 'mtime': mtime,
