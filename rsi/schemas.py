@@ -75,11 +75,23 @@ PUBLIC_DATASETS = [
     },
 ]
 
+# Train jsonl under rsi/examples. Eval files stay off this list so a pick cannot train on the held-out set.
 BUNDLED = [
-    {
-        'id': 'itops_mix',
-        'label': '内置示例：IT 运维工单（rsi/examples/itops_mix.jsonl）'
-    },
+    {'id': 'helpdesk_train', 'label': 'IT 服务台验收（helpdesk_train，480 条）'},
+    {'id': 'itops_mix', 'label': 'IT 运维冒烟（itops_mix，6 条）'},
+    {'id': 'broad_mix', 'label': '跨场景混合（broad_mix）'},
+    {'id': 'instruct', 'label': '指令跟随（instruct）'},
+    {'id': 'dialogue', 'label': '多轮对话（dialogue）'},
+    {'id': 'math', 'label': '数学（math）'},
+    {'id': 'code', 'label': '代码（code）'},
+    {'id': 'exam', 'label': '考试问答（exam）'},
+    {'id': 'summary', 'label': '摘要（summary）'},
+    {'id': 'reading', 'label': '阅读理解（reading）'},
+    {'id': 'translate', 'label': '翻译（translate）'},
+    {'id': 'sql', 'label': 'SQL（sql）'},
+    {'id': 'tooluse', 'label': '工具调用（tooluse）'},
+    {'id': 'service', 'label': '客服（service）'},
+    {'id': 'safety', 'label': '安全（safety）'},
 ]
 
 
@@ -149,6 +161,9 @@ FIELDS = {
             'select',
             '数据集设置',
             [{
+                'value': 'bundled',
+                'label': '内置示例'
+            }, {
                 'value': 'public',
                 'label': '公开数据集'
             }, {

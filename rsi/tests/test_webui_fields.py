@@ -107,9 +107,18 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         assert data['dataset']['choices_from'] == 'datasets'
         assert data['dataset']['label'] == '数据集名称(--dataset)'
         assert data['dataset']['info'] == '选择训练的数据集，支持复选/本地路径'
-        assert [item['label'] for item in data['source']['choices']] == ['公开数据集', '上传文件', '服务器本地路径']
-        assert [item['value'] for item in data['source']['choices']] == ['public', 'upload', 'path']
+        assert [item['label'] for item in data['source']['choices']] == [
+            '内置示例', '公开数据集', '上传文件', '服务器本地路径',
+        ]
+        assert [item['value'] for item in data['source']['choices']] == ['bundled', 'public', 'upload', 'path']
         assert 'bundled' not in data
+        bundled_ids = [item['id'] for item in schema['bundled']]
+        assert bundled_ids[0] == 'helpdesk_train'
+        assert 'itops_mix' in bundled_ids
+        assert 'helpdesk_eval' not in bundled_ids
+        examples = Path(__file__).resolve().parents[1] / 'examples'
+        for item in schema['bundled']:
+            assert (examples / f"{item['id']}.jsonl").is_file()
         assert 'dataset_num_proc' not in data
         assert 'dataloader_num_workers' not in data
         assert 'val_dataset' not in data
@@ -136,8 +145,8 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         assert 'renderDatasetSettings' in page
         assert 'catalog.hf_datasets' not in page
         assert '数据集设置' in page
-        assert 'data-dataset-mode' in page
-        assert '内置示例' not in page
+        assert 'data-dataset-mode="bundled"' in page
+        assert 'data-field="bundled"' in page
         assert '由实验创建时决定，不能在这里修改' in page
         assert 'renderBlocks' in page
         assert 'syncStageFields' in page

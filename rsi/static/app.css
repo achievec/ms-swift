@@ -603,6 +603,10 @@ dialog {
 }
 .dataset-grid > .field[data-key="dataset"] { flex: 2.2 1 280px; }
 .dataset-grid > .field[data-key="source"] { flex: 0.9 1 160px; }
+.dataset-grid [data-dataset-mode="bundled"] select {
+  height: var(--control-h);
+  min-height: var(--control-h);
+}
 .chip-box {
   display: flex;
   flex-wrap: wrap;

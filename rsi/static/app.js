@@ -881,8 +881,18 @@ function paintDatasetChips(box) {
   if (clear) clear.hidden = tokens.length === 0;
 }
 
+function bundledSelect(selected) {
+  const items = (state.schema && state.schema.bundled) || [];
+  const current = selected || (items[0] && items[0].id) || '';
+  const options = items.map((item) => {
+    const mark = item.id === current ? 'selected' : '';
+    return `<option value="${escapeHtml(item.id)}" ${mark}>${escapeHtml(item.label)}</option>`;
+  }).join('');
+  return `<select data-field="bundled">${options}</select>`;
+}
+
 function shownDataSource(value, dataset) {
-  if (value === 'public' || value === 'upload' || value === 'path') return value;
+  if (value === 'public' || value === 'upload' || value === 'path' || value === 'bundled') return value;
   const text = String(dataset || '');
   if (text.startsWith('/') || text.includes('\\') || text.startsWith('.')) return 'path';
   return 'public';
@@ -933,6 +943,7 @@ function renderDatasetSettings(fields, values) {
       <div data-dataset-mode="public" ${hide('public')}><div class="combo chip-combo"><div class="combo-anchor chip-box">${chips}<input class="chip-query" data-combo="1" data-chip="1" data-choices-from="datasets" value="" autocomplete="off" placeholder="选择或输入数据集" /><button type="button" class="chip-clear" data-action="dataset-clear" aria-label="清空" ${clearHidden}>×</button><button type="button" class="chip-caret" data-action="dataset-menu" aria-label="展开数据集">▾</button><input type="hidden" data-field="dataset" value="${escapeHtml(tokens.join(' '))}" /><div class="combo-list" hidden></div></div></div></div>
       <div data-dataset-mode="upload" ${hide('upload')}><input id="file-input" type="file" accept=".jsonl,.json,.txt,.zip,.tar,.tar.gz,.tgz" /><input class="dataset-path" type="text" data-field="dataset" value="${escapeHtml(datasetValue)}" readonly placeholder="上传后显示文件路径" /></div>
       <div data-dataset-mode="path" ${hide('path')}><input type="text" data-field="dataset" value="${escapeHtml(datasetValue)}" placeholder="服务器上的文件或目录路径" /></div>
+      <div data-dataset-mode="bundled" ${hide('bundled')}>${bundledSelect(values && values.bundled)}</div>
     </div><div class="extra"></div></div>`;
   const split = byKey.split_dataset_ratio ? renderDatasetSlider(byKey.split_dataset_ratio, values) : '';
   const length = byKey.max_length ? renderDatasetSlider(byKey.max_length, values) : '';
