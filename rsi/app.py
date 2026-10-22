@@ -232,6 +232,10 @@ def create_app(home: Path | None = None) -> FastAPI:
             raise PipelineError('请贴上 jsonl，或选择一个文件')
         return str(text), body.get('filename') or 'data.jsonl'
 
+    @app.get('/api/workbench/files')
+    def workbench_files():
+        return {'files': workbench.list_generated(home)}
+
     @app.post('/api/workbench/inspect')
     async def workbench_inspect(request: Request):
         text, filename = _workbench_text(await read_json(request))

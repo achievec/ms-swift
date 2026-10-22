@@ -20,6 +20,62 @@ from rsi.serving import loopback
 
 _EXPORTS = {}
 _EXPORT_LOCK = threading.Lock()
+_GENERATED = (
+    ('train.jsonl', 'train', '拆分训练集'),
+    ('eval.jsonl', 'eval', '拆分留出集'),
+    ('kept.jsonl', 'train', '筛出可继续用'),
+    ('next.jsonl', 'train', '补全后的训练集'),
+)
+
+
+def list_generated(home: Path) -> list:
+    """Files this page wrote, so the training form can offer them by name."""
+    root = (Path(home) / 'workbench').resolve()
+    if not root.is_dir():
+        return []
+    rows = []
+    for folder in root.iterdir():
+        if not folder.is_dir():
+            continue
+        for filename, kind, label in _GENERATED:
+            path = folder / filename
+            if not path.is_file():
+                continue
+            try:
+                with path.open(encoding='utf-8') as handle:
+                    count = sum(1 for line in handle if line.strip())
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            rows.append({
+                'id': f'wb:{folder.name}/{filename}',
+                'kind': kind,
+                'label': f'{label}（{count} 条）',
+                'rows': count,
+                'path': str(path.resolve()),
+                'mtime': mtime,
+            })
+    rows.sort(key=lambda item: item['mtime'], reverse=True)
+    for item in rows:
+        item.pop('mtime', None)
+    return rows
+
+
+def resolve_generated(home: Path, token: str) -> Path:
+    """Map a ``wb:`` id back to a file this page wrote. Other paths are refused."""
+    raw = str(token or '')
+    if not raw.startswith('wb:'):
+        raise PipelineError('未知生成的数据集')
+    rel = raw[3:]
+    parts = rel.split('/')
+    allowed = {name for name, _kind, _label in _GENERATED}
+    if len(parts) != 2 or not parts[0] or parts[1] not in allowed or '..' in parts[0]:
+        raise PipelineError('未知生成的数据集')
+    root = (Path(home) / 'workbench').resolve()
+    path = (root / parts[0] / parts[1]).resolve()
+    if path.parent.parent != root or not path.is_file():
+        raise PipelineError('未知生成的数据集')
+    return path
 
 
 def _assistant_text(row: dict) -> str:
@@ -150,7 +206,7 @@ def write_split(home: Path, text: str, filename: str = 'data.jsonl', eval_ratio:
         'train_path': str((folder / 'train.jsonl').resolve()),
         'eval_path': str((folder / 'eval.jsonl').resolve()),
         'seed': int(seed),
-        'how_to': '不会改当前实验。下一轮 SFT 把数据来源选成「服务器本地路径」，粘贴训练集。评测数据集选「服务器上的文件」，粘贴留出集。',
+        'how_to': '不会改当前实验。回到训练页后，SFT 的「内置示例」里可以直接选这份训练集，评测数据集里可以直接选这份留出集。',
     }
 
 
@@ -187,7 +243,7 @@ def pack_next_round(home: Path, text: str, filename: str = 'data.jsonl', min_sco
         'kept_path': str((folder / 'kept.jsonl').resolve()),
         'retry_path': str((folder / 'retry_prompts.jsonl').resolve()),
         'min_score': threshold,
-        'how_to': '可继续用的文件能当下一轮训练集。待补全文件只有题目。先在训练页部署推理，再点「用当前推理补全」。',
+        'how_to': '可继续用的文件会出现在训练页「内置示例」里。待补全文件只有题目。先在训练页部署推理，再点「用当前推理补全」。',
     }
 
 
@@ -401,7 +457,7 @@ def write_completed(home: Path, rows: list, answer_fn, limit: int = FILL_LIMIT) 
         'pending_rows': pending,
         'next_path': str(next_path.resolve()),
         'waiting_path': waiting_path,
-        'how_to': '不会替换当前实验的数据集。下一轮 SFT 把数据来源选成「服务器本地路径」，粘贴 next.jsonl。',
+        'how_to': '不会替换当前实验的数据集。回到训练页后，在「内置示例」里选「补全后的训练集」。',
     }
 
 

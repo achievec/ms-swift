@@ -66,6 +66,34 @@ def test_inspect_split_and_next_pack(tmp_path, monkeypatch):
     assert '工单 B' in retry
 
 
+def test_split_files_can_be_chosen_as_bundled(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    split = client.post('/api/workbench/split', json={'text': SAMPLE, 'eval_ratio': 0.34, 'seed': 1})
+    assert split.status_code == 200, split.text
+    listed = client.get('/api/workbench/files')
+    assert listed.status_code == 200, listed.text
+    files = listed.json()['files']
+    train = next(item for item in files if item['id'].endswith('/train.jsonl'))
+    heldout = next(item for item in files if item['id'].endswith('/eval.jsonl'))
+    assert train['kind'] == 'train' and heldout['kind'] == 'eval'
+    assert train['rows'] == split.json()['train_rows']
+    created = client.post('/api/runs', json={
+        'name': '选用拆分数据',
+        'scenario': '训练页直接选工作台生成的文件',
+        'base_model': 'Qwen/Qwen2.5-7B-Instruct',
+    })
+    run_id = created.json()['run']['id']
+    started = client.post(f'/api/runs/{run_id}/stages/sft/run', json={
+        'params': {'source': 'bundled', 'bundled': train['id']},
+    })
+    assert started.status_code == 200, started.text
+    assert train['path'] in started.json()['command']
+    blocked = client.post(f'/api/runs/{run_id}/stages/sft/run', json={
+        'params': {'source': 'bundled', 'bundled': 'wb:../../etc/passwd'},
+    })
+    assert blocked.status_code == 400
+
+
 def test_load_dataset_recorded_by_the_data_step(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     created = client.post('/api/runs', json={
@@ -221,4 +249,4 @@ def test_complete_uses_running_chat_and_skips_answered_rows(tmp_path, monkeypatc
     assert seen == ['工单 B']
     written = open(body['next_path'], encoding='utf-8').read()
     assert '先看证书缓存' in written
-    assert '服务器本地路径' in body['how_to']
+    assert '内置示例' in body['how_to']

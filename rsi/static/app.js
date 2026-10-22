@@ -881,8 +881,24 @@ function paintDatasetChips(box) {
   if (clear) clear.hidden = tokens.length === 0;
 }
 
+function datasetChoices(kind) {
+  const base = kind === 'eval'
+    ? ((state.schema && state.schema.bundled_eval) || [])
+    : ((state.schema && state.schema.bundled) || []);
+  const extra = (state.workbenchFiles || []).filter((item) => item.kind === kind);
+  return base.concat(extra);
+}
+
+function choiceFile(item, current) {
+  if (item && String(item.id).startsWith('wb:')) return item.path;
+  if (item && item.path && String(item.path).indexOf('examples/') >= 0 && String(item.id).endsWith('_eval')) {
+    return bundledEvalLocation(item, current);
+  }
+  return bundledTrainLocation(item, current);
+}
+
 function bundledSelect(selected) {
-  const items = (state.schema && state.schema.bundled) || [];
+  const items = datasetChoices('train');
   const current = selected || (items[0] && items[0].id) || '';
   const options = items.map((item) => {
     const mark = item.id === current ? 'selected' : '';
@@ -1579,7 +1595,7 @@ function bundledEvalLocation(item, current) {
 }
 
 function renderEvalDatasetField(item, value, values) {
-  const items = (state.schema && state.schema.bundled_eval) || [];
+  const items = datasetChoices('eval');
   const custom = values && values.custom_eval_config ? String(values.custom_eval_config) : '';
   const publicTokens = datasetTokens(value).filter((token) => token && token !== 'itops-heldout');
   let selected = '__path__';
@@ -1610,7 +1626,7 @@ function syncEvalPick(fromUser) {
   const pick = document.querySelector('[data-eval-pick]');
   if (!pick) return;
   const mode = pick.value;
-  const items = (state.schema && state.schema.bundled_eval) || [];
+  const items = datasetChoices('eval');
   const bundled = items.find((item) => item.id === mode);
   const publicBox = document.querySelector('[data-eval-public]');
   const uploadBox = document.querySelector('[data-eval-upload]');
@@ -1623,7 +1639,7 @@ function syncEvalPick(fromUser) {
   if (pathField) pathField.classList.toggle('eval-collapsed', mode !== '__path__' && mode !== '__upload__');
   if (bundled) {
     if (hidden) hidden.value = 'itops-heldout';
-    if (config) config.value = bundledEvalLocation(bundled, config.value);
+    if (config) config.value = choiceFile(bundled, config.value);
     if (fromUser) {
       document.querySelectorAll('#main [data-field="eval_limit"]').forEach((el) => {
         el.value = String(bundled.rows);
@@ -1656,10 +1672,10 @@ function bundledTrainLocation(item, current) {
 
 function rlDatasetMode(value) {
   const text = String(value || '').trim();
-  const items = (state.schema && state.schema.bundled) || [];
+  const items = datasetChoices('train');
   const matched = items.find((entry) => evalPathMatches(text, {
     id: entry.id,
-    path: `rsi/examples/${entry.id}.jsonl`,
+    path: entry.path || `rsi/examples/${entry.id}.jsonl`,
   }));
   if (matched) return matched.id;
   if (!text) return '__public__';
@@ -1670,7 +1686,7 @@ function rlDatasetMode(value) {
 }
 
 function renderRlDatasetField(item, value) {
-  const items = (state.schema && state.schema.bundled) || [];
+  const items = datasetChoices('train');
   const text = value == null ? '' : String(value);
   const selected = rlDatasetMode(text);
   const bundledOptions = items.map((entry) => {
@@ -1693,7 +1709,7 @@ function syncRlDataset(fromUser) {
   const pick = document.querySelector('[data-rl-dataset-pick]');
   if (!pick) return;
   const mode = pick.value;
-  const items = (state.schema && state.schema.bundled) || [];
+  const items = datasetChoices('train');
   const bundled = items.find((item) => item.id === mode);
   const publicBox = document.querySelector('[data-rl-dataset-public]');
   const uploadBox = document.querySelector('[data-rl-dataset-upload]');
@@ -1707,7 +1723,7 @@ function syncRlDataset(fromUser) {
   if (pathInput) pathInput.readOnly = mode === '__upload__';
   if (bundled && hidden) {
     if (fromUser || !evalPathMatches(hidden.value, { id: bundled.id, path: `rsi/examples/${bundled.id}.jsonl` })) {
-      hidden.value = bundledTrainLocation(bundled, hidden.value);
+      hidden.value = choiceFile(bundled, hidden.value);
     }
   } else if (mode === '__public__' && hidden && /[/\\]/.test(hidden.value)) {
     hidden.value = '';
@@ -3639,6 +3655,11 @@ window.addEventListener('pagehide', () => {
 
 async function boot() {
   state.schema = await api('/api/schema');
+  try {
+    state.workbenchFiles = (await api('/api/workbench/files')).files || [];
+  } catch (_err) {
+    state.workbenchFiles = [];
+  }
   fillCreateModel();
   await refreshRuns();
   render();

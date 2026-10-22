@@ -628,7 +628,11 @@ class Pipeline:
     def resolve_dataset(self, params: dict, *, fetch: bool = True):
         source = params.get('source') or 'bundled'
         if source == 'bundled':
-            name = params.get('bundled') or 'itops_mix'
+            name = str(params.get('bundled') or 'itops_mix')
+            if name.startswith('wb:'):
+                from rsi.workbench import resolve_generated
+                path = resolve_generated(self.home, name)
+                return str(path.resolve()), validate_file(path)
             path = self.examples / f'{name}.jsonl'
             if not path.is_file():
                 raise PipelineError(f'未知内置数据集：{name}')
