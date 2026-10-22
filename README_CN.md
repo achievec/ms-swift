@@ -249,7 +249,7 @@ swift web-ui
 
 ### RSI 闭环界面
 
-递归自改进闭环在 [`rsi/`](rsi/README.md)。SFT 评测通过后可以进入 RL、下一轮数据或完成；未通过只能进入下一轮数据。RL 评测通过后可以完成或进入下一轮数据，未通过只能进入下一轮数据。参数名与 ms-swift 命令行一致。默认在 GPU 0 上调用本仓库的 `swift sft` / `eval` / `rlhf` / `deploy` / `export`。「模型导出」跟 Web-UI 的 LLM导出同一套字段。没有 GPU 时设置 `RSI_BACKEND=mock`。
+递归自改进闭环在 [`rsi/`](rsi/README.md)。SFT 评测通过后可以进入 RL、开启下一轮或完成；未通过只能开启下一轮。RL 评测通过后可以完成或开启下一轮，未通过只能开启下一轮。参数名与 ms-swift 命令行一致。默认在 GPU 0 上调用本仓库的 `swift sft` / `eval` / `rlhf` / `deploy` / `export`。「模型导出」跟 Web-UI 的 LLM导出同一套字段。没有 GPU 时设置 `RSI_BACKEND=mock`。
 
 ```shell
 pip install -r rsi/requirements.txt

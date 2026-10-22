@@ -98,7 +98,7 @@ def test_stop_rejects_idle_and_instant_stages(client):
     idle = api.post(f'/api/runs/{run_id}/stages/sft/stop', json={})
     assert idle.status_code == 400
     assert idle.json()['detail'] == '没有正在运行的阶段'
-    for stage in ('sft_eval', 'rl', 'rl_eval', 'promote', 'next_round'):
+    for stage in ('sft_eval', 'rl', 'rl_eval', 'promote'):
         denied = api.post(f'/api/runs/{run_id}/stages/{stage}/stop', json={})
         assert denied.status_code == 400, denied.text
         if stage in SWIFT_STAGES:

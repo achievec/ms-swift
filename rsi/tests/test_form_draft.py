@@ -78,8 +78,7 @@ def test_multiselect_and_each_stage_round_trip(client):
     _draft(api, run_id, 'sft_eval', {'eval_limit': 7})
     _draft(api, run_id, 'rl', {'num_generations': 3, 'learning_rate': '2e-6'})
     _draft(api, run_id, 'rl_eval', {'eval_limit': 9})
-    _draft(api, run_id, 'promote', {'reason': '用 SFT'})
-    _draft(api, run_id, 'next_round', {'note': '换一批'})
+    _draft(api, run_id, 'promote', {'reason': '用 SFT', 'note': '换一批'})
     _draft(api, run_id, 'serve', {
         'temperature': 0.2,
         'model': 'other/model',
@@ -112,7 +111,7 @@ def test_multiselect_and_each_stage_round_trip(client):
     assert rl['model'] == base
     assert view['forms']['rl_eval']['values']['eval_limit'] == 9
     assert view['forms']['promote']['values']['reason'] == '用 SFT'
-    assert view['forms']['next_round']['values']['note'] == '换一批'
+    assert view['forms']['promote']['values']['note'] == '换一批'
 
     serve = view['serve_form']
     assert serve['temperature'] == 0.2

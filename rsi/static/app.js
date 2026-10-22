@@ -1056,13 +1056,21 @@ function renderStage(stage) {
   const blockReason = !view.mutable
     ? '历史轮次只能查看'
     : (form.status === 'running' ? '运行中' : (form.status === 'locked' ? '请先完成上一阶段' : ''));
-  const buttonLabel = {
-    ready: '运行本阶段',
-    failed: '重试本阶段',
-    succeeded: '重新运行并作废后续阶段',
-    running: '运行中',
-    locked: '请先完成上一阶段',
-  }[form.status] || '运行本阶段';
+  const buttonLabel = stage === 'promote'
+    ? ({
+      ready: '开启下一轮',
+      failed: '重试开启下一轮',
+      succeeded: '重新开启并作废后续阶段',
+      running: '开启中',
+      locked: '请先完成评测',
+    }[form.status] || '开启下一轮')
+    : ({
+      ready: '运行本阶段',
+      failed: '重试本阶段',
+      succeeded: '重新运行并作废后续阶段',
+      running: '运行中',
+      locked: '请先完成上一阶段',
+    }[form.status] || '运行本阶段');
   const values = form.values || {};
   const promote = stage === 'promote' ? renderPromote(values) : '';
   const viewTip = tipAttr(view.mutable ? '' : '历史轮次只能查看');
@@ -1160,9 +1168,8 @@ function flowNodeTitle(node) {
 }
 
 function flowNodeSelected(node) {
-  const choosingNext = state.stage === 'promote' || state.stage === 'next_round';
-  if (node.id === 'promote') return choosingNext;
-  if (node.id === 'sft_next' || node.id === 'rl_next' || node.id === 'next_data') {
+  const choosingNext = state.stage === 'promote';
+  if (node.id === 'sft_next' || node.id === 'rl_next' || node.id === 'next_data' || node.id === 'promote') {
     return choosingNext && node.status !== 'locked';
   }
   if (node.id === 'sft_finish' || node.id === 'rl_finish' || node.id === 'finish') return state.stage === 'finish';
@@ -1226,9 +1233,9 @@ function renderTerminal() {
   };
   const canNext = completed && (state.view.flow.actions || []).some((item) => item.id === 'next');
   return `<section class="panel"><h2>${completed ? '实验已完成' : '实验已结束'}</h2>
-    <p>${canNext ? '本轮已标记完成。仍可点「下一轮数据」晋级并开下一轮，检查点都还在。' : '本轮到此结束。已有检查点仍留在记录里。'}</p>
+    <p>${canNext ? '本轮已标记完成。仍可点「开启下一轮」选出检查点并开下一轮，检查点都还在。' : '本轮到此结束。已有检查点仍留在记录里。'}</p>
     <div class="infer-form">${renderLockedModelRow([], values)}</div>
-    <div class="row-actions">${canNext ? '<button type="button" class="primary" data-decision="next">下一轮数据</button>' : ''}
+    <div class="row-actions">${canNext ? '<button type="button" class="primary" data-decision="next">开启下一轮</button>' : ''}
       <button type="button" class="${canNext ? 'ghost' : 'primary'}" data-action="open-serve">去部署推理服务</button>
       <button type="button" class="ghost" data-action="open-export">去模型导出</button></div>
   </section>`;
@@ -2228,8 +2235,9 @@ document.addEventListener('click', async (event) => {
         stage = 'finish';
       }
       if (stage === 'next_data' || stage === 'sft_next' || stage === 'rl_next' || stage === 'promote') {
-        // 「完成」closes the run; choosing 下一轮数据 reopens it before promote/next_round.
-        if (state.view.run.status === 'completed') {
+        // 「完成」closes the run; 「开启下一轮」reopens it, then shows the promote form.
+        const canNext = (state.view.flow.actions || []).some((item) => item.id === 'next');
+        if (canNext && (state.view.run.status === 'completed' || state.stage !== 'promote')) {
           const payload = await api(`/api/runs/${state.view.run.id}/decide`, {
             method: 'POST',
             body: JSON.stringify({ action: 'next' }),
@@ -2241,8 +2249,7 @@ document.addEventListener('click', async (event) => {
           render();
           return;
         }
-        const promoted = state.view.round && state.view.round.promoted_checkpoint;
-        stage = promoted ? 'next_round' : 'promote';
+        stage = 'promote';
       }
       state.stage = stage;
       state.tab = 'flow';
@@ -2528,7 +2535,7 @@ document.addEventListener('toggle', (event) => {
   else state.inferRuntimeOpen = Boolean(node.open);
 }, true);
 
-const DRAFT_STAGES = ['sft', 'sft_eval', 'rl', 'rl_eval', 'promote', 'next_round'];
+const DRAFT_STAGES = ['sft', 'sft_eval', 'rl', 'rl_eval', 'promote'];
 
 function currentDraftStage() {
   if (!state.view) return null;

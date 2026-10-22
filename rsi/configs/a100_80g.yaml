@@ -178,6 +178,6 @@ serve:
   repetition_penalty: 1.05
   more_params: ""
 
-next_round:
+promote:
   reuse_dataset: true
   note: ""

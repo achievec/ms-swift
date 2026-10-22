@@ -86,7 +86,7 @@ def test_passed_sft_eval_offers_rl_next_or_finish_and_skip_keeps_checkpoint(clie
                for edge in edges)
     assert any(edge['from'] == 'sft_eval' and edge['to'] == 'sft_finish' and edge['label'] == '完成' and edge['live']
                for edge in edges)
-    assert any(edge['from'] == 'sft_eval' and edge['to'] == 'sft_next' and edge['label'] == '下一轮数据' and edge['live']
+    assert any(edge['from'] == 'sft_eval' and edge['to'] == 'sft_next' and edge['label'] == '开启下一轮' and edge['live']
                for edge in edges)
     assert any(edge['from'] == 'sft_eval' and edge['to'] == 'sft_fail' and edge['label'] == '不通过' and not edge['live']
                for edge in edges)
@@ -96,11 +96,11 @@ def test_passed_sft_eval_offers_rl_next_or_finish_and_skip_keeps_checkpoint(clie
     assert decided.json()['stage'] == 'promote'
     sft_path = next(row['path'] for row in decided.json()['view']['candidates'] if row['kind'] == 'sft')
     assert sft_path
-    promoted = _run(api, run_id, 'promote', {'choice': 'sft', 'reason': '跳过 RL，带上 SFT 检查点'})
+    promoted = _run(api, run_id, 'promote', {
+        'choice': 'sft', 'reason': '跳过 RL，带上 SFT 检查点', 'reuse_dataset': True,
+    })
     assert promoted.status_code == 200, promoted.text
-    nxt = _run(api, run_id, 'next_round', {'reuse_dataset': True})
-    assert nxt.status_code == 200, nxt.text
-    body = nxt.json()['view']
+    body = promoted.json()['view']
     assert body['run']['round_index'] == 2
     assert body['round']['base_model'] == sft_path
     assert not any(step['stage'] == 'rl' and step['status'] == 'succeeded' for step in body['steps'])
@@ -145,8 +145,7 @@ def test_failed_sft_eval_only_opens_next_data(client):
     base = api.get(f'/api/runs/{other}').json()['candidates']
     base_path = next(row['path'] for row in base if row['kind'] == 'base')
     sft_path = next(row['path'] for row in base if row['kind'] == 'sft')
-    assert _run(api, other, 'promote', {'choice': 'base'}).status_code == 200
-    nxt = _run(api, other, 'next_round', {})
+    nxt = _run(api, other, 'promote', {'choice': 'base'})
     assert nxt.status_code == 200, nxt.text
     assert nxt.json()['view']['round']['base_model'] == base_path
     assert any(item['kind'] == 'sft' and item['path'] == sft_path for item in nxt.json()['view']['checkpoints'])
@@ -183,8 +182,7 @@ def test_finish_ends_the_run_and_rl_eval_splits_pass_and_fail(client):
     assert opened['round']['status'] == 'active'
     assert opened['mutable'] is True
     sft_path = next(row['path'] for row in opened['candidates'] if row['kind'] == 'sft')
-    assert _run(api, run_id, 'promote', {'choice': 'sft', 'reason': '完成后继续'}).status_code == 200
-    nxt = _run(api, run_id, 'next_round', {'reuse_dataset': True})
+    nxt = _run(api, run_id, 'promote', {'choice': 'sft', 'reason': '完成后继续', 'reuse_dataset': True})
     assert nxt.status_code == 200, nxt.text
     assert nxt.json()['view']['run']['round_index'] == 2
     assert nxt.json()['view']['round']['base_model'] == sft_path
@@ -205,7 +203,7 @@ def test_finish_ends_the_run_and_rl_eval_splits_pass_and_fail(client):
     assert 'stop' not in failed_nodes
     assert any(edge['from'] == 'rl_eval' and edge['to'] == 'rl_fail' and edge['label'] == '不通过' and edge['live']
                for edge in failed_view['flow']['edges'])
-    assert any(edge['from'] == 'rl_eval' and edge['to'] == 'rl_next' and edge['label'] == '下一轮数据' and edge['live']
+    assert any(edge['from'] == 'rl_eval' and edge['to'] == 'rl_next' and edge['label'] == '开启下一轮' and edge['live']
                for edge in failed_view['flow']['edges'])
     assert any(edge['from'] == 'rl_eval' and edge['to'] == 'rl_finish' and edge['label'] == '完成' and not edge['live']
                for edge in failed_view['flow']['edges'])
@@ -213,8 +211,7 @@ def test_finish_ends_the_run_and_rl_eval_splits_pass_and_fail(client):
     assert api.post(f'/api/runs/{continued}/decide', json={'action': 'finish'}).status_code == 400
     assert api.post(f'/api/runs/{continued}/decide', json={'action': 'rl'}).status_code == 400
     assert api.post(f'/api/runs/{continued}/decide', json={'action': 'next'}).status_code == 200
-    assert _run(api, continued, 'promote', {'choice': 'rl'}).status_code == 200
-    nxt = _run(api, continued, 'next_round', {})
+    nxt = _run(api, continued, 'promote', {'choice': 'rl'})
     assert nxt.status_code == 200, nxt.text
     assert nxt.json()['view']['round']['base_model'] == rl_path
 
@@ -232,7 +229,7 @@ def test_finish_ends_the_run_and_rl_eval_splits_pass_and_fail(client):
     assert any(edge['from'] == 'rl_eval' and edge['to'] == 'rl_finish' and edge['live'] for edge in passed_view['flow']['edges'])
     assert any(edge['from'] == 'rl_eval' and edge['to'] == 'rl_fail' and not edge['live'] for edge in passed_view['flow']['edges'])
 
-    # Screenshot case: RL → RL 评测通过 → 完成 must leave 下一轮数据 unlocked.
+    # Screenshot case: RL → RL 评测通过 → 完成 must leave 开启下一轮 unlocked.
     done_rl = api.post(f'/api/runs/{passed_rl}/decide', json={'action': 'finish'})
     assert done_rl.status_code == 200, done_rl.text
     after = done_rl.json()['view']
@@ -258,18 +255,18 @@ def test_guide_draws_every_branch_before_evaluation(client):
     nodes = {item['id']: item for item in view['flow']['nodes']}
     for node_id in (
         'sft', 'sft_eval', 'sft_fail', 'sft_next', 'sft_finish',
-        'rl', 'rl_eval', 'rl_fail', 'rl_next', 'rl_finish', 'promote',
+        'rl', 'rl_eval', 'rl_fail', 'rl_next', 'rl_finish',
     ):
         assert node_id in nodes, node_id
     assert 'stop' not in nodes
+    assert 'promote' not in nodes
     assert nodes['sft_fail']['label'] == '不通过'
-    assert nodes['sft_next']['label'] == '下一轮数据'
+    assert nodes['sft_next']['label'] == '开启下一轮'
     assert nodes['sft_finish']['label'] == '完成'
     assert nodes['rl_fail']['label'] == '不通过'
-    assert nodes['rl_next']['label'] == '下一轮数据'
+    assert nodes['rl_next']['label'] == '开启下一轮'
     assert nodes['rl_finish']['label'] == '完成'
-    assert nodes['promote']['label'] == '晋级'
-    assert nodes['promote']['h'] == nodes['sft']['h'] == nodes['sft_eval']['h']
+    assert nodes['sft_next']['h'] == nodes['sft']['h'] == nodes['sft_eval']['h']
     edges = view['flow']['edges']
 
     def linked(src, dst, label):
@@ -278,11 +275,11 @@ def test_guide_draws_every_branch_before_evaluation(client):
     assert linked('sft_eval', 'sft_fail', '不通过')
     assert linked('sft_eval', 'rl', 'RL')
     assert linked('sft_eval', 'sft_finish', '完成')
-    assert linked('sft_eval', 'sft_next', '下一轮数据')
+    assert linked('sft_eval', 'sft_next', '开启下一轮')
     assert linked('rl_eval', 'rl_fail', '不通过')
     assert linked('rl_eval', 'rl_finish', '完成')
-    assert linked('rl_eval', 'rl_next', '下一轮数据')
-    assert linked('promote', 'sft', '下一轮')
+    assert linked('rl_eval', 'rl_next', '开启下一轮')
+    assert linked('sft_next', 'sft', '下一轮')
     assert 'data' not in nodes
     assert all(not edge['live'] for edge in edges if edge['from'] in {'sft_eval', 'rl_eval'})
     boxes = view['flow']['nodes']
@@ -311,7 +308,7 @@ def test_page_hides_hardware_and_stop_copy():
     assert '新建 RSI' not in html
     assert '>RSI<' not in html
     assert "action: 'next'" in script
-    assert '仍可点「下一轮数据」' in script
+    assert '仍可点「开启下一轮」' in script
     assert "status === 'completed'" in script
 
 

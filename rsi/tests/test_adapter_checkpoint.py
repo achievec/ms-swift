@@ -113,8 +113,9 @@ def test_lora_checkpoint_is_passed_as_adapters(client):
     assert f'--model {rl_checkpoint}' not in rl_eval['command']
     assert '--model_type qwen2' in rl_eval['command']
 
-    assert _run(api, run_id, 'promote', {'choice': 'sft', 'reason': '用 LoRA'}).status_code == 200
-    opened = _run(api, run_id, 'next_round', {'reuse_dataset': True, 'note': '下一轮'})
+    opened = _run(api, run_id, 'promote', {
+        'choice': 'sft', 'reason': '用 LoRA', 'reuse_dataset': True, 'note': '下一轮',
+    })
     assert opened.status_code == 200, opened.text
     # adapter_config.json is still present, so the promoted dir stays an adapter
     # even though the earlier preview also wrote config.json.

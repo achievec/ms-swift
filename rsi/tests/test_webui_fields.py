@@ -125,7 +125,7 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         assert data['padding_free']['label'] == '无填充批处理(--padding_free)'
         assert data['padding_free']['info'] == '将一个batch中的数据进行展平而避免数据padding'
         assert any(block.get('dataset_panel') for block in schema['stage_layouts']['sft']['blocks'])
-        for stage in ('sft', 'sft_eval', 'rl', 'rl_eval', 'promote', 'next_round', 'serve'):
+        for stage in ('sft', 'sft_eval', 'rl', 'rl_eval', 'promote', 'serve'):
             stage_fields = schema['fields'][stage]
             assert [row['key'] for row in stage_fields[:3]] == ['model', 'model_type', 'template']
             assert all(row['locked'] is True for row in stage_fields[:3])

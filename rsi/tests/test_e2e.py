@@ -93,13 +93,12 @@ def test_happy_path_records_audit_and_serves(client, monkeypatch):
     assert view['recommendation'] == 'rl'
     promoted = next(item['path'] for item in view['candidates'] if item['kind'] == 'rl')
 
-    promote = _run(api, run_id, 'promote', {'choice': 'rl', 'reason': 'RL accuracy 更高'})
+    promote = _run(api, run_id, 'promote', {
+        'choice': 'rl', 'reason': 'RL accuracy 更高', 'reuse_dataset': True, 'note': '用 RL 检查点开下一轮',
+    })
     assert promote.status_code == 200, promote.text
     assert promote.json()['result']['promoted_checkpoint'] == promoted
-
-    nxt = _run(api, run_id, 'next_round', {'reuse_dataset': True, 'note': '用 RL 检查点开下一轮'})
-    assert nxt.status_code == 200, nxt.text
-    opened = nxt.json()['view']
+    opened = promote.json()['view']
     assert opened['run']['round_index'] == 2
     assert opened['run']['current_stage'] == 'sft'
     assert opened['round']['base_model'] == promoted
@@ -149,8 +148,9 @@ def test_happy_path_records_audit_and_serves(client, monkeypatch):
     rows = conn.execute(
         'SELECT stage, status, started_at, ended_at, params_json, result_json, logs FROM steps ORDER BY id').fetchall()
     stages = [row[0] for row in rows]
-    for stage in ('sft', 'sft_eval', 'rl', 'rl_eval', 'promote', 'next_round', 'serve'):
+    for stage in ('sft', 'sft_eval', 'rl', 'rl_eval', 'promote', 'serve'):
         assert stage in stages
+    assert 'next_round' not in stages
     for stage, status, started, ended, params, result, logs in rows:
         assert status in {'succeeded', 'failed', 'superseded', 'running'}
         assert started and ended and params and result is not None and logs

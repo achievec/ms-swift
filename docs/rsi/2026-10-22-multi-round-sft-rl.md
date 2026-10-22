@@ -7,10 +7,10 @@
 
 一次 **实验（run）** 可包含多轮 **round**。每一轮是同一条主干：
 
-**SFT → SFT 评测 →（可选）RL → RL 评测 → 决定「下一轮 / 完成」→ 若下一轮则「晋级」→「下一轮数据」→ 新一轮再从 SFT 开始。**
+**SFT → SFT 评测 →（可选）RL → RL 评测 → 决定「开启下一轮 / 完成」→ 若开启下一轮则一次选出检查点并开新轮 → 新一轮再从 SFT 开始。**
 
 - **轮内**：评测是闸门；RL 可选；「完成」结束实验但仍可再开下一轮。
-- **轮间**：只有显式 **晋级** 选出的那一个目录，会写入下一轮的 `rounds.base_model`，作为下一轮训练的「起点权重」。
+- **轮间**：只有显式 **开启下一轮** 选出的那一个目录，会写入下一轮的 `rounds.base_model`，作为下一轮训练的「起点权重」。
 - RSI **不会**自动 merge 多份 LoRA，也 **不会**把第 1、2 轮的 adapters 叠成 `--adapters a b`；下一轮最多带上 **一份** 晋级路径。
 
 新建实验时锁定的 `run.base_model` / `model_type` / `template` 是实验身份；每轮的 `round.base_model` 才是「这一轮从哪份权重开训」。二者不要混为一谈。
@@ -20,42 +20,43 @@
 ```mermaid
 flowchart TD
   sft[SFT] --> se[SFT 评测]
-  se -->|不通过| miss[仅可「下一轮数据」]
+  se -->|不通过| miss[仅可「开启下一轮」]
   se -->|通过| gate{decide}
   gate -->|RL| rl[Online RL / GRPO]
-  gate -->|下一轮数据| promo[晋级]
+  gate -->|开启下一轮| promo[开启下一轮 / promote]
   gate -->|完成| done[run=completed]
   miss --> promo
   rl --> re[RL 评测]
-  re -->|不通过| rmiss[仅可「下一轮数据」]
+  re -->|不通过| rmiss[仅可「开启下一轮」]
   re -->|通过| rgate{decide}
-  rgate -->|下一轮数据| promo
+  rgate -->|开启下一轮| promo
   rgate -->|完成| done
   rmiss --> promo
-  done -->|仍可「下一轮数据」| reopen[reopen 本轮 → 晋级]
+  done -->|仍可「开启下一轮」| reopen[reopen 本轮 → promote]
   reopen --> promo
-  promo --> nxt[下一轮数据]
-  nxt --> sft2[新一轮 SFT]
+  promo --> sft2[新一轮 SFT]
 ```
 
 ### 闸门与 decide（`rsi/flow.py`）
 
 | 时机 | 可选动作 | 实现 |
 |------|----------|------|
-| SFT 评测通过 | RL / 下一轮数据 / 完成 | `decision_actions` |
-| SFT 评测不通过 | 仅下一轮数据 | 同上；`stage_unlocked('rl')` 为假 |
-| RL 评测通过 | 下一轮数据 / 完成 | 同上 |
-| RL 评测不通过 | 仅下一轮数据 | 同上 |
-| 已「完成」 | 仍可「下一轮数据」 | `decide` → `reopen_round` 后再晋级 |
+| SFT 评测通过 | RL / 开启下一轮 / 完成 | `decision_actions` |
+| SFT 评测不通过 | 仅开启下一轮 | 同上；`stage_unlocked('rl')` 为假 |
+| RL 评测通过 | 开启下一轮 / 完成 | 同上 |
+| RL 评测不通过 | 仅开启下一轮 | 同上 |
+| 已「完成」 | 仍可「开启下一轮」 | `decide` → `reopen_round` 后再 promote |
 
 - `decide`：`Pipeline.decide`（`rsi/pipeline.py`）→ 焦点切到 `rl` / `promote` / `finish`。
-- 「下一轮数据」**先**进入 **晋级**，不是立刻开新轮。
+- 「开启下一轮」进入 **promote** 表单（选检查点 + 可选沿用数据），一次运行即开新轮。
 - 「完成」：`Store.close_round` + `run.status=completed`；之后只有 `action=next` 可 `reopen_round`。
 
-### 晋级与开启下一轮
+### 开启下一轮（合并后的 `promote`）
 
-1. **晋级**（`promote`）：从候选 `base` / `sft` / `rl` 选一个；`Store.set_promotion` 写入 `promoted_checkpoint` / `promoted_kind` / `promoted_score`。
-2. **下一轮数据**（`next_round`）：`Store.close_round_and_open_next(..., next_base=promoted_checkpoint)`  
+一次 **`promote`** 完成原先「晋级 + 下一轮数据」两步：
+
+1. 从候选 `base` / `sft` / `rl` 选一个；`Store.set_promotion` 写入 `promoted_checkpoint` / `promoted_kind` / `promoted_score`。
+2. 立刻 `Store.close_round_and_open_next(..., next_base=选中路径)`  
    - 关闭本轮；插入 `round_index+1`，其 **`base_model = 晋级路径`**；  
    - `run.round_index` 递增，`current_stage=sft`。
 
@@ -94,7 +95,7 @@ flowchart TD
 
 ### 晋级选 `base` 时
 
-`candidates` 里的 `base` 路径是 **本轮** `rnd['base_model']`（可能已是更早轮晋级下来的 LoRA）。选 `base` 再 `next_round`，等于下一轮仍从这份起点开训，**丢弃本轮新训出的 SFT/RL 权重作为下一轮起点**（本轮 checkpoint 仍留在审计里）。
+`candidates` 里的 `base` 路径是 **本轮** `rnd['base_model']`（可能已是更早轮晋级下来的 LoRA）。开启下一轮时选 `base`，等于下一轮仍从这份起点开训，**丢弃本轮新训出的 SFT/RL 权重作为下一轮起点**（本轮 checkpoint 仍留在审计里）。
 
 ## RL 多轮：同上 + 与 SFT 的衔接
 
@@ -129,7 +130,7 @@ RSI **没有**「新一轮直接从上一轮 RL 接着跑 RL、跳过 SFT」的�
 
 ```text
 Round 1:  base ──SFT──► A ──RL──► R1
-晋级 choice=rl, next_round
+开启下一轮 choice=rl（promote 一次完成）
 Round 2:  round.base_model=R1
           SFT: --model base --adapters R1 ──► B
           RL:  --model base --adapters B  ──► R2
@@ -139,8 +140,8 @@ Round 2:  round.base_model=R1
 
 | 项目 | 行为 | 入口 |
 |------|------|------|
-| 数据集 | `next_round` 默认 `reuse_dataset=true`；为真时把上一轮成功 SFT 的 `source` / `bundled` / `dataset` / `max_length` / `split_dataset_ratio` / `padding_free` 拷到本轮 SFT 默认 | `_carry_dataset` |
-| 取消沿用 | 勾掉「沿用上一轮数据」则不拷贝 | `next_round` 表单 |
+| 数据集 | `promote` 默认 `reuse_dataset=true`；为真时把上一轮成功 SFT 的 `source` / `bundled` / `dataset` / `max_length` / `split_dataset_ratio` / `padding_free` 拷到本轮 SFT 默认 | `_carry_dataset` |
+| 取消沿用 | 勾掉「沿用上一轮数据」则不拷贝 | `promote` 表单 |
 | 模型身份 | `model` / `model_type` / `template` 以实验锁定为准；表单草稿不覆盖身份 | `_lock_model_fields`、`_clean_draft` |
 | 阶段草稿 | 按 **实验 + 轮次 + 阶段**  sticky；刷新后还在 | `save_draft` / `_form_state` |
 | 本地路径改写 | hope/local 下 hub id → 本地目录；adapter 时底座也走同一套 | `_rewrite_model` + `_place_trained_checkpoint` |
@@ -154,7 +155,7 @@ Round 2:  round.base_model=R1
 2. **「下一轮 SFT 是 trainer resume（优化器状态接着跑）」** — 不是；新 `output_dir`，用上一份权重作 adapters / model 初始化。
 3. **「晋级 RL 后下一轮直接从 RL 阶段开始」** — 不会；一律回到 SFT。
 4. **「`round.base_model` 等于实验 hub id」** — 第 2 轮起常常是 **checkpoint 目录**；真正发给 swift 的底座由 `_place_trained_checkpoint` 解析。
-5. **「选完成就不能再开下一轮」** — 可以；完成后再点「下一轮数据」会 `reopen` 本轮再晋级。
+5. **「选完成就不能再开下一轮」** — 可以；完成后再点「开启下一轮」会 `reopen` 本轮再选出检查点并开新轮。
 6. **自动 merge** — 轮间不 merge；需要合并时用「模型导出」`swift export --merge_lora`（见 [export-result.md](export-result.md)）。
 7. **手动改 adapters** — 预览/运行前仍可改表单；默认填充逻辑如上，以最终提交的 params 为准。
 
@@ -167,7 +168,7 @@ Round 2:  round.base_model=R1
 | 晋级候选 | `Pipeline.candidates` |
 | 默认填表（含 adapters） | `Pipeline._defaults_for`、`_remember_checkpoint`、`_show_round_model` |
 | LoRA ↔ model 改写 | `_place_trained_checkpoint`、`_is_adapter_checkpoint`、`_adapter_base_model` |
-| 关轮开下轮 | `Store.close_round_and_open_next`；执行结果在 `_execute` 的 `next_round` 分支 |
+| 关轮开下轮 | `Store.close_round_and_open_next`；一次完成在 `_execute` / `_commit_success` 的 `promote` 分支 |
 | 沿用数据集 | `_carry_dataset` |
 | 契约测试 | `rsi/tests/test_adapter_checkpoint.py`、`rsi/tests/test_flow.py` |
 

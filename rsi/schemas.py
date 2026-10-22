@@ -18,7 +18,7 @@ from rsi.webui_catalog import eval_datasets_by_backend, load_catalog
 
 CONFIG_PATH = Path(__file__).resolve().parent / 'configs' / 'a100_80g.yaml'
 
-STAGE_ORDER = ['sft', 'sft_eval', 'rl', 'rl_eval', 'promote', 'next_round']
+STAGE_ORDER = ['sft', 'sft_eval', 'rl', 'rl_eval', 'promote']
 
 STAGE_META = [
     {
@@ -43,13 +43,8 @@ STAGE_META = [
     },
     {
         'id': 'promote',
-        'label': '晋级',
-        'summary': '比较当前基座、SFT、RL。分数更高的检查点会作为建议，你可以改选，包括退回基座。',
-    },
-    {
-        'id': 'next_round',
-        'label': '下一轮数据',
-        'summary': '用晋级模型作为新的基座，回到 SFT。上一轮记录保留在实验记录里。',
+        'label': '开启下一轮',
+        'summary': '选出要带上的检查点（基座 / SFT / RL），并用它作为下一轮基座回到 SFT。上一轮记录保留在实验记录里。',
     },
 ]
 
@@ -314,11 +309,8 @@ FIELDS = {
     'promote': [
         *_model_block(),
         _field('reason', '晋级说明', '', 'textarea', '决策'),
-    ],
-    'next_round': [
-        *_model_block(),
-        _field('reuse_dataset', '沿用上一轮数据', '', 'checkbox', '下一轮数据'),
-        _field('note', '备注', '', 'textarea', '下一轮数据'),
+        _field('reuse_dataset', '沿用上一轮数据', '', 'checkbox', '下一轮'),
+        _field('note', '备注', '', 'textarea', '下一轮'),
     ],
     'serve': [
         *_model_block('部署'),
@@ -421,7 +413,7 @@ def _build_public_schema(device_count: int) -> dict:
         'fields': fields,
         'stage_layouts': stage_layouts,
         'presets': {key: preset.get(key, {})
-                    for key in ('data', 'sft', 'sft_eval', 'rl', 'rl_eval', 'serve', 'next_round')},
+                    for key in ('data', 'sft', 'sft_eval', 'rl', 'rl_eval', 'serve', 'promote')},
         'public_datasets': PUBLIC_DATASETS,
         'bundled': BUNDLED,
         'hardware': preset.get('hardware', {}),

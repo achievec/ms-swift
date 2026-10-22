@@ -88,7 +88,6 @@ CHECKPOINT_RESET = {
     'rl': ['rl'],
     'rl_eval': [],
     'promote': [],
-    'next_round': [],
 }
 
 
@@ -929,10 +928,11 @@ class Pipeline:
         if rnd['round_index'] <= 1:
             return
         previous = self.store.latest_active_steps(run['id'], rnd['round_index'] - 1)
-        nxt = previous.get('next_round')
+        # Merged「开启下一轮」stores reuse_dataset on promote; older runs used next_round.
+        gate = previous.get('promote') or previous.get('next_round')
         reuse = True
-        if nxt and nxt['status'] == 'succeeded':
-            reuse = bool(_loads(nxt['params_json']).get('reuse_dataset', True))
+        if gate and gate['status'] == 'succeeded':
+            reuse = bool(_loads(gate['params_json']).get('reuse_dataset', True))
         prev = previous.get('sft')
         if not reuse or not prev or prev['status'] != 'succeeded':
             return
@@ -1464,11 +1464,6 @@ class Pipeline:
             side['candidates'] = rows
             side['picked'] = picked
             return merged, side
-
-        if stage == 'next_round':
-            if strict and not rnd.get('promoted_checkpoint'):
-                raise PipelineError('还没有晋级结果')
-            return merged, side
         raise PipelineError('未知阶段')
 
     def _status_for(self, stage: str, active: dict, rnd: dict) -> str:
@@ -1994,7 +1989,7 @@ class Pipeline:
         rnd = self.store.get_round(run_id, run['round_index'])
         if not rnd:
             raise PipelineError('当前轮次已结束，不能再改')
-        # After 「完成」, only 「下一轮数据」may reopen this round; other actions stay closed.
+        # After 「完成」, only 「开启下一轮」may reopen this round; other actions stay closed.
         if status == 'completed':
             if action != 'next' or rnd.get('status') != 'closed':
                 raise PipelineError('实验已结束')
@@ -2309,7 +2304,7 @@ class Pipeline:
                 superseded.append('decide')
             self.store.supersede(conn, run_id, rnd['round_index'], superseded)
             self.store.deactivate_checkpoints(conn, run_id, rnd['round_index'], CHECKPOINT_RESET.get(stage, []))
-            if index <= STAGE_ORDER.index('promote') and stage != 'next_round':
+            if index <= STAGE_ORDER.index('promote'):
                 self.store.clear_promotion(conn, run_id, rnd['round_index'])
             self.store.set_current_stage(conn, run_id, stage)
             step_id = self.store.insert_step(conn, run_id, rnd['round_index'], stage, merged, self.backend.name)
@@ -2387,7 +2382,7 @@ class Pipeline:
             'step_id': step_id,
             'command': outcome.get('command') or '',
             'result': outcome.get('result'),
-            'view': self.view(refreshed['id'], refreshed['round_index'] if stage == 'next_round' else rnd['round_index']),
+            'view': self.view(refreshed['id'], refreshed['round_index'] if stage == 'promote' else rnd['round_index']),
         }
 
     def _run_swift_stage(self, run_id, round_index, stage, step_id, params, side, fetch_log=None):
@@ -2522,10 +2517,14 @@ class Pipeline:
             score = picked.get('score')
             score_text = '未评测' if score is None else str(score)
             reason = (params.get('reason') or '').strip()
+            nxt = rnd['round_index'] + 1
             logs = (f"[rsi] 晋级选择 {picked['kind']}，分数 {score_text}。\n"
-                    f"[rsi] 路径：{picked['path']}\n")
+                    f"[rsi] 路径：{picked['path']}\n"
+                    f"[rsi] 第 {rnd['round_index']} 轮结束。下一轮基座：{picked['path']}\n")
             if reason:
                 logs += f'[rsi] 说明：{reason}\n'
+            if params.get('note'):
+                logs += f"[rsi] 备注：{params['note']}\n"
             return {
                 'command': '',
                 'logs': logs,
@@ -2536,30 +2535,16 @@ class Pipeline:
                     'promoted_checkpoint': picked['path'],
                     'score': score,
                     'candidates': side['candidates'],
+                    'next_round': nxt,
+                    'base_model': picked['path'],
+                    'reuse_dataset': bool(params.get('reuse_dataset', True)),
                 },
                 'promotion': {
                     'checkpoint': picked['path'],
                     'kind': picked['kind'],
                     'score': score,
                 },
-            }
-
-        if stage == 'next_round':
-            nxt = rnd['round_index'] + 1
-            logs = (f"[rsi] 第 {rnd['round_index']} 轮结束。下一轮基座：{rnd['promoted_checkpoint']}\n")
-            if params.get('note'):
-                logs += f"[rsi] 备注：{params['note']}\n"
-            return {
-                'command': '',
-                'logs': logs,
-                'result': {
-                    'backend': self.backend.name,
-                    'mock': self.backend.name == 'mock',
-                    'next_round': nxt,
-                    'base_model': rnd['promoted_checkpoint'],
-                    'reuse_dataset': bool(params.get('reuse_dataset', True)),
-                },
-                'next_base': rnd['promoted_checkpoint'],
+                'next_base': picked['path'],
                 'note': params.get('note') or '',
             }
         raise PipelineError('未知阶段')
@@ -2578,8 +2563,6 @@ class Pipeline:
             if stage == 'promote' and outcome.get('promotion'):
                 promo = outcome['promotion']
                 self.store.set_promotion(conn, run_id, round_index, promo['checkpoint'], promo['kind'], promo['score'])
-                self.store.set_current_stage(conn, run_id, 'next_round')
-            elif stage == 'next_round':
                 self.store.close_round_and_open_next(conn, run_id, round_index, outcome.get('note') or '',
                                                      outcome['next_base'])
             else:
