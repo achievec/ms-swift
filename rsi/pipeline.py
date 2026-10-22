@@ -1466,6 +1466,11 @@ class Pipeline:
                 if strict and not report.get('ok'):
                     raise PipelineError(_format_errors(report))
 
+        if stage == 'rl':
+            raw = str(merged.get('dataset') or '')
+            resolved = _resolve_existing(raw)
+            if isinstance(resolved, str) and resolved and Path(resolved).is_file():
+                merged['dataset'] = resolved
         if stage in {'sft', 'rl'}:
             dataset = merged.get('dataset') or ''
             if strict:

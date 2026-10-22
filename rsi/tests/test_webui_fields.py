@@ -160,6 +160,7 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         assert 'data-eval-pick' in page
         assert '从本机上传' in page
         assert 'eval-file-input' in page
+        assert 'data-rl-dataset-pick' in page
         assert '由实验创建时决定，不能在这里修改' in page
         assert 'renderBlocks' in page
         assert 'syncStageFields' in page

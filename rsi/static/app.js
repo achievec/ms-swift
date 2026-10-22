@@ -1646,6 +1646,86 @@ function syncEvalPick(fromUser) {
   else note.textContent = '填写这份 jsonl 在服务器上的路径。';
 }
 
+function bundledTrainLocation(item, current) {
+  const text = String(current || '').replace(/\\/g, '/');
+  const marker = '/rsi/examples/';
+  const at = text.lastIndexOf(marker);
+  if (at >= 0) return text.slice(0, at) + marker + `${item.id}.jsonl`;
+  return `rsi/examples/${item.id}.jsonl`;
+}
+
+function rlDatasetMode(value) {
+  const text = String(value || '').trim();
+  const items = (state.schema && state.schema.bundled) || [];
+  const matched = items.find((entry) => evalPathMatches(text, {
+    id: entry.id,
+    path: `rsi/examples/${entry.id}.jsonl`,
+  }));
+  if (matched) return matched.id;
+  if (!text) return '__public__';
+  const normalized = text.replace(/\\/g, '/');
+  if (normalized.includes('/uploads/')) return '__upload__';
+  if (normalized.startsWith('/') || normalized.includes('.jsonl')) return '__path__';
+  return '__public__';
+}
+
+function renderRlDatasetField(item, value) {
+  const items = (state.schema && state.schema.bundled) || [];
+  const text = value == null ? '' : String(value);
+  const selected = rlDatasetMode(text);
+  const bundledOptions = items.map((entry) => {
+    const mark = entry.id === selected ? 'selected' : '';
+    return `<option value="${escapeHtml(entry.id)}" ${mark}>${escapeHtml(entry.label)}</option>`;
+  }).join('');
+  const uploadMark = selected === '__upload__' ? 'selected' : '';
+  const pathMark = selected === '__path__' ? 'selected' : '';
+  const publicMark = selected === '__public__' ? 'selected' : '';
+  const options = `${bundledOptions}<option value="__upload__" ${uploadMark}>从本机上传</option><option value="__path__" ${pathMark}>服务器上的文件</option><option value="__public__" ${publicMark}>公开数据集</option>`;
+  const publicStyle = selected === '__public__' ? '' : ' style="display:none"';
+  const uploadStyle = selected === '__upload__' ? '' : ' style="display:none"';
+  const pathStyle = selected === '__path__' || selected === '__upload__' ? '' : ' style="display:none"';
+  const readOnly = selected === '__upload__' ? 'readonly' : '';
+  const shown = Object.assign({}, item, { info: '默认沿用本轮 SFT 训练集。要换，在这里选。' });
+  return `<div class="field" data-key="${item.id}">${inferCaption(shown)}<div class="control"><select data-rl-dataset-pick>${options}</select><div data-rl-dataset-path${pathStyle}><input type="text" data-rl-path value="${escapeHtml(text)}" placeholder="服务器上的 jsonl 路径" ${readOnly}/></div><div data-rl-dataset-upload${uploadStyle}><input id="rl-file-input" type="file" accept=".jsonl,.json,.txt,.zip,.tar,.tar.gz,.tgz" /></div><div data-rl-dataset-public${publicStyle}>${renderChipBox(item, selected === '__public__' ? text : text)}</div></div><div class="extra"><small data-rl-dataset-note></small></div></div>`;
+}
+
+function syncRlDataset(fromUser) {
+  const pick = document.querySelector('[data-rl-dataset-pick]');
+  if (!pick) return;
+  const mode = pick.value;
+  const items = (state.schema && state.schema.bundled) || [];
+  const bundled = items.find((item) => item.id === mode);
+  const publicBox = document.querySelector('[data-rl-dataset-public]');
+  const uploadBox = document.querySelector('[data-rl-dataset-upload]');
+  const pathBox = document.querySelector('[data-rl-dataset-path]');
+  const pathInput = document.querySelector('[data-rl-path]');
+  const box = document.querySelector('[data-key="dataset"] .chip-box');
+  const hidden = chipField(box);
+  if (publicBox) publicBox.style.display = mode === '__public__' ? '' : 'none';
+  if (uploadBox) uploadBox.style.display = mode === '__upload__' ? '' : 'none';
+  if (pathBox) pathBox.style.display = mode === '__path__' || mode === '__upload__' ? '' : 'none';
+  if (pathInput) pathInput.readOnly = mode === '__upload__';
+  if (bundled && hidden) {
+    if (fromUser || !evalPathMatches(hidden.value, { id: bundled.id, path: `rsi/examples/${bundled.id}.jsonl` })) {
+      hidden.value = bundledTrainLocation(bundled, hidden.value);
+    }
+  } else if (mode === '__public__' && hidden && /[/\\]/.test(hidden.value)) {
+    hidden.value = '';
+    paintDatasetChips(box);
+  } else if ((mode === '__path__' || mode === '__upload__') && hidden && pathInput && fromUser) {
+    hidden.value = pathInput.value;
+  }
+  if (pathInput && hidden && mode !== '__public__' && hidden.value && pathInput.value !== hidden.value && !fromUser) {
+    pathInput.value = hidden.value;
+  }
+  const note = document.querySelector('[data-rl-dataset-note]');
+  if (!note) return;
+  if (bundled) note.textContent = 'RL 使用这份训练集，和 SFT 相同即可。';
+  else if (mode === '__upload__') note.textContent = '从电脑选择 jsonl。上传成功后才会换成你的文件。';
+  else if (mode === '__path__') note.textContent = '填写训练机上的 jsonl 路径。';
+  else note.textContent = '从下面选择公开数据集。';
+}
+
 function renderInferControl(item, values, running, fill) {
   const value = inferItemValue(item, values);
   const locked = item.locked ? 'disabled' : '';
@@ -1685,9 +1765,7 @@ function renderInferControl(item, values, running, fill) {
     return `<div class="log-panel infer-log" data-key="log"><div class="log-head"><div class="log-title"><span>${escapeHtml(item.label)}</span>${info}</div>${logTools()}</div><textarea class="log" readonly rows="18">${escapeHtml(logText)}</textarea></div>`;
   }
   let captionItem = item;
-  if (state.stage === 'rl' && item.id === 'dataset') {
-    captionItem = Object.assign({}, item, { info: '默认沿用本轮 SFT 训练集，不用重选。' });
-  } else if (state.stage === 'rl' && item.id === 'external_plugins') {
+  if (state.stage === 'rl' && item.id === 'external_plugins') {
     captionItem = Object.assign({}, item, { info: '内置奖励脚本。验收保持这项，清空后关键词奖励不会生效。' });
   } else if (state.stage === 'rl' && item.id === 'reward_funcs') {
     captionItem = Object.assign({}, item, { info: 'itops_checklist 按题目关键词打分，format 检查格式。验收保持这两项。' });
@@ -1741,6 +1819,9 @@ function renderInferControl(item, values, running, fill) {
   }
   if (item.id === 'eval_dataset' && (state.stage === 'sft_eval' || state.stage === 'rl_eval')) {
     return renderEvalDatasetField(item, value, values);
+  }
+  if (item.id === 'dataset' && state.stage === 'rl') {
+    return renderRlDatasetField(item, value);
   }
   if (item.widget === 'Dropdown' && item.multiselect) {
     return `<div class="field" data-key="${item.id}"${lockTitle}>${caption}<div class="control">${renderChipBox(item, value)}</div><div class="extra"></div></div>`;
@@ -1990,6 +2071,7 @@ function render() {
     ${body}`;
   syncSource();
   syncEvalPick(false);
+  syncRlDataset(false);
   syncStageFields();
   syncLive();
   syncLogScrollLock();
@@ -2012,6 +2094,15 @@ async function runCurrent() {
     const path = config ? String(config.value || '') : '';
     if (pick && pick.value === '__upload__' && !path.replace(/\\/g, '/').includes('/uploads/')) {
       toast('请先从电脑选择评测文件');
+      return;
+    }
+  }
+  if (stage === 'rl') {
+    const pick = document.querySelector('[data-rl-dataset-pick]');
+    const hidden = chipField(document.querySelector('[data-key="dataset"] .chip-box'));
+    const path = hidden ? String(hidden.value || '') : '';
+    if (pick && pick.value === '__upload__' && !path.replace(/\\/g, '/').includes('/uploads/')) {
+      toast('请先从电脑选择训练集');
       return;
     }
   }
@@ -2082,6 +2173,21 @@ function applyPreset() {
   syncSource();
   flushDraft();
   toast('已恢复本阶段预设');
+}
+
+async function uploadRlFile(file) {
+  const body = new FormData();
+  body.append('file', file);
+  const response = await fetch('/api/datasets/upload', { method: 'POST', body });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.detail || '上传失败');
+  const hidden = chipField(document.querySelector('[data-key="dataset"] .chip-box'));
+  const pathInput = document.querySelector('[data-rl-path]');
+  if (hidden) hidden.value = data.path || '';
+  if (pathInput) pathInput.value = data.path || '';
+  scheduleDraftSave();
+  const ok = Boolean(data.validation && data.validation.ok);
+  toast(ok ? '训练集已上传' : '上传文件格式未通过');
 }
 
 async function uploadEvalFile(file) {
@@ -2911,6 +3017,11 @@ document.addEventListener('input', (event) => {
   if (target && target.id === 'chat-input') syncSendButton();
   rememberServeDraft(event);
   if (draftEvent(target)) scheduleDraftSave();
+  if (target && target.dataset && Object.prototype.hasOwnProperty.call(target.dataset, 'rlPath')) {
+    const hidden = chipField(document.querySelector('[data-key="dataset"] .chip-box'));
+    if (hidden) hidden.value = target.value;
+    scheduleDraftSave();
+  }
   if (target && target.dataset && target.dataset.field) syncStageFields();
 });
 
@@ -2946,6 +3057,10 @@ document.addEventListener('change', async (event) => {
     syncEvalPick(true);
     scheduleDraftSave();
   }
+  if (event.target.dataset && Object.prototype.hasOwnProperty.call(event.target.dataset, 'rlDatasetPick')) {
+    syncRlDataset(true);
+    scheduleDraftSave();
+  }
   if (event.target.dataset && event.target.dataset.field) syncStageFields();
   if (event.target.dataset && event.target.dataset.field === 'eval_backend') {
     const scope = event.target.closest('section, form') || document;
@@ -2957,6 +3072,15 @@ document.addEventListener('change', async (event) => {
   if (event.target.id === 'file-input' && event.target.files[0]) {
     try {
       await uploadFile(event.target.files[0]);
+    } catch (err) {
+      toast(err.message);
+    }
+  }
+  if (event.target.id === 'rl-file-input' && event.target.files[0]) {
+    const chosen = event.target.files[0];
+    event.target.value = '';
+    try {
+      await uploadRlFile(chosen);
     } catch (err) {
       toast(err.message);
     }
