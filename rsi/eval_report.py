@@ -26,10 +26,15 @@ _DOCS_LINK = re.compile(
     r'<a\b[^>]*href=["\']https?://(?:[\w.-]+\.)?evalscope\.readthedocs\.io[^"\']*["\'][^>]*>(.*?)</a>',
     re.IGNORECASE | re.DOTALL,
 )
-_MODELSCOPE_SCRIPT = re.compile(
-    r'(<script\b[^>]*\bsrc=["\'])https?://resources\.modelscope\.cn/[^"\']*(["\'][^>]*>\s*</script>)',
+# Evalscope templates pin Plotly on an external host; serve the local copy instead.
+_PLOTLY_SCRIPT_SRC = re.compile(
+    r'(<script\b[^>]*\bsrc=["\'])https?://(?:'
+    r'resources\.modelscope\.cn/[^"\']*plotly[^"\']*'
+    r'|cdn\.plot\.ly/plotly-[^"\']+'
+    r')(["\'][^>]*>\s*</script>)',
     re.IGNORECASE,
 )
+_LOCAL_PLOTLY_SRC = '/static/plotly-2.35.2.min.js'
 _STORAGE_KEY = re.compile(r"(['\"])evalscope-(theme|lang)\1")
 _I18N_FOOTER = re.compile(
     r"[ \t]*['\"]footer\.generated_by['\"]\s*:\s*['\"][^'\"]*['\"],?\s*\n?",
@@ -286,9 +291,7 @@ def sanitize_eval_report_html(html: str) -> str:
     text = _REPORT_FOOTER.sub('', text)
     text = _HEADER_BADGE.sub('', text)
     text = _DOCS_LINK.sub(r'\1', text)
-    # Prefer a public Plotly CDN when the template pins modelscope's mirror.
-    text = _MODELSCOPE_SCRIPT.sub(
-        r'\1https://cdn.plot.ly/plotly-2.35.2.min.js\2', text)
+    text = _PLOTLY_SCRIPT_SRC.sub(rf'\1{_LOCAL_PLOTLY_SRC}\2', text)
     text = _STORAGE_KEY.sub(r'\1report-\2\1', text)
     text = _I18N_FOOTER.sub('', text)
     return text
