@@ -279,7 +279,9 @@ def test_guide_draws_every_branch_before_evaluation(client):
     assert linked('rl_eval', 'rl_fail', '不通过')
     assert linked('rl_eval', 'rl_finish', '完成')
     assert linked('rl_eval', 'rl_next', '开启下一轮')
-    assert linked('sft_next', 'sft', '下一轮')
+    # SFT「开启下一轮」→ SFT return arrow is not drawn; promote still works via the node.
+    assert not linked('sft_next', 'sft', '下一轮')
+    assert not any(edge['from'] == 'sft_next' and edge['to'] == 'sft' for edge in edges)
     assert 'data' not in nodes
     assert all(not edge['live'] for edge in edges if edge['from'] in {'sft_eval', 'rl_eval'})
     boxes = view['flow']['nodes']

@@ -326,27 +326,19 @@ def assemble_flow(run, rnd, active, status_of, metric_of) -> dict:
         _edge('rl_fail', 'rl_next', '', rl_fail_on and statuses['rl_next'] in {'ready', 'succeeded'}, 'join',
               _side_points(rl_fail, rl_next), next_from_rl and rl_fail_on, False),
     ]
-    bottom = EXIT_Y + NODE_H + 26
-    mid_y = sft['y'] + sft['h'] / 2
-
-    def return_edge(src_id, taken):
-        src = placed[src_id]
-        return _edge(
-            src_id, 'sft', '下一轮', taken, 'return',
+    # RL「开启下一轮」may loop back to SFT on the board. The SFT-side return
+    # (sft_next → sft 「下一轮」) is omitted — the node and promote behavior remain.
+    if next_from_rl:
+        bottom = EXIT_Y + NODE_H + 26
+        mid_y = sft['y'] + sft['h'] / 2
+        src = placed['rl_next']
+        edges.append(_edge(
+            'rl_next', 'sft', '下一轮', True, 'return',
             [(src['x'] + src['w'] / 2, src['y'] + src['h']),
              (src['x'] + src['w'] / 2, bottom),
              (8, bottom),
              (8, mid_y),
              (sft['x'], mid_y)],
-            taken, True,
-        )
-
-    # Only the taken exit draws the return; the other stays off the board.
-    if next_from_rl:
-        edges.append(return_edge('rl_next', True))
-    elif next_from_sft:
-        edges.append(return_edge('sft_next', True))
-    else:
-        # Template guide: show the SFT-side return path in gray before a choice.
-        edges.append(return_edge('sft_next', False))
+            True, True,
+        ))
     return {'canvas': dict(CANVAS), 'nodes': nodes, 'edges': edges, 'actions': actions, 'prompt': prompt}
