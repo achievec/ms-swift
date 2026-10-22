@@ -607,6 +607,9 @@ dialog {
   height: var(--control-h);
   min-height: var(--control-h);
 }
+.field.eval-collapsed { display: none; }
+[data-eval-public] { margin-top: 8px; }
+[data-eval-note] { color: var(--muted); font-size: 12px; font-weight: 400; }
 .chip-box {
   display: flex;
   flex-wrap: wrap;

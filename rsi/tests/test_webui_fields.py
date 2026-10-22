@@ -151,6 +151,13 @@ def test_schema_uses_webui_choice_lists(tmp_path, monkeypatch):
         assert '数据集设置' in page
         assert 'data-dataset-mode="bundled"' in page
         assert 'data-field="bundled"' in page
+        evals = schema['bundled_eval']
+        assert evals[0]['id'] == 'helpdesk_eval'
+        assert evals[0]['rows'] == 120
+        assert evals[0]['path'] == 'rsi/examples/helpdesk_eval.jsonl'
+        assert any(item['id'] == 'itops_eval' and item['rows'] == 4 for item in evals)
+        assert all(item['id'].endswith('_eval') for item in evals)
+        assert 'data-eval-pick' in page
         assert '由实验创建时决定，不能在这里修改' in page
         assert 'renderBlocks' in page
         assert 'syncStageFields' in page

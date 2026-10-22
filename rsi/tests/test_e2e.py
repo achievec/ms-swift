@@ -333,6 +333,20 @@ def test_default_backend_calls_real_swift(tmp_path, monkeypatch):
         assert (qa_dir / 'itops.jsonl').is_file()
         first = json.loads((qa_dir / 'itops.jsonl').read_text(encoding='utf-8').splitlines()[0])
         assert first['query'] and first['response']
+        helpdesk = api.post(f'/api/runs/{run_id}/stages/sft_eval/preview', json={'params': {
+            'eval_dataset': 'itops-heldout',
+            'custom_eval_config': 'rsi/examples/helpdesk_eval.jsonl',
+            'eval_limit': 120,
+        }})
+        assert helpdesk.status_code == 200, helpdesk.text
+        helpdesk_params = helpdesk.json()['params']
+        assert helpdesk_params['eval_dataset'] == 'general_qa'
+        assert helpdesk_params['custom_eval_config'].endswith('helpdesk_eval.jsonl')
+        helpdesk_qa = Path(helpdesk_params['eval_dataset_args']['general_qa']['local_path'])
+        helpdesk_lines = [
+            line for line in (helpdesk_qa / 'itops.jsonl').read_text(encoding='utf-8').splitlines() if line.strip()
+        ]
+        assert len(helpdesk_lines) == 120
         kept = api.post(f'/api/runs/{run_id}/stages/sft_eval/preview', json={
             'params': {'eval_backend': 'OpenCompass', 'eval_dataset': 'gsm8k ceval'},
         })

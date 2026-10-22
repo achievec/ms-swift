@@ -1565,6 +1565,80 @@ function renderChipBox(item, value) {
   return `<div class="combo chip-combo"><div class="combo-anchor chip-box">${chips}<input class="chip-query" data-combo="1" data-chip="1"${from}${inline}${custom} value="" autocomplete="off" placeholder="${placeholder}" ${read}/><button type="button" class="chip-clear" data-action="chip-clear" aria-label="清空" ${clearHidden}>×</button><button type="button" class="chip-caret" data-action="chip-menu" aria-label="展开">▾</button><input type="hidden" data-field="${escapeHtml(item.id)}" value="${escapeHtml(tokens.join(' '))}" /><div class="combo-list" hidden></div></div></div>`;
 }
 
+function evalPathMatches(path, item) {
+  const text = String(path || '').replace(/\\/g, '/');
+  return text.endsWith(`/${item.id}.jsonl`) || text === item.path || text.endsWith(`/${item.path}`);
+}
+
+function bundledEvalLocation(item, current) {
+  const text = String(current || '').replace(/\\/g, '/');
+  const file = text.split('/').pop();
+  if (file && file.endsWith('.jsonl') && text.includes('/')) {
+    return text.slice(0, text.lastIndexOf('/') + 1) + `${item.id}.jsonl`;
+  }
+  return item.path;
+}
+
+function renderEvalDatasetField(item, value, values) {
+  const items = (state.schema && state.schema.bundled_eval) || [];
+  const custom = values && values.custom_eval_config ? String(values.custom_eval_config) : '';
+  const publicTokens = datasetTokens(value).filter((token) => token && token !== 'itops-heldout');
+  let selected = '__path__';
+  if (publicTokens.length) selected = '__public__';
+  else {
+    const matched = items.find((entry) => evalPathMatches(custom, entry));
+    selected = matched ? matched.id : (custom ? '__path__' : ((items[0] && items[0].id) || '__path__'));
+  }
+  const bundledOptions = items.map((entry) => {
+    const mark = entry.id === selected ? 'selected' : '';
+    return `<option value="${escapeHtml(entry.id)}" ${mark}>${escapeHtml(entry.label)}</option>`;
+  }).join('');
+  const publicMark = selected === '__public__' ? 'selected' : '';
+  const pathMark = selected === '__path__' ? 'selected' : '';
+  const options = `${bundledOptions}<option value="__public__" ${publicMark}>公开评测集（ceval、gsm8k 等）</option><option value="__path__" ${pathMark}>其他本地文件</option>`;
+  const chipValue = selected === '__public__' ? publicTokens.join(' ') : 'itops-heldout';
+  const publicStyle = selected === '__public__' ? '' : ' style="display:none"';
+  const shown = Object.assign({}, item, { info: '直接选留出题。公开基准在列表末尾。' });
+  return `<div class="field" data-key="${item.id}">${inferCaption(shown)}<div class="control"><select data-eval-pick>${options}</select><div data-eval-public${publicStyle}>${renderChipBox(item, chipValue)}</div></div><div class="extra"><small data-eval-note></small></div></div>`;
+}
+
+function syncEvalPick(fromUser) {
+  const pick = document.querySelector('[data-eval-pick]');
+  if (!pick) return;
+  const mode = pick.value;
+  const items = (state.schema && state.schema.bundled_eval) || [];
+  const bundled = items.find((item) => item.id === mode);
+  const publicBox = document.querySelector('[data-eval-public]');
+  const pathField = document.querySelector('#main [data-key="custom_eval_config"]');
+  const config = document.querySelector('#main [data-field="custom_eval_config"]');
+  const box = document.querySelector('[data-key="eval_dataset"] .chip-box');
+  const hidden = chipField(box);
+  if (publicBox) publicBox.style.display = mode === '__public__' ? '' : 'none';
+  if (pathField) pathField.classList.toggle('eval-collapsed', mode !== '__path__');
+  if (bundled) {
+    if (hidden) hidden.value = 'itops-heldout';
+    if (config) config.value = bundledEvalLocation(bundled, config.value);
+    if (fromUser) {
+      document.querySelectorAll('#main [data-field="eval_limit"]').forEach((el) => {
+        el.value = String(bundled.rows);
+      });
+    }
+  } else if (mode === '__public__') {
+    if (config) config.value = '';
+    if (hidden && hidden.value.trim() === 'itops-heldout') {
+      hidden.value = '';
+      paintDatasetChips(box);
+    }
+  } else if (hidden) {
+    hidden.value = 'itops-heldout';
+  }
+  const note = document.querySelector('[data-eval-note]');
+  if (!note) return;
+  if (bundled) note.textContent = `共 ${bundled.rows} 条留出题。切换这一项时，取样数会改成 ${bundled.rows}。`;
+  else if (mode === '__public__') note.textContent = '在下面选择公开基准。';
+  else note.textContent = '填写这份 jsonl 在服务器上的路径。';
+}
+
 function renderInferControl(item, values, running, fill) {
   const value = inferItemValue(item, values);
   const locked = item.locked ? 'disabled' : '';
@@ -1649,6 +1723,9 @@ function renderInferControl(item, values, running, fill) {
       ? `<button type="button" class="ghost fill-serve" data-action="${fillAction}">${fillText}</button>`
       : '';
     return `<div class="field" data-key="${item.id}"${lockTitle}>${caption}<div class="control">${inferPathControl(item, value)}</div><div class="extra">${extra}</div></div>`;
+  }
+  if (item.id === 'eval_dataset' && (state.stage === 'sft_eval' || state.stage === 'rl_eval')) {
+    return renderEvalDatasetField(item, value, values);
   }
   if (item.widget === 'Dropdown' && item.multiselect) {
     return `<div class="field" data-key="${item.id}"${lockTitle}>${caption}<div class="control">${renderChipBox(item, value)}</div><div class="extra"></div></div>`;
@@ -1897,6 +1974,7 @@ function render() {
     </div>
     ${body}`;
   syncSource();
+  syncEvalPick(false);
   syncStageFields();
   syncLive();
   syncLogScrollLock();
@@ -2818,6 +2896,10 @@ document.addEventListener('change', async (event) => {
   rememberServeDraft(event);
   if (draftEvent(event.target)) scheduleDraftSave();
   if (event.target.dataset && event.target.dataset.field === 'source') syncSource();
+  if (event.target.dataset && Object.prototype.hasOwnProperty.call(event.target.dataset, 'evalPick')) {
+    syncEvalPick(true);
+    scheduleDraftSave();
+  }
   if (event.target.dataset && event.target.dataset.field) syncStageFields();
   if (event.target.dataset && event.target.dataset.field === 'eval_backend') {
     const scope = event.target.closest('section, form') || document;

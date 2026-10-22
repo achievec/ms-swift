@@ -75,6 +75,45 @@ PUBLIC_DATASETS = [
     },
 ]
 
+# Held-out jsonl. The eval form lists these by name; the run still submits
+# eval_dataset=itops-heldout plus the file path, which the gate already understands.
+_EVAL_NAMES = [
+    ('helpdesk_eval', 'IT 服务台验收'),
+    ('itops_eval', 'IT 运维冒烟'),
+    ('broad_mix_eval', '跨场景混合'),
+    ('instruct_eval', '指令跟随'),
+    ('dialogue_eval', '多轮对话'),
+    ('math_eval', '数学'),
+    ('code_eval', '代码'),
+    ('exam_eval', '考试问答'),
+    ('summary_eval', '摘要'),
+    ('reading_eval', '阅读理解'),
+    ('translate_eval', '翻译'),
+    ('sql_eval', 'SQL'),
+    ('tooluse_eval', '工具调用'),
+    ('service_eval', '客服'),
+    ('safety_eval', '安全'),
+]
+
+
+def bundled_eval_choices() -> list:
+    root = Path(__file__).resolve().parent / 'examples'
+    rows = []
+    for name, label in _EVAL_NAMES:
+        path = root / f'{name}.jsonl'
+        if not path.is_file():
+            continue
+        with path.open(encoding='utf-8') as handle:
+            count = sum(1 for line in handle if line.strip())
+        rows.append({
+            'id': name,
+            'label': f'{label}（{count} 条）',
+            'rows': count,
+            'path': f'rsi/examples/{name}.jsonl',
+        })
+    return rows
+
+
 # Train jsonl under rsi/examples. Eval files stay off this list so a pick cannot train on the held-out set.
 BUNDLED = [
     {'id': 'helpdesk_train', 'label': 'IT 服务台验收（helpdesk_train，480 条）'},
@@ -441,6 +480,7 @@ def _build_public_schema(devices) -> dict:
                     for key in ('data', 'sft', 'sft_eval', 'rl', 'rl_eval', 'serve', 'promote')},
         'public_datasets': PUBLIC_DATASETS,
         'bundled': BUNDLED,
+        'bundled_eval': bundled_eval_choices(),
         'hardware': preset.get('hardware', {}),
         'base_model_default': 'Qwen/Qwen2.5-7B-Instruct',
         'model_source': model_source(),

@@ -1419,6 +1419,8 @@ class Pipeline:
             custom = merged.get('custom_eval_config')
             if custom:
                 path = Path(str(custom))
+                if not path.is_file():
+                    path = Path(str(_resolve_existing(str(custom))))
                 if path.is_file():
                     report = validate_file(path)
                     if strict and not report['ok']:
