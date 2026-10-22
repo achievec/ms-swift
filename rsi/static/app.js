@@ -454,9 +454,9 @@ function baseCaption(initial, current) {
   const round = current == null ? '' : String(current);
   if (sameBase(first, round)) {
     const shown = normalizeBase(round) ? round : (normalizeBase(first) ? first : '');
-    return `基座 <span class="mono">${escapeHtml(shown)}</span>`;
+    return `实验底座 <span class="mono">${escapeHtml(shown)}</span>`;
   }
-  return `最初基座 <span class="mono">${escapeHtml(first)}</span><br/>本轮基座 <span class="mono">${escapeHtml(round)}</span>`;
+  return `实验底座 <span class="mono">${escapeHtml(first)}</span><br/>本轮起点 <span class="mono">${escapeHtml(round)}</span>`;
 }
 
 function toast(message) {
@@ -943,11 +943,12 @@ function renderPromote(values) {
       <small class="mono">${escapeHtml(cand.path || '尚无检查点')}</small>
     </label>`;
   }).join('');
+  const intro = '<p class="muted">底座模型不变；这里只选下一轮要带上的一份起点（LoRA 或全量 checkpoint），三选一、不会叠加。</p>';
   const missing = candidates.filter((cand) => !cand.path).map((cand) => cand.label);
   const hint = missing.length
     ? `<p class="muted run-reason">${escapeHtml(missing.join('、'))} 还没有检查点，${missing.length > 1 ? '这些选项不能选。' : '这个选项不能选。'}</p>`
     : '';
-  return `<div class="candidates">${cards}</div>${hint}`;
+  return `${intro}<div class="candidates">${cards}</div>${hint}`;
 }
 
 function logCursorKey(stage, round) {

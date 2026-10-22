@@ -94,7 +94,11 @@ def test_passed_sft_eval_offers_rl_next_or_finish_and_skip_keeps_checkpoint(clie
     decided = api.post(f'/api/runs/{run_id}/decide', json={'action': 'next'})
     assert decided.status_code == 200, decided.text
     assert decided.json()['stage'] == 'promote'
-    sft_path = next(row['path'] for row in decided.json()['view']['candidates'] if row['kind'] == 'sft')
+    cand = {row['kind']: row for row in decided.json()['view']['candidates']}
+    assert cand['base']['label'] == '实验底座'
+    assert cand['sft']['label'] == '本轮 SFT checkpoint'
+    assert cand['rl']['label'] == '本轮 RL checkpoint'
+    sft_path = cand['sft']['path']
     assert sft_path
     promoted = _run(api, run_id, 'promote', {
         'choice': 'sft', 'reason': '跳过 RL，带上 SFT 检查点', 'reuse_dataset': True,
@@ -105,6 +109,34 @@ def test_passed_sft_eval_offers_rl_next_or_finish_and_skip_keeps_checkpoint(clie
     assert body['round']['base_model'] == sft_path
     assert not any(step['stage'] == 'rl' and step['status'] == 'succeeded' for step in body['steps'])
     assert any(step['stage'] == 'sft' and step['result']['checkpoint'] == sft_path for step in body['steps'])
+
+
+def test_promote_candidate_labels_show_starting_weights_not_foundation(client):
+    """Radio cards pick one starting adapter path; labels must not say 「当前基座」for a LoRA."""
+    api = client
+    run_id = _create(api, '晋级文案')
+    _through_sft_eval(api, run_id)
+    assert api.post(f'/api/runs/{run_id}/decide', json={'action': 'next'}).status_code == 200
+    round1 = {row['kind']: row for row in api.get(f'/api/runs/{run_id}').json()['candidates']}
+    assert round1['base']['label'] == '实验底座'
+    sft_path = round1['sft']['path']
+    assert _run(api, run_id, 'promote', {
+        'choice': 'sft', 'reason': '带上 SFT', 'reuse_dataset': True,
+    }).status_code == 200
+    _through_sft_eval(api, run_id)
+    assert api.post(f'/api/runs/{run_id}/decide', json={'action': 'next'}).status_code == 200
+    round2 = {row['kind']: row for row in api.get(f'/api/runs/{run_id}').json()['candidates']}
+    assert round2['base']['path'] == sft_path
+    assert round2['base']['label'] == '沿用本轮起点'
+    assert round2['sft']['label'] == '本轮 SFT checkpoint'
+    assert round2['rl']['label'] == '本轮 RL checkpoint'
+    page = Path(__file__).resolve().parents[1].joinpath('static', 'app.js').read_text(encoding='utf-8')
+    assert '底座模型不变' in page
+    assert '三选一、不会叠加' in page
+    from rsi.schemas import STAGE_META
+    promote = next(item for item in STAGE_META if item['id'] == 'promote')
+    assert '实验底座模型不变' in promote['summary']
+    assert '不会叠多份 LoRA' in promote['summary']
 
 
 def test_failed_sft_eval_only_opens_next_data(client):
@@ -469,22 +501,22 @@ for (const [name, initial, current] of cases) {
 """
     completed = subprocess.run(['node', '-e', script], check=True, capture_output=True, text=True)
     rows = {item['name']: item['html'] for item in map(json.loads, completed.stdout.splitlines())}
-    single = '基座 <span class="mono">Qwen/Qwen2.5-7B-Instruct</span>'
+    single = '实验底座 <span class="mono">Qwen/Qwen2.5-7B-Instruct</span>'
     assert rows['same-id'] == single
-    assert rows['slash'] == '基座 <span class="mono">Qwen//Qwen2.5-7B-Instruct</span>'
-    assert rows['windows'] == '基座 <span class="mono">C:/models/Qwen</span>'
+    assert rows['slash'] == '实验底座 <span class="mono">Qwen//Qwen2.5-7B-Instruct</span>'
+    assert rows['windows'] == '实验底座 <span class="mono">C:/models/Qwen</span>'
     assert rows['space'] == single
-    assert rows['empty'] == '基座 <span class="mono"></span>'
-    assert rows['blank'] == '基座 <span class="mono"></span>'
-    assert rows['escape'] == '基座 <span class="mono">A&lt;B&gt;&amp;</span>'
+    assert rows['empty'] == '实验底座 <span class="mono"></span>'
+    assert rows['blank'] == '实验底座 <span class="mono"></span>'
+    assert rows['escape'] == '实验底座 <span class="mono">A&lt;B&gt;&amp;</span>'
     for name in ('same-id', 'slash', 'windows', 'space', 'empty', 'blank', 'escape'):
-        assert '最初基座' not in rows[name]
-        assert '本轮基座' not in rows[name]
+        assert '本轮起点' not in rows[name]
+        assert rows[name].startswith('实验底座')
     promoted = rows['promoted']
-    assert promoted.startswith('最初基座 <span class="mono">Qwen/Qwen2.5-7B-Instruct</span><br/>')
-    assert '本轮基座 <span class="mono">/data/out/checkpoint-100</span>' in promoted
+    assert promoted.startswith('实验底座 <span class="mono">Qwen/Qwen2.5-7B-Instruct</span><br/>')
+    assert '本轮起点 <span class="mono">/data/out/checkpoint-100</span>' in promoted
     suffix = rows['suffix']
-    assert '最初基座' in suffix and '本轮基座' in suffix
+    assert '实验底座' in suffix and '本轮起点' in suffix
     assert '/ckpt/Qwen/Qwen2.5-7B-Instruct' in suffix
 
 

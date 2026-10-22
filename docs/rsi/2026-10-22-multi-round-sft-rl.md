@@ -60,7 +60,7 @@ flowchart TD
    - 关闭本轮；插入 `round_index+1`，其 **`base_model = 晋级路径`**；  
    - `run.round_index` 递增，`current_stage=sft`。
 
-候选与推荐：`Pipeline.candidates`——有分数时按分数优先，同分偏好 `rl > sft > base`；无分数时有 RL 推 RL，否则 SFT，否则基座。
+候选与推荐：`Pipeline.candidates`——有分数时按分数优先，同分偏好 `rl > sft > base`；无分数时有 RL 推 RL，否则 SFT，否则基座。UI 文案：`base` 在第 1 轮标「实验底座」，之后标「沿用本轮起点」（路径常是上一轮晋级的 LoRA，不是 HF 底座）；SFT/RL 标「本轮 … checkpoint」。三选一，底座 `--model` 不变。
 
 ## SFT 多轮：checkpoint / LoRA 如何传递
 

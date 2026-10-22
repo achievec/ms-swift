@@ -44,7 +44,7 @@ STAGE_META = [
     {
         'id': 'promote',
         'label': '开启下一轮',
-        'summary': '选出要带上的检查点（基座 / SFT / RL），并用它作为下一轮基座回到 SFT。上一轮记录保留在实验记录里。',
+        'summary': '三选一带进下一轮的起点（实验底座 / 本轮 SFT / 本轮 RL）。实验底座模型不变，只换下一轮的 adapters（或全量 checkpoint），不会叠多份 LoRA。上一轮记录保留在实验记录里。',
     },
 ]
 

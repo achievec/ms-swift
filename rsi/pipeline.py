@@ -1295,22 +1295,29 @@ class Pipeline:
             previous = self.store.get_round(run['id'], rnd['round_index'] - 1)
             if previous and previous.get('promoted_score') is not None:
                 base_score = previous['promoted_score']
+        # 「base」is this round's starting weights (round.base_model), not always the
+        # experiment foundation. Round 1 → hub / full model; later rounds → the
+        # LoRA (or full ckpt) promoted into this round. Choice is which single
+        # path becomes next round's starting adapters — foundation stays on --model.
+        foundation = str((run or {}).get('base_model') or '').strip()
+        round_base = str((rnd or {}).get('base_model') or '').strip()
+        base_label = '实验底座' if (not round_base or round_base == foundation) else '沿用本轮起点'
         rows = [
             {
                 'kind': 'base',
-                'label': '当前基座',
+                'label': base_label,
                 'path': rnd['base_model'],
                 'score': base_score,
             },
             {
                 'kind': 'sft',
-                'label': 'SFT checkpoint',
+                'label': '本轮 SFT checkpoint',
                 'path': sft['path'] if sft else None,
                 'score': _metric(active.get('sft_eval'), 'accuracy'),
             },
             {
                 'kind': 'rl',
-                'label': 'RL checkpoint',
+                'label': '本轮 RL checkpoint',
                 'path': rl['path'] if rl else None,
                 'score': _metric(active.get('rl_eval'), 'accuracy'),
             },
@@ -2527,7 +2534,7 @@ class Pipeline:
             nxt = rnd['round_index'] + 1
             logs = (f"[rsi] 晋级选择 {picked['kind']}，分数 {score_text}。\n"
                     f"[rsi] 路径：{picked['path']}\n"
-                    f"[rsi] 第 {rnd['round_index']} 轮结束。下一轮基座：{picked['path']}\n")
+                    f"[rsi] 第 {rnd['round_index']} 轮结束。下一轮起点：{picked['path']}\n")
             if reason:
                 logs += f'[rsi] 说明：{reason}\n'
             if params.get('note'):
