@@ -433,6 +433,40 @@ def materialize_general_qa(source: Path, dest_dir: Path):
     return dest_dir, written
 
 
+def _bundled_eval_match(params: dict) -> tuple[str, int] | None:
+    """Held-out file that pairs with a bundled training set, plus its row count."""
+    params = params or {}
+    name = ''
+    if str(params.get('source') or '') == 'bundled':
+        name = str(params.get('bundled') or '')
+    if not name:
+        dataset = str(params.get('dataset') or '')
+        file = Path(dataset)
+        try:
+            file.expanduser().resolve().relative_to(EXAMPLES.resolve())
+        except (OSError, ValueError):
+            return None
+        stem = file.name
+        if stem.endswith('.jsonl'):
+            name = stem[:-len('.jsonl')]
+    if name == 'itops_mix':
+        eval_id = 'itops_eval'
+    elif name.endswith('_train'):
+        eval_id = name[:-len('_train')] + '_eval'
+    elif name:
+        eval_id = f'{name}_eval'
+    else:
+        return None
+    path = EXAMPLES / f'{eval_id}.jsonl'
+    if not path.is_file():
+        return None
+    with path.open(encoding='utf-8') as handle:
+        count = sum(1 for line in handle if line.strip())
+    if not count:
+        return None
+    return str(path.resolve()), count
+
+
 def _resolve_existing(value):
     if not isinstance(value, str) or not value.strip():
         return value
@@ -914,6 +948,42 @@ class Pipeline:
         _dataset, report = self.resolve_dataset(params or {}, fetch=False)
         return report
 
+    def _apply_eval_choice(self, preset: dict, run: dict, rnd: dict, stage: str) -> None:
+        """SFT 评测跟上本轮训练集；RL 评测跟上已经跑过的 SFT 评测。"""
+        if stage == 'rl_eval':
+            carried = self._succeeded_sft_eval(run, rnd)
+            if carried:
+                if carried.get('path'):
+                    preset['eval_dataset'] = 'itops-heldout'
+                    preset['custom_eval_config'] = carried['path']
+                elif carried.get('dataset'):
+                    preset['eval_dataset'] = carried['dataset']
+                    preset['custom_eval_config'] = ''
+                if carried.get('limit') not in (None, ''):
+                    preset['eval_limit'] = carried['limit']
+                return
+        paired = _bundled_eval_match(self._sft_params(run['id'], rnd['round_index']))
+        if not paired:
+            return
+        path, count = paired
+        preset['eval_dataset'] = 'itops-heldout'
+        preset['custom_eval_config'] = path
+        preset['eval_limit'] = count
+
+    def _succeeded_sft_eval(self, run: dict, rnd: dict) -> dict | None:
+        step = self.store.latest_active_steps(run['id'], rnd['round_index']).get('sft_eval')
+        if not step or step['status'] != 'succeeded':
+            return None
+        params = _loads(step['params_json'])
+        dataset = str(params.get('eval_dataset') or '')
+        custom = str(params.get('custom_eval_config') or '')
+        limit = params.get('eval_limit')
+        if custom and Path(custom).is_file() and dataset in {'', 'itops-heldout', 'general_qa'}:
+            return {'path': custom, 'limit': limit}
+        if dataset and dataset not in {'itops-heldout', 'general_qa'}:
+            return {'dataset': dataset, 'limit': limit}
+        return None
+
     def _sft_params(self, run_id: str, round_index: int) -> dict:
         step = self.store.latest_active_steps(run_id, round_index).get('sft')
         if not step or step['status'] != 'succeeded':
@@ -1004,6 +1074,7 @@ class Pipeline:
             self._remember_checkpoint(preset, checkpoint['path'] if checkpoint else '')
             preset['eval_output_dir'] = str(self.stage_dir(run['id'], rnd['round_index'], stage) / 'eval_output')
             preset['custom_eval_config'] = _resolve_existing(preset.get('custom_eval_config'))
+            self._apply_eval_choice(preset, run, rnd, stage)
             if 'eval_base' not in preset:
                 preset['eval_base'] = False
             else:

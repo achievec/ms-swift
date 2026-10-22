@@ -178,6 +178,33 @@ def test_rerun_supersedes_later_stages(client):
     assert blocked.status_code == 400
 
 
+def test_eval_form_follows_bundled_train_set(client):
+    api, _home = client
+    run_id = api.post('/api/runs', json={
+        'name': '评测跟着训练集',
+        'scenario': 'SFT 用内置训练集时，评测默认用对应留出题',
+        'base_model': 'Qwen/Qwen2.5-7B-Instruct',
+    }).json()['run']['id']
+    trained = _run(api, run_id, 'sft', {'source': 'bundled', 'bundled': 'helpdesk_train'})
+    assert trained.status_code == 200, trained.text
+    view = api.get(f'/api/runs/{run_id}').json()
+    sft_eval = view['forms']['sft_eval']['values']
+    rl_eval = view['forms']['rl_eval']['values']
+    assert sft_eval['eval_dataset'] == 'itops-heldout'
+    assert str(sft_eval['custom_eval_config']).endswith('helpdesk_eval.jsonl')
+    assert int(sft_eval['eval_limit']) == 120
+    assert str(rl_eval['custom_eval_config']).endswith('helpdesk_eval.jsonl')
+    assert int(rl_eval['eval_limit']) == 120
+    drafted = api.post(f'/api/runs/{run_id}/drafts', json={
+        'stage': 'sft_eval',
+        'round': 1,
+        'params': {'eval_limit': 7},
+    })
+    assert drafted.status_code == 200, drafted.text
+    again = api.get(f'/api/runs/{run_id}').json()
+    assert int(again['forms']['sft_eval']['values']['eval_limit']) == 7
+
+
 def test_model_fields_cannot_change_after_create(client):
     api, _home = client
     created = api.post('/api/runs', json={

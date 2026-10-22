@@ -1572,10 +1572,9 @@ function evalPathMatches(path, item) {
 
 function bundledEvalLocation(item, current) {
   const text = String(current || '').replace(/\\/g, '/');
-  const file = text.split('/').pop();
-  if (file && file.endsWith('.jsonl') && text.includes('/')) {
-    return text.slice(0, text.lastIndexOf('/') + 1) + `${item.id}.jsonl`;
-  }
+  const marker = '/rsi/examples/';
+  const at = text.lastIndexOf(marker);
+  if (at >= 0) return text.slice(0, at) + marker + `${item.id}.jsonl`;
   return item.path;
 }
 
@@ -1685,7 +1684,15 @@ function renderInferControl(item, values, running, fill) {
     const logText = state.tab === 'export' ? (state.exportLog || '') : (state.inferLog || '');
     return `<div class="log-panel infer-log" data-key="log"><div class="log-head"><div class="log-title"><span>${escapeHtml(item.label)}</span>${info}</div>${logTools()}</div><textarea class="log" readonly rows="18">${escapeHtml(logText)}</textarea></div>`;
   }
-  const caption = inferCaption(item);
+  let captionItem = item;
+  if (state.stage === 'rl' && item.id === 'dataset') {
+    captionItem = Object.assign({}, item, { info: '默认沿用本轮 SFT 训练集，不用重选。' });
+  } else if (state.stage === 'rl' && item.id === 'external_plugins') {
+    captionItem = Object.assign({}, item, { info: '内置奖励脚本。验收保持这项，清空后关键词奖励不会生效。' });
+  } else if (state.stage === 'rl' && item.id === 'reward_funcs') {
+    captionItem = Object.assign({}, item, { info: 'itops_checklist 按题目关键词打分，format 检查格式。验收保持这两项。' });
+  }
+  const caption = inferCaption(captionItem);
   if (item.widget === 'Checkbox') {
     const checked = value === true || value === 'true' ? 'checked' : '';
     return `<div class="field check" data-key="${item.id}"${lockTitle}>${caption}<div class="control"><label class="check"><input type="checkbox" data-field="${item.id}" ${checked} ${locked}/></label></div><div class="extra"></div></div>`;
@@ -1999,6 +2006,15 @@ function render() {
 
 async function runCurrent() {
   const stage = state.stage;
+  if (stage === 'sft_eval' || stage === 'rl_eval') {
+    const pick = document.querySelector('[data-eval-pick]');
+    const config = document.querySelector('#main [data-field="custom_eval_config"]');
+    const path = config ? String(config.value || '') : '';
+    if (pick && pick.value === '__upload__' && !path.replace(/\\/g, '/').includes('/uploads/')) {
+      toast('请先从电脑选择评测文件');
+      return;
+    }
+  }
   const params = collectParams();
   setBusy(true);
   try {
@@ -2946,8 +2962,10 @@ document.addEventListener('change', async (event) => {
     }
   }
   if (event.target.id === 'eval-file-input' && event.target.files[0]) {
+    const chosen = event.target.files[0];
+    event.target.value = '';
     try {
-      await uploadEvalFile(event.target.files[0]);
+      await uploadEvalFile(chosen);
     } catch (err) {
       toast(err.message);
     }
