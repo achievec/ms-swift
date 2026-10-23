@@ -1,90 +1,92 @@
-# RSI closed loop on ms-swift
+# RSI：基于 ms-swift 的闭环微调工作台
 
-Click-through recursive self-improvement on top of ms-swift:
+在 ms-swift 之上提供可点选的递归自改进闭环（产品页名称：**大模型微调工作台**）：
 
-**SFT → SFT eval**. Dataset settings live on SFT. A passed SFT eval can enter online RL, open the next round, or finish the run. A failed SFT eval can only open the next round. After RL eval, a pass can finish or open the next round; a failure only opens the next round. Finishing marks the experiment complete but does not lock「开启下一轮」: you can still pick a checkpoint and start another round. There is no separate stop action.
+**SFT → SFT 评测**。数据集设置在 SFT 阶段。SFT 评测通过后可进入在线 RL、开启下一轮，或完成实验；不通过则只能开启下一轮。RL 评测通过后可完成或开启下一轮；不通过只能开启下一轮。「完成」会把实验标为已结束，但不会锁死「开启下一轮」：仍可挑选检查点再开一轮。没有单独的全局停止动作。
 
-The UI speaks Chinese. Parameter names match the existing Gradio Web-UI and the `swift sft` / `swift rlhf` / `swift eval` / `swift deploy` CLIs. ms-swift itself is not modified; this app shells out to it only when you ask.
+界面为中文。参数名与现有 Gradio Web-UI 以及 `swift sft` / `swift rlhf` / `swift eval` / `swift deploy` CLI 对齐。不修改 ms-swift 本体；仅在你点击运行时通过子进程调用它。
 
-Default mode calls **this checkout's ms-swift** (`python -m swift.cli.main`) on GPU 0: `swift sft`, `swift eval`, `swift rlhf`, and `swift deploy`. The held-out IT jsonl is converted to an EvalScope `general_qa` folder before eval. Set `RSI_BACKEND=mock` when you want the deterministic click-through that does not load weights.
+默认模式在 GPU 0 上调用**本仓库检出的 ms-swift**（`python -m swift.cli.main`）：`swift sft`、`swift eval`、`swift rlhf`、`swift deploy`。评测前会把内置 IT 留出 jsonl 转成 EvalScope 的 `general_qa` 目录。需要不加载权重的确定性点通时，设 `RSI_BACKEND=mock`。
+
+更完整的用户操作说明与内部运维见 [`docs/rsi/`](../docs/rsi/)。
 
 ```mermaid
 flowchart TD
-  sft[SFT] --> se[SFT eval]
-  se -->|不通过| miss[Not passed]
-  se -->|RL| rl[Online RL]
-  se -->|完成| done[Finish]
+  sft[SFT] --> se[SFT 评测]
+  se -->|不通过| miss[不通过]
+  se -->|RL| rl[在线 RL]
+  se -->|完成| done[完成]
   se -->|开启下一轮| nxt[开启下一轮]
   miss --> nxt
-  rl --> re[RL eval]
-  re -->|不通过| rmiss[Not passed]
-  re -->|完成| rdone[Finish]
+  rl --> re[RL 评测]
+  re -->|不通过| rmiss[不通过]
+  re -->|完成| rdone[完成]
   re -->|开启下一轮| rnxt[开启下一轮]
   rmiss --> rnxt
   nxt -->|下一轮| sft
   rnxt -->|下一轮| sft
 ```
 
-This is the manual version of the loop most post-training stacks use now: supervised fine-tuning sets the scenario behavior, a held-out eval is the gate, online RL (GRPO here, the default in ms-swift) pushes the policy with a reward, and only the winning checkpoint becomes the next base. InstructGPT used SFT → reward model → PPO. Open recipes more often skip the learned reward model and score completions directly (GRPO / RLOO / DAPO). The human stays on the gate: every stage is a form, and promotion is an explicit choice.
+这是当前后训练栈里常见闭环的手工版：监督微调定场景行为，留出评测当闸门，在线 RL（此处为 GRPO，ms-swift 默认）用奖励推策略，只有晋级的检查点成为下一轮起点。InstructGPT 走的是 SFT → 奖励模型 → PPO；开源配方更常跳过学好的奖励模型，直接给 completion 打分（GRPO / RLOO / DAPO）。人仍守在闸门上：每一阶段都是表单，晋级是显式选择。
 
-## Run locally (mock)
+## 本地运行（mock）
 
-From the repository root:
+在仓库根目录：
 
 ```bash
 pip install -r rsi/requirements.txt
 ./run.sh
 ```
 
-`./run.sh` with no arguments restarts the UI. On Linux it activates `conda_env` from `rsi/configs/fetch.yaml` (`model-train`) and starts RSI with `train_python` when that file exists, so Gradio comes from the conda env rather than `rsi/.venv`. `RSI_CONDA_ENV` overrides the env name; an empty value skips activation. `RSI_TRAIN_PYTHON` overrides the interpreter. macOS keeps using `rsi/.venv`. `./run.sh start`, `./run.sh stop`, and `./run.sh restart` do what they say. The process id is `rsi/.rsi.pid` and the process log is `rsi/.rsi.log` (deleted and recreated on each successful `start`; it holds startup and hope clone). Each experiment writes its own training and eval log at `RSI_HOME/runs/<run_id>/round_<n>/<stage>/swift.log` (eval uses `eval_output/swift.log` under that stage; deploy uses `serve/deploy.log`). The process log only gets one line pointing at that file. `python -m rsi` still works if you want the server in the foreground.
+不带参数的 `./run.sh` 等于重启界面。Linux 上若存在 `rsi/configs/fetch.yaml`，会激活其中的 `conda_env`（`model-train`），并用 `train_python` 启动 RSI，从而 Gradio 来自 conda 环境而非 `rsi/.venv`。`RSI_CONDA_ENV` 可覆盖环境名；设为空字符串则跳过激活。`RSI_TRAIN_PYTHON` 可覆盖解释器。macOS 仍用 `rsi/.venv`。`./run.sh start` / `stop` / `restart` 含义如字面。进程号在 `rsi/.rsi.pid`，进程日志在 `rsi/.rsi.log`（每次 `start` 成功前会删掉重建；含启动与 hope clone）。每个实验自己的训练/评测日志在 `RSI_HOME/runs/<run_id>/round_<n>/<stage>/swift.log`（评测在该阶段下的 `eval_output/swift.log`；部署用 `serve/deploy.log`）。进程日志里通常只有一行指针指向上述文件。需要前台跑服务时仍可用 `python -m rsi`。
 
-The server listens on `0.0.0.0:8418`. On this machine open http://127.0.0.1:8418
+服务默认监听 `0.0.0.0:8418`。本机打开 http://127.0.0.1:8418
 
-Then:
+然后：
 
-1. **新建实验**. The default base is `Qwen/Qwen2.5-7B-Instruct` and the scenario is an internal IT helpdesk. `--model`, `--model_type`, and `--template` are chosen here and stay locked afterwards, including on RL.
-2. **SFT**. This is the first stage. On one GPU the form hides DeepSpeed, DDP, and sequence parallel, and it hides tuner tabs that are not the selected method. **数据集设置** is the old data panel: 数据来源 is 公开数据集, 上传文件, or 服务器本地路径, plus 数据集名称(`--dataset`), 验证集拆分比例, 句子最大长度, and 无填充批处理. The dataset name starts empty. Running SFT or RL with none selected returns 请先选择数据集. Public dataset names are the same ModelScope list the Web-UI loads. Form edits on every stage (multi-selects, sliders, checkboxes, 更多参数, and the preset reset) are stored for that experiment, round, and stage and come back after a refresh, even if you never click run. `--model`, `--model_type`, and `--template` stay locked. SFT eval and RL eval still start from the bundled `itops-heldout` set, because that held-out file is the gate for this loop; the Web-UI eval dropdown itself has no default. The rest of the form follows Web-UI「LLM预训练/微调」 (`swift sft`, LoRA, bf16). Click 校验格式, then 运行本阶段. While SFT, SFT eval, RL, or RL eval is 运行中, that stage's form shows 停止. It signals the stage process group and marks the step failed so it can be retried. The button stays hidden for every other status, including 同步中. 推理服务 and 模型导出 keep their own 停止推理 and 停止导出 buttons. `rsi/examples/itops_mix.jsonl` can be passed as a server path. The log shows the command that real training would execute, and a mock `checkpoint-final/args.json` is written.
-3. **SFT 评测**, **RL** (`swift rlhf --rlhf_type grpo`, vLLM colocate), **RL 评测**. RL follows「LLM GRPO」, and both eval stages follow「LLM评测」. SFT 评测 shows `--adapters` filled from the SFT checkpoint when that checkpoint is a LoRA. `--model` on RL and both evals stays the experiment base.
-4. **开启下一轮**. Choosing it opens one panel: pick one starting weight — experiment foundation / this-round SFT / this-round RL (RL is recommended when its mock accuracy is higher), optionally reuse the previous dataset, then click **开启下一轮**. That single path becomes the next round's starting adapters (foundation `--model` stays); the board returns to SFT. Previous rounds stay in the audit. After a successful promote, the decide strip (RL / 开启下一轮 / 完成) clears for that round — those buttons are not kept around once the gate is taken. The promote panel then offers **前往第 N 轮** (primary) and **再次开启下一轮** (re-run; voids later work and re-promotes).
-5. **推理服务**. The tab uses the same fields, order, and Chinese labels as the SWIFT Web-UI **LLM推理** page (`swift/ui/llm_infer`). `--model`, `--model_type`, `--template`, and `--adapters` are filled from this round and locked. Deploy still starts the RSI service (`swift deploy --model --adapters`). After it is up, the chat box streams to that OpenAI-compatible API. Weights are not loaded in mock mode. The **更多参数** text is stored on that experiment's deploy record. Deploy does not clear it, and opening the experiment again shows the saved text. Another experiment stays empty until it is set there. **运行中部署** lists that experiment's running service as soon as deploy returns; **找回部署** reloads the same list. While that service is running, **日志输出** is on screen and refreshes by itself. The red button is **停止推理** (it stops the deploy). The Web-UI **展示部署状态** / **停止展示** buttons are not on this page.
-6. **模型导出**. The tab sits next to 推理服务 and follows Web-UI **LLM导出** (`swift export`). `--model`, `--model_type`, and `--template` stay on the experiment. `--adapters` is filled from this round's RL checkpoint when there is one, otherwise the SFT checkpoint, and can be edited. **预览命令** shows the command; **开始导出** runs it and the 运行时 log follows the job. When the job finishes, 运行时 keeps a **最近一次导出** card (success/failure, exit code, `output_dir`, time, and an error snippet on failure) plus a short list of this round's export paths. **用该模型部署推理** switches to 推理服务 with `--model` set to that `output_dir` and adapters cleared. Mock mode writes the log without loading weights.
+1. **新建实验**。默认底座为 `Qwen/Qwen2.5-7B-Instruct`，场景为内部 IT 工单。此处选定的 `--model`、`--model_type`、`--template` 之后锁定，含 RL。
+2. **SFT**。第一阶段。单卡时表单隐藏 DeepSpeed、DDP、序列并行，并隐藏未选中的 tuner 页签。**数据集设置**：数据来源为公开数据集 / 上传文件 / 服务器本地路径，以及数据集名称（`--dataset`）、验证集拆分比例、句子最大长度、无填充批处理。数据集名称初始为空；未选就跑 SFT/RL 会提示「请先选择数据集」。公开数据集名单与 Web-UI 的 ModelScope 列表一致。各阶段表单改动（多选、滑条、勾选、更多参数、预设重置）会按实验+轮次+阶段存草稿，刷新后仍在，不必先点运行。`--model` / `--model_type` / `--template` 保持锁定。SFT 评测与 RL 评测仍从内置 `itops-heldout` 起步（该留出集是本闭环的闸门；Web-UI 评测下拉本身无默认）。其余字段对齐 Web-UI「LLM预训练/微调」（`swift sft`、LoRA、bf16）。先点「校验格式」，再「运行本阶段」。SFT / SFT 评测 / RL / RL 评测在「运行中」时表单显示「停止」：向该阶段进程组发信号，并把该步记为失败以便重试；其它状态（含「同步中」）不显示。推理服务、模型导出仍用各自的「停止推理」「停止导出」。服务器路径可填 `rsi/examples/itops_mix.jsonl`。日志会打出真实训练将执行的命令；mock 会写 `checkpoint-final/args.json`。
+3. **SFT 评测**、**RL**（`swift rlhf --rlhf_type grpo`，vLLM colocate）、**RL 评测**。RL 对齐「LLM GRPO」，两个评测对齐「LLM评测」。SFT 评测在检查点为 LoRA 时会填入 `--adapters`。RL 与两侧评测的 `--model` 仍是实验底座。
+4. **开启下一轮**。进入一个面板：从实验底座 / 本轮 SFT / 本轮 RL 中选一个起点权重（mock 准确率更高时推荐 RL），可选沿用上一轮数据，再点「开启下一轮」。该路径成为下一轮起始 adapters（底座 `--model` 不变），界面回到 SFT。历史轮次留在实验记录。晋级成功后，本轮的决定条（RL / 开启下一轮 / 完成）收起。晋级面板随后提供「前往第 N 轮」（主按钮）与「再次开启下一轮」（重跑；会作废后续工作并重新晋级）。
+5. **推理服务**。字段、顺序与中文标签对齐 SWIFT Web-UI「LLM推理」（`swift/ui/llm_infer`）。`--model`、`--model_type`、`--template`、`--adapters` 按本轮填好并锁定。部署仍走 RSI 服务管理（`swift deploy --model --adapters`）。起来后可在页内对流式对话到 OpenAI 兼容接口。mock 不加载权重。「更多参数」写在该实验的部署记录里；部署不会清空，再次打开仍显示。其它实验未填则为空。「运行中部署」在部署返回后列出本实验服务；「找回部署」重载同一列表。服务在跑时「日志输出」自动刷新。红色按钮是「停止推理」。本页没有 Web-UI 的「展示部署状态」/「停止展示」。
+6. **模型导出**。在推理服务旁，对齐 Web-UI「LLM导出」（`swift export`）。`--model` / `--model_type` / `--template` 仍属实验；`--adapters` 默认填本轮 RL（若有）否则 SFT，可改。「预览命令」看命令；「开始导出」后运行时日志跟上。结束后保留「最近一次导出」状态卡（成功/失败、exit code、`output_dir`、时间、失败时错误片段）及本轮若干导出路径。「用该模型部署推理」跳到推理服务，把 `--model` 设为该 `output_dir` 并清空 adapters。mock 只写日志不加载权重。
 
-Re-running a stage that already succeeded asks for confirmation. The old audit row stays, and later stages in that round are marked 已作废.
+重跑已成功的阶段会要求确认。旧审计行保留，本轮后续阶段标为「已作废」。
 
-The default bind is `0.0.0.0:8418`. Override the port with `WEBUI_PORT` or `RSI_PORT`, and the bind address with `WEBUI_SERVER` or `RSI_HOST` (for example `127.0.0.1` to refuse other machines). The original Gradio Web-UI is still mounted at `/swift-ui/` on this same process (not linked from the RSI header). When Gradio and the swift training stack import, that path is the original Web-UI. Otherwise the page says it cannot be opened. The standalone `swift web-ui` command uses the same default, `0.0.0.0:8418`. `WEBUI_PORT`, `WEBUI_SERVER`, `--server_port`, and `--server_name` still override it. State (SQLite, uploads, checkpoints) lives in `$RSI_HOME` when that is set, otherwise `rsi_home` in `fetch.yaml` when that directory or its parent is writable, otherwise `rsi/workspace`. The GPU config points at `/opt/meituan/dolphinfs_liubo108/ms-swift/workspace`. If SQLite cannot write, the error includes that database path; set `RSI_HOME` to another directory.
+默认绑定 `0.0.0.0:8418`。端口用 `WEBUI_PORT` 或 `RSI_PORT`，地址用 `WEBUI_SERVER` 或 `RSI_HOST`（例如 `127.0.0.1` 仅本机）。原版 Gradio Web-UI 仍挂在同进程的 `/swift-ui/`（工作台页头不放入口）。Gradio 与 swift 训练栈能 import 时该路径即为原 Web-UI，否则显示无法打开。独立命令 `swift web-ui` 默认同样是 `0.0.0.0:8418`；`WEBUI_PORT`、`WEBUI_SERVER`、`--server_port`、`--server_name` 仍可覆盖。状态（SQLite、上传、检查点）优先 `$RSI_HOME`，否则在可写时用 `fetch.yaml` 的 `rsi_home`，再否则 `rsi/workspace`。GPU 机配置常指向 `/opt/meituan/dolphinfs_liubo108/ms-swift/workspace`。SQLite 写失败时错误里带库路径，把 `RSI_HOME` 指到其它目录即可。
 
 ```bash
 pytest rsi/tests -q
 ```
 
-## Data format
+## 数据格式
 
-Local files are checked against the shapes ms-swift's `AutoPreprocessor` accepts (see `docs/source_en/Customization/Custom-dataset.md`):
+本地文件按 ms-swift `AutoPreprocessor` 接受的形状校验（见 `docs/source_en/Customization/Custom-dataset.md`）：
 
-- `messages` with `role` / `content` (standard)
-- sharegpt `conversation` of `human` / `assistant`
-- alpaca `instruction` + `output`
+- `messages`：`role` / `content`（标准）
+- ShareGPT：`conversation` 的 `human` / `assistant`
+- Alpaca：`instruction` + `output`
 - `query` + `response`
 
-A `solution` or `answer` field is kept for GRPO, including rows that only have a user turn. Public dataset ids are recorded and not downloaded in mock mode; ms-swift resolves them when the real CLI runs. Upload also accepts `.zip` / `.tar` / `.tar.gz` / `.tgz`: the server extracts under `$RSI_HOME/uploads/<uuid>/`, rewrites relative `images`/`videos`/`audios` paths to absolute ones, and points training at the resolved jsonl. Text uploads stay at 20MB; archives default to 500MB (`RSI_UPLOAD_ARCHIVE_MAX_BYTES`). Packing notes: [`docs/rsi/dataset-archive-upload.md`](../docs/rsi/dataset-archive-upload.md). The sample files are:
+GRPO 可保留 `solution` 或 `answer`（含仅有用户轮的行）。公开数据集 id 在 mock 下只记录不下载；真跑 CLI 时由 ms-swift 解析。上传还支持 `.zip` / `.tar` / `.tar.gz` / `.tgz`：服务端解压到 `$RSI_HOME/uploads/<uuid>/`，把相对的 `images`/`videos`/`audios` 改成绝对路径，训练指向解析后的 jsonl。文本上传约 20MB；压缩包默认 500MB（`RSI_UPLOAD_ARCHIVE_MAX_BYTES`）。打包说明见 [`docs/rsi/dataset-archive-upload.md`](../docs/rsi/dataset-archive-upload.md)。样例：
 
-- `rsi/examples/itops_mix.jsonl` — six IT tickets, messages + `solution`
-- `rsi/examples/itops_eval.jsonl` — four held-out tickets
-- `rsi/examples/itops_reward.py` — GRPO reward plugin (`itops_checklist`). Mock mode never imports it. Real `swift rlhf` loads it via `--external_plugins`.
+- `rsi/examples/itops_mix.jsonl` — 6 条 IT 工单，messages + `solution`
+- `rsi/examples/itops_eval.jsonl` — 4 条留出工单
+- `rsi/examples/itops_reward.py` — GRPO 奖励插件（`itops_checklist`）。mock 不 import；真 `swift rlhf` 经 `--external_plugins` 加载。
 
-## Backend
+## 后端
 
-| Variable | Default | Without a GPU |
+| 变量 | 默认 | 无 GPU 时 |
 | --- | --- | --- |
 | `RSI_BACKEND` | `swift` | `mock` |
-| `RSI_SERVE_BACKEND` | same as `RSI_BACKEND` | `mock` to keep the in-process API |
-| `RSI_SWIFT_BIN` | `python -m swift.cli.main` in this repo | a stub executable for tests |
-| `RSI_TRAIN_PYTHON` | `train_python` in `fetch.yaml` when that file exists, else this Python | overrides the yaml path |
-| `CUDA_VISIBLE_DEVICES` | `0` | unused in mock mode |
+| `RSI_SERVE_BACKEND` | 与 `RSI_BACKEND` 相同 | `mock` 以保留进程内 API |
+| `RSI_SWIFT_BIN` | 本仓库的 `python -m swift.cli.main` | 测试用 stub |
+| `RSI_TRAIN_PYTHON` | 存在时用 `fetch.yaml` 的 `train_python`，否则当前 Python | 覆盖 yaml 路径 |
+| `CUDA_VISIBLE_DEVICES` | `0` | mock 下不用 |
 
-`MsSwiftBackend` runs the recorded command with `subprocess` and marks the step failed if swift exits non-zero. Training steps return immediately in the UI and finish when the process exits; refresh the audit while a job is running. Serving with `RSI_SERVE_BACKEND=swift` launches `swift deploy` in the background. Mock serving is an in-process OpenAI-compatible server, which is what `pytest` talks to.
+`MsSwiftBackend` 用 `subprocess` 跑记录的命令；swift 非 0 退出则该步失败。训练在 UI 上立即返回，进程退出后才算结束；跑的时候可刷新实验记录。`RSI_SERVE_BACKEND=swift` 时后台起 `swift deploy`。Mock 部署是进程内 OpenAI 兼容服务，供 `pytest` 使用。
 
-Install ms-swift and a GPU stack on the training machine the usual way (`pip install -e .` from this repo, plus the CUDA extras you need). This RSI app does not import `swift`, so the UI keeps working on a box that only has the packages in `rsi/requirements.txt`. On the GPU box, `fetch.yaml` `train_python` is `/usr/local/conda/envs/model-train/bin/python`; SFT, eval, and RL use it when that file exists.
+训练机按常规安装 ms-swift 与 GPU 栈（本仓库 `pip install -e .`，再加所需 CUDA 扩展）。RSI 应用本身不 `import swift`，因此只有 `rsi/requirements.txt` 的机器也能起 UI。GPU 机上 `fetch.yaml` 的 `train_python` 为 `/usr/local/conda/envs/model-train/bin/python`；文件存在时 SFT、评测、RL 用它。
 
 ## 内网部署
 
@@ -159,37 +161,37 @@ rsi/scripts/sync-to-sankuai.sh
 
 脚本从自己所在的仓库找根目录。工作区有未提交改动会直接退出。然后从 GitHub `origin` 快进拉取该分支。若 `sankuai`（`ssh://git@git.sankuai.com/~liyuhao03/ms-swift.git`，没有这个远程时会加上）有当前分支没有的提交，按从旧到新 cherry-pick，先推 GitHub，再推 sankuai。cherry-pick 会换成新哈希，推 sankuai 可能不是快进；默认不强推，打印原因后以非 0 退出。确认覆盖内网分支时再执行 `rsi/scripts/sync-to-sankuai.sh --force-sankuai`（只对 sankuai 使用 `--force-with-lease`）。
 
-## Hardware this preset is for
+## 硬件预设
 
-1× NVIDIA A100 80GB, 18 CPU cores, about 92GB RAM with about 60GB usable.
+面向 **1× NVIDIA A100 80GB**、约 18 核 CPU、约 92GB 内存（可用约 60GB）。
 
-The numbers in `rsi/configs/a100_80g.yaml` are the form defaults:
+`rsi/configs/a100_80g.yaml` 里的数字即表单默认：
 
-- **7B LoRA bf16** is the loop that fits SFT and GRPO together. SFT uses batch 1, gradient accumulation 16, max length 2048, gradient checkpointing, `attn_impl=sdpa` (switch to `flash_attention_2` if it is installed).
-- **Do not full-finetune** a 7B on this box. Adam optimizer state does not fit in ~60GB usable RAM. Leave `tuner_type=lora`.
-- **14B** can be tried as QLoRA (`quant_method=bnb`, `quant_bits=4`) for SFT. GRPO plus a colocated vLLM on 14B is tight; lower `max_completion_length` and `num_generations` first.
-- **32B online RL does not fit** on one 80GB GPU.
-- GRPO uses **vLLM colocate** so rollout and training share the only GPU: `vllm_gpu_memory_utilization=0.45`, `sleep_level=1`, `offload_model`, `offload_optimizer`, `num_generations=4`, tensor parallel 1. Server-mode vLLM would want a second GPU; this preset does not.
-- **One GPU does not pass DeepSpeed, DDP, or sequence parallel.** SFT and RL hide those controls until two GPUs are selected. `--deepspeed`, including `zero0`, asks for the `deepspeed` package before training starts. AdaLoRA, VeRA, ReFT, BOFT, FourierFT, LISA, and the embedding loss tab stay hidden unless that method is selected, and their flags are left off the command.
-- `dataset_num_proc=8` and `dataloader_num_workers=4` leave cores for vLLM on an 18-core machine.
-- Deploy after promotion uses `infer_backend=vllm` and can take most of the GPU (`vllm_gpu_memory_utilization=0.9`) because training is finished.
+- **7B LoRA bf16**：能同时塞下 SFT 与 GRPO 的主路径。SFT：batch 1、梯度累积 16、最大长度 2048、梯度检查点、`attn_impl=sdpa`（装了 flash-attn 可改 `flash_attention_2`）。
+- **不要在这台机器上全量微调 7B**。Adam 优化器状态塞不进约 60GB 可用内存。保持 `tuner_type=lora`。
+- **14B** 可试 QLoRA（`quant_method=bnb`，`quant_bits=4`）做 SFT。14B 上 GRPO + 同卡 vLLM 很紧，先降 `max_completion_length` 和 `num_generations`。
+- **32B 在线 RL 单卡 80GB 放不下**。
+- GRPO 用 **vLLM colocate**，rollout 与训练共用唯一 GPU：`vllm_gpu_memory_utilization=0.45`、`sleep_level=1`、`offload_model`、`offload_optimizer`、`num_generations=4`、tensor parallel 1。独立 server 模式的 vLLM 需要第二张卡，本预设不用。
+- **单卡不传 DeepSpeed / DDP / 序列并行。** 选满两张 GPU 前 SFT/RL 隐藏这些控件。`--deepspeed`（含 `zero0`）开训前会检查是否安装 `deepspeed`。AdaLoRA、VeRA、ReFT、BOFT、FourierFT、LISA 与 embedding loss 页签仅在选中对应方法时显示，否则不写进命令。
+- `dataset_num_proc=8`、`dataloader_num_workers=4`，给 18 核机器上的 vLLM 留核。
+- 晋级后的部署用 `infer_backend=vllm`，训练已结束时可占大部分 GPU（`vllm_gpu_memory_utilization=0.9`）。
 
-Any other swift flag can be added in the YAML box on each stage. Those keys are appended to the CLI and override the form.
+其它 swift 标志可在各阶段「更多参数」YAML 框追加；同名键会覆盖表单。
 
-## Audit
+## 审计
 
-SQLite tables `runs`, `rounds`, `steps`, `checkpoints`, and `services` record each run and each step: status, params, result, logs, the swift command, `started_at`, and `ended_at`. The 实验记录 tab shows them, including superseded attempts. The database file is `$RSI_HOME/rsi.sqlite` (default `rsi/workspace/rsi.sqlite`). That directory has to be local and writable. A dolphinfs or NFS home cannot create the SQLite journal, and a later write then fails even if reads still work.
+SQLite 表 `runs`、`rounds`、`steps`、`checkpoints`、`services` 记录每次实验与每一步：状态、参数、结果、日志、swift 命令、`started_at`、`ended_at`。「实验记录」页可看，含已作废尝试。库文件为 `$RSI_HOME/rsi.sqlite`（默认 `rsi/workspace/rsi.sqlite`）。该目录需本地可写；dolphinfs / NFS 家目录往往建不了 SQLite journal，读得过、写会失败。
 
-## Layout
+## 目录结构
 
 ```
-rsi/app.py            FastAPI + static UI
-rsi/pipeline.py       stage order and promotion
-rsi/backends.py       MockBackend, MsSwiftBackend
-rsi/model_fetch.py    optional local copy before swift runs
-rsi/serving.py        mock OpenAI server
-rsi/schemas.py        form fields copied from the Web-UI argument names
+rsi/app.py            FastAPI + 静态 UI
+rsi/pipeline.py       阶段顺序与晋级
+rsi/backends.py       MockBackend、MsSwiftBackend
+rsi/model_fetch.py    跑 swift 前的可选本地拉取
+rsi/serving.py        mock OpenAI 服务
+rsi/schemas.py        从表单对齐 Web-UI 参数名
 rsi/configs/a100_80g.yaml
-rsi/examples/         bundled data and the GRPO reward plugin
-rsi/tests/            dataset checks and the mock end-to-end loop
+rsi/examples/         内置数据与 GRPO 奖励插件
+rsi/tests/            数据集校验与 mock 端到端闭环
 ```
