@@ -11,4 +11,4 @@
 | [rl-grpo-speedup.md](rl-grpo-speedup.md) | 进阶 | GRPO 加速相关 |
 | [api-schema-performance.md](api-schema-performance.md) | 内部 | Schema 接口性能 |
 
-代码侧总览：[`rsi/README.md`](../../rsi/README.md)。动态示意图（可循环 HTML / 预览图）：[`assets/live-panel/`](assets/live-panel/)。
+代码侧总览：[`rsi/README.md`](../../rsi/README.md)。
