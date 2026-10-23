@@ -1,6 +1,13 @@
 # RSI：基于 ms-swift 的闭环微调工作台
 
-在 ms-swift 之上提供可点选的递归自改进闭环：
+基于开源项目 [ModelScope ms-swift](https://github.com/modelscope/ms-swift)，评测基于 [EvalScope](https://github.com/modelscope/evalscope/blob/main/README_zh.md)，在其上提供可点选的递归自改进闭环：
+
+| 上游 | 链接 |
+|------|------|
+| ms-swift 仓库 | https://github.com/modelscope/ms-swift |
+| ms-swift 文档 | https://swift.readthedocs.io/zh-cn/latest/ |
+| EvalScope 仓库 | https://github.com/modelscope/evalscope/blob/main/README_zh.md |
+| EvalScope 文档 | https://evalscope.readthedocs.io/zh-cn/latest/ |
 
 **SFT → SFT 评测**。数据集设置在 SFT 阶段。SFT 评测通过后可进入在线 RL、开启下一轮，或完成实验；不通过则只能开启下一轮。RL 评测通过后可完成或开启下一轮；不通过只能开启下一轮。「完成」会把实验标为已结束，但不会锁死「开启下一轮」：仍可挑选检查点再开一轮。没有单独的全局停止动作。
 

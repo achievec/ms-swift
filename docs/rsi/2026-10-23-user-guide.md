@@ -1,6 +1,13 @@
 # 大模型微调工作台 · 功能地图与操作手册
 
-打开页面后看到的产品名是 **大模型微调工作台**。
+打开页面后看到的产品名是 **大模型微调工作台**。训练与推理基于 [ModelScope ms-swift](https://github.com/modelscope/ms-swift)，评测基于 [EvalScope](https://github.com/modelscope/evalscope/blob/main/README_zh.md)。
+
+| 上游 | 链接 |
+|------|------|
+| ms-swift 仓库 | https://github.com/modelscope/ms-swift |
+| ms-swift 文档 | https://swift.readthedocs.io/zh-cn/latest/ |
+| EvalScope 仓库 | https://github.com/modelscope/evalscope/blob/main/README_zh.md |
+| EvalScope 文档 | https://evalscope.readthedocs.io/zh-cn/latest/ |
 
 当前平台地址（仅部署在该 GPU 机）：[http://10.164.162.4:8418/](http://10.164.162.4:8418/)
 
@@ -327,5 +334,7 @@ A. 删除会清实验目录下产物，上传文件一般仍保留在工作区 u
 | [eval-base-compare.md](eval-base-compare.md) | 基座对比与灵活对比 |
 | [rl-grpo-speedup.md](rl-grpo-speedup.md) | GRPO 加速相关 |
 | [api-schema-performance.md](api-schema-performance.md) | Schema 接口性能 |
+| [ms-swift 文档](https://swift.readthedocs.io/zh-cn/latest/) | 上游训练 / 推理文档 |
+| [EvalScope 文档](https://evalscope.readthedocs.io/zh-cn/latest/) | 上游评测文档 |
 
 仓库总览与开发者说明：[`rsi/README.md`](../../rsi/README.md)。

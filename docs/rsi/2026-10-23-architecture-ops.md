@@ -6,9 +6,16 @@
 
 ## 1. 系统定位
 
-RSI 是挂在 **本仓库 ms-swift 检出** 上的一层 Web 应用：
+RSI 是挂在 **本仓库 [ms-swift](https://github.com/modelscope/ms-swift) 检出** 上的一层 Web 应用（基于该开源项目，不修改其训练核心逻辑；评测走 [EvalScope](https://github.com/modelscope/evalscope/blob/main/README_zh.md)）：
 
-- **不修改** ms-swift 训练核心逻辑；训练 / 评测 / RL / 部署 / 导出通过子进程调用 `python -m swift.cli.main`（或 `RSI_SWIFT_BIN`）。
+| 上游 | 链接 |
+|------|------|
+| ms-swift 仓库 | https://github.com/modelscope/ms-swift |
+| ms-swift 文档 | https://swift.readthedocs.io/zh-cn/latest/ |
+| EvalScope 仓库 | https://github.com/modelscope/evalscope/blob/main/README_zh.md |
+| EvalScope 文档 | https://evalscope.readthedocs.io/zh-cn/latest/ |
+
+- 训练 / 评测 / RL / 部署 / 导出通过子进程调用 `python -m swift.cli.main`（或 `RSI_SWIFT_BIN`）。
 - UI 参数名与 Gradio Web-UI / CLI 对齐，便于对照文档与命令行。
 - 默认监听 `0.0.0.0:8418`；同进程可挂载原版 Gradio Web-UI 于 `/swift-ui/`（工作台页头不放入口，运维仍可直接访问）。
 - **当前内网实例**（仅这一台 GPU）：[http://10.164.162.4:8418/](http://10.164.162.4:8418/)

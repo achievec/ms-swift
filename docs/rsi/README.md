@@ -2,6 +2,13 @@
 
 当前平台（仅该 GPU）：[http://10.164.162.4:8418/](http://10.164.162.4:8418/)
 
+| 上游 | 链接 |
+|------|------|
+| ms-swift 仓库 | https://github.com/modelscope/ms-swift |
+| ms-swift 文档 | https://swift.readthedocs.io/zh-cn/latest/ |
+| EvalScope 仓库 | https://github.com/modelscope/evalscope/blob/main/README_zh.md |
+| EvalScope 文档 | https://evalscope.readthedocs.io/zh-cn/latest/ |
+
 | 文档 | 说明 |
 |------|------|
 | [2026-10-23-user-guide.md](2026-10-23-user-guide.md) | 功能地图与操作手册 |
