@@ -1,6 +1,6 @@
 # RSI 架构与部署运维（内部）
 
-面向维护「大模型微调工作台」的同学：代码怎么分层、进程怎么起停、状态落在哪、内网模型/数据怎么拉、出问题怎么查。用户操作说明见 [user-guide.md](user-guide.md)。开发者英文总览仍以 [`rsi/README.md`](../../rsi/README.md) 为准；本文用中文补齐部署运维视角。
+面向维护「大模型微调工作台」的同学：代码怎么分层、进程怎么起停、状态落在哪、内网模型/数据怎么拉、出问题怎么查。用户操作说明见 [2026-10-23-user-guide.md](2026-10-23-user-guide.md)。开发者英文总览仍以 [`rsi/README.md`](../../rsi/README.md) 为准；本文用中文补齐部署运维视角。
 
 产品对外名称：**大模型微调工作台**。代码与进程仍称 **RSI**（Recursive Self-Improvement 闭环 UI）。
 
@@ -259,7 +259,7 @@ rsi/scripts/sync-to-sankuai.sh --force-sankuai
 
 | 文档 | 用途 |
 |------|------|
-| [user-guide.md](user-guide.md) | 用户操作手册 / 功能地图 |
+| [2026-10-23-user-guide.md](2026-10-23-user-guide.md) | 用户操作手册 / 功能地图 |
 | [2026-10-22-multi-round-sft-rl.md](2026-10-22-multi-round-sft-rl.md) | 多轮权重传递 |
 | [eval-base-compare.md](eval-base-compare.md) | 基座与灵活对比 |
 | [export-result.md](export-result.md) | 导出结果 UX |

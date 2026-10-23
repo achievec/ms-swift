@@ -231,7 +231,7 @@ A. 删除会清实验目录下产物，上传文件一般仍保留在工作区 u
 
 | 文档 | 读者 | 内容 |
 |------|------|------|
-| [architecture-ops.md](architecture-ops.md) | 内部 | 架构、目录、环境变量、部署运维 |
+| [2026-10-23-architecture-ops.md](2026-10-23-architecture-ops.md) | 内部 | 架构、目录、环境变量、部署运维 |
 | [2026-10-22-multi-round-sft-rl.md](2026-10-22-multi-round-sft-rl.md) | 进阶用户 / 内部 | 多轮 SFT/RL 与 LoRA 传递 |
 | [eval-base-compare.md](eval-base-compare.md) | 用户 / 内部 | 基座对比与灵活对比 |
 | [export-result.md](export-result.md) | 用户 | 导出结果卡与跳转部署 |

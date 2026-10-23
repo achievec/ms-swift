@@ -2,8 +2,8 @@
 
 | 文档 | 受众 | 说明 |
 |------|------|------|
-| [user-guide.md](user-guide.md) | **平台用户** | 功能地图与操作手册 |
-| [architecture-ops.md](architecture-ops.md) | **内部** | 架构、部署、运维与排障 |
+| [2026-10-23-user-guide.md](2026-10-23-user-guide.md) | **平台用户** | 功能地图与操作手册 |
+| [2026-10-23-architecture-ops.md](2026-10-23-architecture-ops.md) | **内部** | 架构、部署、运维与排障 |
 | [2026-10-22-multi-round-sft-rl.md](2026-10-22-multi-round-sft-rl.md) | 进阶 / 内部 | 多轮 SFT·RL 与 LoRA 传递 |
 | [eval-base-compare.md](eval-base-compare.md) | 用户 / 内部 | 基座对比与报告对比 |
 | [export-result.md](export-result.md) | 用户 | 导出结果与跳转部署 |
