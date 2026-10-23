@@ -13,9 +13,6 @@ import json
 import re
 from pathlib import Path
 
-# Plain text / jsonl upload and validation ceiling. Archives use a higher
-# limit via RSI_UPLOAD_ARCHIVE_MAX_BYTES (see dataset_archive.archive_max_bytes).
-MAX_BYTES = 20 * 1024 * 1024
 ROLES = {'system', 'user', 'assistant', 'tool', 'tool_call'}
 PUBLIC_ID_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*(?:#[0-9]+)?$')
 
@@ -143,19 +140,6 @@ def validate_rows(rows: list) -> dict:
 
 
 def validate_text(text: str, filename: str = 'data.jsonl') -> dict:
-    if len(text.encode('utf-8')) > MAX_BYTES:
-        return {
-            'ok': False,
-            'num_rows': 0,
-            'formats': {},
-            'errors': [{
-                'row': 0,
-                'error': '文件超过 20MB'
-            }],
-            'error_count': 1,
-            'warnings': [],
-            'preview': [],
-        }
     try:
         rows = parse_rows(text, filename)
     except ValueError as exc:
@@ -193,20 +177,6 @@ def validate_file(path: Path) -> dict:
             'errors': [{
                 'row': 0,
                 'error': f'文件不存在：{path}'
-            }],
-            'error_count': 1,
-            'warnings': [],
-            'preview': [],
-            'dataset': str(path),
-        }
-    if path.stat().st_size > MAX_BYTES:
-        return {
-            'ok': False,
-            'num_rows': 0,
-            'formats': {},
-            'errors': [{
-                'row': 0,
-                'error': '文件超过 20MB'
             }],
             'error_count': 1,
             'warnings': [],

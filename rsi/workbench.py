@@ -15,7 +15,7 @@ from pathlib import Path
 
 from rsi.backends import swift_launch
 from rsi.commands import format_shell
-from rsi.dataset_validate import MAX_BYTES, parse_rows, validate_rows
+from rsi.dataset_validate import parse_rows, validate_rows
 from rsi.pipeline import PipelineError, _adapter_base_model, _is_adapter_checkpoint
 from rsi.serving import loopback
 
@@ -113,8 +113,6 @@ def score_row(row: dict) -> dict:
 
 
 def load_rows(text: str, filename: str = 'data.jsonl') -> tuple:
-    if len(text.encode('utf-8')) > MAX_BYTES:
-        raise PipelineError('文件超过 20MB')
     try:
         rows = parse_rows(text, filename)
     except ValueError as exc:
@@ -272,8 +270,6 @@ def latest_dataset(view: dict) -> dict:
     path = Path(found['path'])
     if not path.is_file():
         raise PipelineError(f'数据不是本地文件，无法在这里打开：{found["path"]}')
-    if path.stat().st_size > MAX_BYTES:
-        raise PipelineError('数据文件超过 20MB')
     text = path.read_text(encoding='utf-8')
     report = inspect_text(text, path.name)
     checkpoints = []
@@ -320,8 +316,6 @@ def read_owned_file(home: Path, raw: str) -> tuple:
         raise PipelineError('只能读取数据与运维页生成的文件')
     if not path.is_file():
         raise PipelineError('文件不存在')
-    if path.stat().st_size > MAX_BYTES:
-        raise PipelineError('文件超过 20MB')
     return path.read_text(encoding='utf-8'), path.name
 
 

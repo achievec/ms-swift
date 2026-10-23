@@ -1,6 +1,6 @@
 # RSI：基于 ms-swift 的闭环微调工作台
 
-在 ms-swift 之上提供可点选的递归自改进闭环（产品页名称：**大模型微调工作台**）：
+在 ms-swift 之上提供可点选的递归自改进闭环：
 
 **SFT → SFT 评测**。数据集设置在 SFT 阶段。SFT 评测通过后可进入在线 RL、开启下一轮，或完成实验；不通过则只能开启下一轮。RL 评测通过后可完成或开启下一轮；不通过只能开启下一轮。「完成」会把实验标为已结束，但不会锁死「开启下一轮」：仍可挑选检查点再开一轮。没有单独的全局停止动作。
 
@@ -68,7 +68,7 @@ pytest rsi/tests -q
 - Alpaca：`instruction` + `output`
 - `query` + `response`
 
-GRPO 可保留 `solution` 或 `answer`（含仅有用户轮的行）。公开数据集 id 在 mock 下只记录不下载；真跑 CLI 时由 ms-swift 解析。上传还支持 `.zip` / `.tar` / `.tar.gz` / `.tgz`：服务端解压到 `$RSI_HOME/uploads/<uuid>/`，把相对的 `images`/`videos`/`audios` 改成绝对路径，训练指向解析后的 jsonl。文本上传约 20MB；压缩包默认 500MB（`RSI_UPLOAD_ARCHIVE_MAX_BYTES`）。打包说明见 [`docs/rsi/dataset-archive-upload.md`](../docs/rsi/dataset-archive-upload.md)。样例：
+GRPO 可保留 `solution` 或 `answer`（含仅有用户轮的行）。公开数据集 id 在 mock 下只记录不下载；真跑 CLI 时由 ms-swift 解析。上传还支持 `.zip` / `.tar` / `.tar.gz` / `.tgz`：服务端解压到 `$RSI_HOME/uploads/<uuid>/`，把相对的 `images`/`videos`/`audios` 改成绝对路径，训练指向解析后的 jsonl。上传体积不设上限。打包说明见 [`docs/rsi/dataset-archive-upload.md`](../docs/rsi/dataset-archive-upload.md)。样例：
 
 - `rsi/examples/itops_mix.jsonl` — 6 条 IT 工单，messages + `solution`
 - `rsi/examples/itops_eval.jsonl` — 4 条留出工单

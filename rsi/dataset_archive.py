@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 import json
 import logging
-import os
 import tarfile
 import zipfile
 from pathlib import Path
@@ -22,21 +21,6 @@ ARCHIVE_SUFFIXES = ('.zip', '.tar.gz', '.tgz', '.tar')
 def is_archive_filename(filename: str) -> bool:
     name = (filename or '').lower()
     return name.endswith(ARCHIVE_SUFFIXES)
-
-
-def archive_max_bytes() -> int:
-    raw = os.environ.get('RSI_UPLOAD_ARCHIVE_MAX_BYTES', '').strip()
-    if raw.isdigit():
-        return int(raw)
-    return 500 * 1024 * 1024
-
-
-def text_upload_max_bytes() -> int:
-    raw = os.environ.get('RSI_UPLOAD_TEXT_MAX_BYTES', '').strip()
-    if raw.isdigit():
-        return int(raw)
-    from rsi.dataset_validate import MAX_BYTES
-    return MAX_BYTES
 
 
 def _is_within(root: Path, candidate: Path) -> bool:

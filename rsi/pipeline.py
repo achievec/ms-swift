@@ -41,11 +41,9 @@ from rsi.commands import (
 from rsi.llm_export_spec import CALIB_QUANT_METHODS, EXPORT_QUANT_KEYS, export_quant_available
 from rsi.llm_infer_spec import chat_request_body, cuda_visible_devices, template_default_system
 from rsi.dataset_archive import (
-    archive_max_bytes,
     extract_archive,
     is_archive_filename,
     process_extracted_dataset,
-    text_upload_max_bytes,
 )
 from rsi.dataset_validate import validate_file, validate_public_id
 from rsi.flow import ACTION_LABELS, assemble_flow, blocked_message, decision_actions, stage_unlocked
@@ -607,9 +605,6 @@ class Pipeline:
     def save_upload(self, filename: str, data: bytes) -> dict:
         name = filename or 'data.jsonl'
         if is_archive_filename(name):
-            limit = archive_max_bytes()
-            if len(data) > limit:
-                raise PipelineError(f'压缩包超过 {limit // (1024 * 1024)}MB')
             dest_dir = self.home / 'uploads' / uuid.uuid4().hex
             try:
                 extract_archive(name, data, dest_dir)
@@ -628,9 +623,6 @@ class Pipeline:
                 report['warnings'] = warnings
             return {'path': str(resolved), 'filename': name, 'validation': report}
 
-        limit = text_upload_max_bytes()
-        if len(data) > limit:
-            raise PipelineError(f'文件超过 {limit // (1024 * 1024)}MB')
         suffix = Path(name).suffix.lower()
         if suffix not in {'.jsonl', '.json', '.txt'}:
             suffix = '.jsonl'
