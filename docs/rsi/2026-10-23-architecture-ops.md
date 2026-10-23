@@ -1,8 +1,6 @@
-# RSI 架构与部署运维（内部）
+# RSI 架构与部署运维
 
-面向维护「大模型微调工作台」的同学：代码怎么分层、进程怎么起停、状态落在哪、内网模型/数据怎么拉、出问题怎么查。用户操作说明见 [2026-10-23-user-guide.md](2026-10-23-user-guide.md)。开发者英文总览仍以 [`rsi/README.md`](../../rsi/README.md) 为准；本文用中文补齐部署运维视角。
-
-产品对外名称：**大模型微调工作台**。代码与进程仍称 **RSI**（Recursive Self-Improvement 闭环 UI）。
+面向维护「大模型微调工作台」的同学：代码怎么分层、进程怎么起停、状态落在哪、内网模型/数据怎么拉、出问题怎么查。用户操作说明见 [2026-10-23-user-guide.md](2026-10-23-user-guide.md)。
 
 ---
 
@@ -13,6 +11,7 @@ RSI 是挂在 **本仓库 ms-swift 检出** 上的一层 Web 应用：
 - **不修改** ms-swift 训练核心逻辑；训练 / 评测 / RL / 部署 / 导出通过子进程调用 `python -m swift.cli.main`（或 `RSI_SWIFT_BIN`）。
 - UI 参数名与 Gradio Web-UI / CLI 对齐，便于对照文档与命令行。
 - 默认监听 `0.0.0.0:8418`；同进程可挂载原版 Gradio Web-UI 于 `/swift-ui/`（工作台页头不放入口，运维仍可直接访问）。
+- **当前内网实例**（仅这一台 GPU）：[http://10.164.162.4:8418/](http://10.164.162.4:8418/)
 
 ```mermaid
 flowchart TB
@@ -70,7 +69,7 @@ flowchart TB
 
 ## 3. 运行时数据面
 
-### 3.1 `RSI_HOME`（实验工作区）
+### 3.1 `RSI_HOME`
 
 解析顺序（`resolve_rsi_home`）：
 
@@ -123,7 +122,7 @@ PID：`rsi/.rsi.pid`。每次 `start` 成功会重建进程日志文件。
 
 ---
 
-## 4. 主链路（与代码对应）
+## 4. 主链路
 
 一轮：`sft` → `sft_eval` →（可选）`rl` → `rl_eval` → `decide` → `promote` 或 `finish`。
 
@@ -136,7 +135,7 @@ PID：`rsi/.rsi.pid`。每次 `start` 成功会重建进程日志文件。
 
 ---
 
-## 5. HTTP 面（运维常看）
+## 5. HTTP 面
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -155,7 +154,7 @@ PID：`rsi/.rsi.pid`。每次 `start` 成功会重建进程日志文件。
 
 ## 6. 部署与启停
 
-### 6.1 本机 / 训练机（推荐）
+### 6.1 本机 / 训练机
 
 仓库根目录：
 
@@ -170,7 +169,7 @@ pip install -r rsi/requirements.txt
 ./run.sh restart
 ```
 
-- 默认：`http://127.0.0.1:8418/`（监听 `0.0.0.0:8418`）。  
+- 默认监听 `0.0.0.0:8418`；当前已部署：[http://10.164.162.4:8418/](http://10.164.162.4:8418/)（仅该 GPU）。  
 - 覆盖：`RSI_PORT` / `WEBUI_PORT`，`RSI_HOST` / `WEBUI_SERVER`。  
 - Linux：优先 `fetch.yaml` 的 `train_python` + `conda activate`；macOS：`rsi/.venv`。  
 - 前台调试：`python -m rsi`。
@@ -186,7 +185,7 @@ pip install -r rsi/requirements.txt
 
 无 GPU 点通或跑 pytest：设 `RSI_BACKEND=mock`。
 
-### 6.3 hope（内网）
+### 6.3 hope
 
 - `fetch.yaml` 默认 `model_source: hope`。  
 - Linux 缺 `hope` CLI 时 `./run.sh` **直接失败**并打印安装提示；macOS 默认跳过检查。  
@@ -194,19 +193,7 @@ pip install -r rsi/requirements.txt
 - 真正 clone 前才 `hope login`（大象确认）；成功前阶段保持同步中。  
 - 建议版本：hope `3.6.6`。
 
-### 6.4 代码同步（GitHub ↔ 内网）
-
-分支名以脚本内常量为准（当前：`cursor/rsi-diag-card-ui-20261019-4ed3`）：
-
-```bash
-rsi/scripts/sync-to-sankuai.sh
-# 确认覆盖内网非快进时：
-rsi/scripts/sync-to-sankuai.sh --force-sankuai
-```
-
-工作区有未提交改动会拒绝执行。细节见脚本头注释与 `rsi/README.md`「内网部署」。
-
-### 6.5 改完配置 / 静态资源
+### 6.4 改完配置 / 静态资源
 
 | 变更 | 动作 |
 |------|------|
@@ -216,7 +203,7 @@ rsi/scripts/sync-to-sankuai.sh --force-sankuai
 
 ---
 
-## 7. 硬件预设（运维沟通用）
+## 7. 硬件预设
 
 `rsi/configs/a100_80g.yaml` 面向 **1× A100 80GB**：
 
@@ -262,8 +249,7 @@ rsi/scripts/sync-to-sankuai.sh --force-sankuai
 | [2026-10-23-user-guide.md](2026-10-23-user-guide.md) | 用户操作手册 / 功能地图 |
 | [2026-10-22-multi-round-sft-rl.md](2026-10-22-multi-round-sft-rl.md) | 多轮权重传递 |
 | [eval-base-compare.md](eval-base-compare.md) | 基座与灵活对比 |
-| [export-result.md](export-result.md) | 导出结果 UX |
-| [dataset-archive-upload.md](dataset-archive-upload.md) | 压缩包上传 |
+| [2026-10-23-user-guide.md](2026-10-23-user-guide.md) §5 | 数据格式与压缩包上传 |
 | [rl-grpo-speedup.md](rl-grpo-speedup.md) | GRPO 加速笔记 |
 | [api-schema-performance.md](api-schema-performance.md) | schema 性能 |
-| [`rsi/README.md`](../../rsi/README.md) | 模块总览与英文路径说明 |
+| [`rsi/README.md`](../../rsi/README.md) | 模块总览 |

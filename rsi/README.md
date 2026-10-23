@@ -40,7 +40,7 @@ pip install -r rsi/requirements.txt
 
 不带参数的 `./run.sh` 等于重启界面。Linux 上若存在 `rsi/configs/fetch.yaml`，会激活其中的 `conda_env`（`model-train`），并用 `train_python` 启动 RSI，从而 Gradio 来自 conda 环境而非 `rsi/.venv`。`RSI_CONDA_ENV` 可覆盖环境名；设为空字符串则跳过激活。`RSI_TRAIN_PYTHON` 可覆盖解释器。macOS 仍用 `rsi/.venv`。`./run.sh start` / `stop` / `restart` 含义如字面。进程号在 `rsi/.rsi.pid`，进程日志在 `rsi/.rsi.log`（每次 `start` 成功前会删掉重建；含启动与 hope clone）。每个实验自己的训练/评测日志在 `RSI_HOME/runs/<run_id>/round_<n>/<stage>/swift.log`（评测在该阶段下的 `eval_output/swift.log`；部署用 `serve/deploy.log`）。进程日志里通常只有一行指针指向上述文件。需要前台跑服务时仍可用 `python -m rsi`。
 
-服务默认监听 `0.0.0.0:8418`。本机打开 http://127.0.0.1:8418
+服务默认监听 `0.0.0.0:8418`。当前内网 GPU 机：[http://10.164.162.4:8418/](http://10.164.162.4:8418/)（仅部署在这一台）。本机调试可打开 http://127.0.0.1:8418
 
 然后：
 
@@ -68,7 +68,7 @@ pytest rsi/tests -q
 - Alpaca：`instruction` + `output`
 - `query` + `response`
 
-GRPO 可保留 `solution` 或 `answer`（含仅有用户轮的行）。公开数据集 id 在 mock 下只记录不下载；真跑 CLI 时由 ms-swift 解析。上传还支持 `.zip` / `.tar` / `.tar.gz` / `.tgz`：服务端解压到 `$RSI_HOME/uploads/<uuid>/`，把相对的 `images`/`videos`/`audios` 改成绝对路径，训练指向解析后的 jsonl。上传体积不设上限。打包说明见 [`docs/rsi/dataset-archive-upload.md`](../docs/rsi/dataset-archive-upload.md)。样例：
+GRPO 可保留 `solution` 或 `answer`（含仅有用户轮的行）。公开数据集 id 在 mock 下只记录不下载；真跑 CLI 时由 ms-swift 解析。上传还支持 `.zip` / `.tar` / `.tar.gz` / `.tgz`：服务端解压到 `$RSI_HOME/uploads/<uuid>/`，把相对的 `images`/`videos`/`audios` 改成绝对路径，训练指向解析后的 jsonl。上传体积不设上限。格式与打包说明见 [`docs/rsi/2026-10-23-user-guide.md`](../docs/rsi/2026-10-23-user-guide.md)「5. 数据格式」。样例：
 
 - `rsi/examples/itops_mix.jsonl` — 6 条 IT 工单，messages + `solution`
 - `rsi/examples/itops_eval.jsonl` — 4 条留出工单

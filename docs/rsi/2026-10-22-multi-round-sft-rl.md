@@ -1,7 +1,7 @@
 # RSI 多轮训练：SFT / RL 的 LoRA 与 checkpoint 如何传递
 
 > 基于当前代码路径整理（`rsi/flow.py`、`rsi/pipeline.py`、`rsi/store.py`、`rsi/tests/test_adapter_checkpoint.py` 等）。  
-> 相关总览见 [rsi/README.md](../../rsi/README.md)；评测对比见 [eval-base-compare.md](eval-base-compare.md)；导出见 [export-result.md](export-result.md)。
+> 相关总览见 [rsi/README.md](../../rsi/README.md)；评测对比见 [eval-base-compare.md](eval-base-compare.md)；导出见 [2026-10-23-user-guide.md](2026-10-23-user-guide.md)「模型导出」。
 
 ## 概述：多轮在 RSI 里指什么
 
@@ -156,7 +156,7 @@ Round 2:  round.base_model=R1
 3. **「晋级 RL 后下一轮直接从 RL 阶段开始」** — 不会；一律回到 SFT。
 4. **「`round.base_model` 等于实验 hub id」** — 第 2 轮起常常是 **checkpoint 目录**；真正发给 swift 的底座由 `_place_trained_checkpoint` 解析。
 5. **「选完成就不能再开下一轮」** — 可以；完成后再点「开启下一轮」会 `reopen` 本轮再选出检查点并开新轮。
-6. **自动 merge** — 轮间不 merge；需要合并时用「模型导出」`swift export --merge_lora`（见 [export-result.md](export-result.md)）。
+6. **自动 merge** — 轮间不 merge；需要合并时用「模型导出」`swift export --merge_lora`（见 [2026-10-23-user-guide.md](2026-10-23-user-guide.md)「模型导出」）。
 7. **手动改 adapters** — 预览/运行前仍可改表单；默认填充逻辑如上，以最终提交的 params 为准。
 
 ## 相关代码入口（简短）

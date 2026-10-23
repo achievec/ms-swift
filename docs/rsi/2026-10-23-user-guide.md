@@ -1,6 +1,8 @@
 # 大模型微调工作台 · 功能地图与操作手册
 
-打开页面后看到的产品名是 **大模型微调工作台**（下文简称「工作台」）。默认访问地址由运维提供（常见本机为 `http://127.0.0.1:8418/`）。
+打开页面后看到的产品名是 **大模型微调工作台**。
+
+当前平台地址（仅部署在该 GPU 机）：[http://10.164.162.4:8418/](http://10.164.162.4:8418/)
 
 ---
 
@@ -148,14 +150,14 @@ flowchart TB
 - 结果区常见内容：指标摘要、基座对比表、打开报告、对比。  
 - 完整报告在浏览器打开；图表脚本由工作台本地静态资源提供，一般不依赖外网 CDN。
 
-### 4.4 RL（GRPO）
+### 4.4 RL
 
 - 仅当 SFT 评测 **通过** 时解锁。  
 - 默认使用本轮 SFT checkpoint（LoRA 走 adapters）。  
 - 奖励与生成相关参数以表单为准；高级项可进更多参数。  
 - 运行中同样可用「停止」。
 
-### 4.5 开启下一轮（promote）
+### 4.5 开启下一轮
 
 - 三选一权重起点，**不会**把多轮 LoRA 自动叠成多份 `--adapters`；下一轮只带你选中的那一份。  
 - 成功后本轮的「RL / 开启下一轮 / 完成」条会收起；可用「前往第 N 轮」或「再次开启下一轮」。  
@@ -172,9 +174,12 @@ flowchart TB
 ### 4.7 模型导出
 
 - 预览命令 → 开始导出 → 运行时看日志。  
-- 结束后保留「最近一次导出」状态卡与本轮若干次路径记录。  
-- 成功后「用该模型部署推理」：跳到推理服务，`--model` 填 `output_dir`，并清空 adapters。  
-- 详见 [export-result.md](export-result.md)。
+- 导出结束后，「模型导出 → 运行时」会保留**最近一次导出**状态卡：
+  - 成功 / 失败徽章、exit code、结束时间
+  - `output_dir`（合并或量化产物路径）
+  - 失败时附带日志末尾错误片段
+  - 本轮最近若干次导出记录（路径 + 时间 + 状态）
+- 成功后可点**用该模型部署推理**：跳到「推理服务」，把 `--model` 预填为该 `output_dir`，并清空 `--adapters`（已是完整权重，无需 LoRA）。再点页面上的部署按钮即可。
 
 ### 4.8 实验记录
 
@@ -183,18 +188,96 @@ flowchart TB
 
 ---
 
-## 5. 数据格式（上传 / 本地文件）
+## 5. 数据格式
 
-工作台按 ms-swift 可接受的对话格式校验，常见形状：
+SFT / RL 的「数据集设置」支持三种来源：
 
-- `messages`：`role` + `content`  
-- ShareGPT：`conversation` 的 `human` / `assistant`  
-- Alpaca：`instruction` + `output`  
-- `query` + `response`  
+| 来源 | 用法 |
+|------|------|
+| 公开数据集 | 从平台列表选 id（可多选）。内网首次使用可能先「同步中」拉到本地，再自动开训。 |
+| 上传文件 | 浏览器上传；支持文本与压缩包，见下文。 |
+| 服务器本地路径 | 填 GPU 机上已有绝对路径（如仓库内 `rsi/examples/itops_mix.jsonl`）。 |
 
-GRPO 可保留 `solution` / `answer`。校验失败时按页面提示改数据后再跑。
+上传 / 本地文件在点「校验格式」或「运行本阶段」时，按 ms-swift 可接受的对话形状检查。上传体积不设上限。
 
-压缩包与体积限制说明见 [dataset-archive-upload.md](dataset-archive-upload.md)。
+### 5.1 支持的文件类型
+
+- 文本：`.jsonl`（推荐，一行一条样本）、`.json`（单个对象或对象数组）、`.txt`（按 jsonl 行解析）
+- 压缩包：`.zip`、`.tar`、`.tar.gz`、`.tgz`（含图片等多模态时用；见 5.4）
+
+### 5.2 四种样本形状
+
+每条样本必须是一个 JSON 对象。推荐优先用 **messages**。
+
+**messages（标准多轮）**
+
+`role` 可为 `system` / `user` / `assistant` / `tool` / `tool_call`；一般要有 `content`（assistant 也可只有 `tool_calls`）。SFT 通常需要至少一条带内容的 `assistant`。
+
+```json
+{"messages":[{"role":"system","content":"你是企业内部 IT 运维助手。"},{"role":"user","content":"VPN 一直停在正在连接"},{"role":"assistant","content":"判断：……\n步骤：1. ……"}]}
+```
+
+**ShareGPT**
+
+```json
+{"conversation":[{"human":"用户问题","assistant":"模型回答"}]}
+```
+
+**Alpaca**
+
+```json
+{"instruction":"任务说明","output":"期望回答"}
+```
+
+也可用 `response` 代替 `output`。
+
+**query / response**
+
+```json
+{"query":"用户问题","response":"期望回答"}
+```
+
+### 5.3 GRPO 用的 solution / answer
+
+做在线 RL（GRPO）时，可在样本上保留 `solution` 或 `answer`，供奖励函数对照。允许只有 user、没有 assistant 的 messages，但此时必须带 `solution` 或 `answer`，否则校验会当成「仅有 prompt」并告警。
+
+```json
+{"messages":[{"role":"user","content":"工单：……"}],"solution":"关键要点|关键词"}
+```
+
+平台示例：`rsi/examples/itops_mix.jsonl`（训练）、`rsi/examples/itops_eval.jsonl`（留出评测）、`rsi/examples/itops_reward.py`（GRPO 奖励插件）。
+
+### 5.4 多模态与压缩包
+
+文本里用相对路径引用图片 / 视频 / 音频时，请打成压缩包上传。推荐结构：
+
+```text
+my_dataset.zip
+├── data.jsonl          # 或 train.jsonl；多个 jsonl 时优先这两个名字，否则取体积最大的
+└── images/
+    └── a.jpg
+```
+
+jsonl 示例：
+
+```json
+{"messages":[{"role":"user","content":"<image>描述图片"},{"role":"assistant","content":"..."}],"images":["images/a.jpg"]}
+```
+
+- 媒体字段：`images` / `videos` / `audios`，或单数 `image` / `video` / `audio`；值为字符串、字符串列表，或嵌套列表（如视频帧）。
+- 消息里的 `<image>` 等占位符保持不动。
+- 已是绝对路径，或 `http://` / `https://` / `data:` URI，**不会**被改写。
+- 服务端会把相对路径改成解压目录下的绝对路径，再交给训练；产物在工作区 `uploads/<uuid>/`。
+- 若改写后文件不存在，校验会带警告，但不会仅因此失败。
+- 解压会拒绝路径穿越（`../`）、绝对路径成员、以及指向解压目录外的符号链接。
+
+### 5.5 校验与常见失败
+
+1. 在 SFT 表单点「校验格式」，看行数、识别到的格式、错误行号。  
+2. 常见错误：不是 JSON 对象、`messages` 为空、`role` 非法、ShareGPT 缺 `human`/`assistant`、四种形状都不匹配。  
+3. 全部样本都没有 assistant / solution 时会告警（只适合「仅 prompt」场景，一般 SFT 不够用）。  
+4. 公开数据集不在本地校验行格式；由 ms-swift 在真跑时解析。  
+5. 改完数据后重新上传或改路径，再校验一次再开训。
 
 ---
 
@@ -227,9 +310,6 @@ A. 取决于你在「开启下一轮」里选的权重。选本轮 SFT/RL 时，
 **Q. 公开数据集一直「同步中」？**  
 A. 内网首次拉取可能较久；看本阶段日志进度。已就绪的本地缓存不会重复拉。仍失败时联系运维检查模型/数据源登录与磁盘。
 
-**Q. 报告打不开或图表空白？**  
-A. 刷新页面；确认工作台服务正常。图表依赖服务同源的 `/static/plotly-…` 静态文件。
-
 **Q. 训练很慢 / 显存不够？**  
 A. 先减小 batch、序列长度、生成条数；单卡 7B 优先 LoRA，避免全量微调。硬件预设说明可问运维或看内部架构文档。
 
@@ -238,16 +318,14 @@ A. 删除会清实验目录下产物，上传文件一般仍保留在工作区 u
 
 ---
 
-## 8. 相关文档（同目录）
+## 8. 相关文档
 
-| 文档 | 读者 | 内容 |
-|------|------|------|
-| [2026-10-23-architecture-ops.md](2026-10-23-architecture-ops.md) | 内部 | 架构、目录、环境变量、部署运维 |
-| [2026-10-22-multi-round-sft-rl.md](2026-10-22-multi-round-sft-rl.md) | 进阶用户 / 内部 | 多轮 SFT/RL 与 LoRA 传递 |
-| [eval-base-compare.md](eval-base-compare.md) | 用户 / 内部 | 基座对比与灵活对比 |
-| [export-result.md](export-result.md) | 用户 | 导出结果卡与跳转部署 |
-| [dataset-archive-upload.md](dataset-archive-upload.md) | 用户 | 压缩包数据集上传 |
-| [rl-grpo-speedup.md](rl-grpo-speedup.md) | 进阶 | GRPO 加速相关 |
-| [api-schema-performance.md](api-schema-performance.md) | 内部 | Schema 接口性能 |
+| 文档 | 内容 |
+|------|------|
+| [2026-10-23-architecture-ops.md](2026-10-23-architecture-ops.md) | 架构、目录、环境变量、部署运维 |
+| [2026-10-22-multi-round-sft-rl.md](2026-10-22-multi-round-sft-rl.md) | 多轮 SFT/RL 与 LoRA 传递 |
+| [eval-base-compare.md](eval-base-compare.md) | 基座对比与灵活对比 |
+| [rl-grpo-speedup.md](rl-grpo-speedup.md) | GRPO 加速相关 |
+| [api-schema-performance.md](api-schema-performance.md) | Schema 接口性能 |
 
 仓库总览与开发者说明：[`rsi/README.md`](../../rsi/README.md)。
