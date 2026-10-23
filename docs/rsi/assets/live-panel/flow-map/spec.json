@@ -1,0 +1,119 @@
+{
+  "theme": "light-pastel",
+  "canvas": "4:5",
+  "lang": "zh",
+  "title": "大模型微调工作台 · 实验主链路",
+  "titlebar": "~/rsi/user-guide — flow-map",
+  "rows": [
+    [
+      {
+        "name": "新建实验",
+        "lines": ["选底座模型", "开第 1 轮"],
+        "color": "cy",
+        "lane": {
+          "busy": "创建中",
+          "done": ["已开轮"],
+          "log": ["新建实验", "锁定 model_type"]
+        }
+      }
+    ],
+    [
+      {
+        "name": "SFT 微调",
+        "lines": ["配数据集", "产出 LoRA"],
+        "color": "bl",
+        "lane": {
+          "busy": "训练中",
+          "done": ["exit 0"],
+          "log": ["swift sft", "写 checkpoint"]
+        }
+      }
+    ],
+    [
+      {
+        "name": "SFT 评测",
+        "lines": ["留出集闸门", "可对比基座"],
+        "color": "gr",
+        "lane": {
+          "busy": "评测中",
+          "done": ["通过", "未通过"],
+          "log": ["swift eval", "写报告 HTML"]
+        }
+      }
+    ],
+    [
+      {
+        "name": "决定",
+        "lines": ["通过→RL/完成", "不通过→下一轮"],
+        "color": "pu"
+      }
+    ],
+    [
+      {
+        "name": "RL · GRPO",
+        "lines": ["可选在线 RL", "沿用 SFT 权重"],
+        "color": "ye",
+        "lane": {
+          "busy": "RL 中",
+          "done": ["exit 0"],
+          "log": ["swift rlhf", "GRPO 一轮"]
+        }
+      },
+      {
+        "name": "RL 评测",
+        "lines": ["再过闸门", "对比报告"],
+        "color": "ye",
+        "lane": {
+          "busy": "评测中",
+          "done": ["通过", "未通过"],
+          "log": ["swift eval", "更新指标"]
+        }
+      }
+    ],
+    [
+      {
+        "name": "开启下一轮",
+        "lines": ["选权重起点", "回到 SFT"],
+        "color": "cy",
+        "lane": {
+          "busy": "晋级中",
+          "done": ["已开新轮"],
+          "log": ["promote", "close_round"]
+        }
+      }
+    ]
+  ],
+  "rail": {
+    "name": "旁路能力",
+    "sub": "随时可用",
+    "side": "right",
+    "items": [
+      {
+        "name": "推理服务",
+        "adv": ["» OpenAI 兼容", "» 页内对话"],
+        "row": 1
+      },
+      {
+        "name": "模型导出",
+        "adv": ["» 合并权重", "» 一键部署"],
+        "row": 2
+      },
+      {
+        "name": "对比报告",
+        "adv": ["» 跨轮次挑", "» 指标对照表"],
+        "row": 3
+      },
+      {
+        "name": "实验记录",
+        "adv": ["» 状态/命令", "» 日志入口"],
+        "row": 4
+      }
+    ]
+  },
+  "counters": [
+    {"id": "rounds", "label": "轮次", "start": 1, "rate": 0.15}
+  ],
+  "log": {"title": "流程日志", "rows": 3},
+  "note": "动图为示意 · 非真实实验数据",
+  "credit": "流程来自 docs/rsi/2026-10-23-user-guide.md · live-panel · illustrative"
+}

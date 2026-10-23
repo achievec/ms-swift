@@ -37,6 +37,12 @@ flowchart TB
   pipeline --> disk
 ```
 
+**动态示意**（浏览器打开可循环播放；GitHub 上 HTML 内嵌通常无效，请本地下载后打开）：
+
+[打开 live-panel HTML](assets/live-panel/architecture/architecture.html) · [mp4](assets/live-panel/architecture/architecture.mp4)
+
+![运行时分层 live-panel 预览](assets/live-panel/architecture/preview.png)
+
 ---
 
 ## 2. 代码与职责

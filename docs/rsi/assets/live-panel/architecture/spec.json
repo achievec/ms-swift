@@ -1,0 +1,90 @@
+{
+  "theme": "terminal-dark",
+  "canvas": "4:5",
+  "lang": "zh",
+  "title": "工作台 · 运行时分层",
+  "titlebar": "~/rsi — architecture",
+  "rows": [
+    [
+      {
+        "name": "浏览器",
+        "lines": ["打开工作台", "报告 / 对话"],
+        "color": "cy",
+        "lane": {
+          "busy": "请求中",
+          "done": ["200 OK"],
+          "log": ["打开 /", "打开评测报告"]
+        }
+      }
+    ],
+    [
+      {
+        "name": "FastAPI",
+        "lines": ["rsi/app.py", "路由 + 静态"],
+        "color": "bl",
+        "lane": {
+          "busy": "处理",
+          "done": ["已响应"],
+          "log": ["GET /api/runs", "POST sft/run"]
+        }
+      },
+      {
+        "name": "静态前端",
+        "lines": ["rsi/static", "本地 Plotly"],
+        "color": "pu"
+      }
+    ],
+    [
+      {
+        "name": "Pipeline",
+        "lines": ["阶段闸门", "组 swift 命令"],
+        "color": "gr",
+        "lane": {
+          "busy": "编排",
+          "done": ["已下发"],
+          "log": ["解锁评测", "decide→promote"]
+        }
+      }
+    ],
+    [
+      {
+        "name": "Store",
+        "lines": ["SQLite", "RSI_HOME"],
+        "color": "ye"
+      },
+      {
+        "name": "model_fetch",
+        "lines": ["hope / 本地"],
+        "color": "ye",
+        "lane": {
+          "busy": "同步中",
+          "done": ["就绪"],
+          "log": ["hope clone", "数据集就绪"]
+        }
+      },
+      {
+        "name": "Backend",
+        "lines": ["swift / mock"],
+        "color": "ye",
+        "lane": {
+          "busy": "训练中",
+          "done": ["exit 0"],
+          "log": ["swift sft", "写 checkpoint"]
+        }
+      }
+    ],
+    [
+      {
+        "name": "磁盘产物",
+        "lines": ["ckpt · logs · uploads"],
+        "color": "cy"
+      }
+    ]
+  ],
+  "counters": [
+    {"id": "reqs", "label": "reqs", "start": 120, "rate": 3}
+  ],
+  "log": {"title": "log", "rows": 3},
+  "note": "数字为示意",
+  "credit": "RSI 架构 · docs/rsi/2026-10-23-architecture-ops.md · live-panel · illustrative"
+}

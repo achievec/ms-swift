@@ -38,6 +38,12 @@ flowchart LR
   G -.-> K
 ```
 
+**动态示意**（浏览器打开可循环播放；GitHub 上 HTML 内嵌通常无效，请本地下载后打开）：
+
+[打开 live-panel HTML](assets/live-panel/flow-map/flow-map.html) · [mp4](assets/live-panel/flow-map/flow-map.mp4)
+
+![实验主链路 live-panel 预览](assets/live-panel/flow-map/preview.png)
+
 | 能力 | 你在页面上看到的入口 | 一句话 |
 |------|----------------------|--------|
 | 新建 / 管理实验 | 左侧列表、「新建实验」 | 一次实验 = 选定底座模型 + 场景说明，可多轮迭代 |
