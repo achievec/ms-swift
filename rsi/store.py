@@ -229,6 +229,8 @@ class Store:
         """Runs newest first, each with a lightweight ``list_status``.
 
         Job rows are id/stage/status only — step logs stay out of ``/api/runs``.
+        Also marks ``deployable`` when an active SFT/RL checkpoint path exists,
+        so the experiment table can offer a deploy shortcut without loading a view.
         """
         stages = tuple(LIST_JOB_STAGES)
         marks = ','.join('?' for _ in stages)
@@ -245,12 +247,31 @@ class Store:
                     'SELECT rounds.run_id AS run_id, rounds.status AS status FROM rounds '
                     'JOIN runs ON runs.id = rounds.run_id AND runs.round_index = rounds.round_index').fetchall()
             }
+            ckpt_rows = [
+                dict(row) for row in conn.execute(
+                    "SELECT run_id, kind FROM checkpoints "
+                    "WHERE active=1 AND path IS NOT NULL AND TRIM(path) != '' "
+                    "AND kind IN ('sft', 'rl')"
+                ).fetchall()
+            ]
         grouped: dict = {}
         for step in steps:
             grouped.setdefault(step['run_id'], []).append(step)
+        deployable_kinds: dict = {}
+        for row in ckpt_rows:
+            deployable_kinds.setdefault(row['run_id'], set()).add(row['kind'])
         for run in runs:
             run['list_status'] = experiment_list_status(
                 run, grouped.get(run['id'], []), round_status.get(run['id']))
+            kinds = deployable_kinds.get(run['id']) or set()
+            run['deployable'] = bool(kinds)
+            # Prefer RL when both exist — that is usually the latest trained weight.
+            if 'rl' in kinds:
+                run['deploy_kind'] = 'rl'
+            elif 'sft' in kinds:
+                run['deploy_kind'] = 'sft'
+            else:
+                run['deploy_kind'] = ''
         return runs
 
     def delete_run(self, run_id) -> bool:

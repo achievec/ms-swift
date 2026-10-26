@@ -2,6 +2,9 @@ const state = {
   schema: null,
   runs: [],
   view: null,
+  // Master–detail: list = experiment table; workspace = open run.
+  screen: 'list',
+  runFilter: '',
   stage: 'sft',
   tab: 'flow',
   round: null,
@@ -524,6 +527,7 @@ function listStatusLabel(code) {
 function runListFingerprint(runs) {
   return (runs || []).map((run) => [
     run.id, run.name, run.round_index, run.current_stage, run.status, listStatusOf(run),
+    run.deployable ? '1' : '0', run.deploy_kind || '',
   ].join('\t')).join('\n');
 }
 
@@ -597,28 +601,116 @@ async function refreshRuns(selectId) {
   }
 }
 
+function filteredRuns() {
+  const q = String(state.runFilter || '').trim().toLowerCase();
+  if (!q) return state.runs || [];
+  return (state.runs || []).filter((run) => {
+    const hay = [run.name, run.scenario, run.base_model, run.id, run.current_stage]
+      .map((v) => String(v || '').toLowerCase())
+      .join(' ');
+    return hay.includes(q);
+  });
+}
+
+function syncScreenAttr() {
+  document.body.dataset.screen = state.screen === 'workspace' ? 'workspace' : 'list';
+  const nav = document.getElementById('nav-runs');
+  if (nav) nav.classList.toggle('active', state.screen !== 'workspace');
+}
+
 function renderRuns() {
-  const root = document.getElementById('run-list');
-  if (!state.runs.length) {
-    root.innerHTML = '<p class="muted">还没有实验。</p>';
+  // Table lives inside #main when on list screen; partial refresh keeps toolbar state.
+  if (state.screen !== 'list') return;
+  const tbody = document.querySelector('[data-runs-tbody]');
+  if (!tbody) {
+    render();
     return;
   }
-  root.innerHTML = state.runs.map((run) => {
+  const rows = filteredRuns();
+  const meta = document.querySelector('[data-runs-meta]');
+  if (meta) {
+    meta.textContent = rows.length === (state.runs || []).length
+      ? `共 ${rows.length} 个实验`
+      : `显示 ${rows.length} / ${state.runs.length} 个实验`;
+  }
+  if (!state.runs.length) {
+    tbody.innerHTML = `<tr class="runs-empty-row"><td colspan="7">
+      <div class="runs-empty">
+        <p>还没有实验。</p>
+        <button type="button" class="primary" id="new-run">新建实验</button>
+      </div>
+    </td></tr>`;
+    return;
+  }
+  if (!rows.length) {
+    tbody.innerHTML = `<tr class="runs-empty-row"><td colspan="7"><p class="muted runs-empty">没有匹配「${escapeHtml(state.runFilter)}」的实验。</p></td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((run) => {
     const code = listStatusOf(run);
-    return `
-    <div class="run-card ${state.view && state.view.run.id === run.id ? 'active' : ''}">
-      <button type="button" class="run-open" data-run="${run.id}">
-        <b>${escapeHtml(run.name)}</b>
-        <span class="run-meta">
-          <small>第 ${run.round_index} 轮 · ${escapeHtml(labelOf(run.current_stage))}</small>
-          <span class="badge run-list-status ${escapeHtml(code)}">${escapeHtml(listStatusLabel(code))}</span>
-        </span>
-      </button>
-      <button type="button" class="run-delete" data-delete-run="${run.id}" title="删除实验" aria-label="删除 ${escapeHtml(run.name)}">
-        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M6.2 2.2h3.6l.4.8H13v1.3H3V3h2.8l.4-.8zM4.2 5.2h7.6l-.5 8.1a1 1 0 0 1-1 .9H5.7a1 1 0 0 1-1-.9l-.5-8.1z"/></svg>
-      </button>
-    </div>`;
+    const updated = formatShanghai(run.updated_at || run.created_at || '');
+    const deployable = Boolean(run.deployable);
+    const deployKind = run.deploy_kind === 'rl' ? 'RL' : (run.deploy_kind === 'sft' ? 'SFT' : '');
+    const statusBits = [`<span class="badge run-list-status ${escapeHtml(code)}">${escapeHtml(listStatusLabel(code))}</span>`];
+    if (deployable) {
+      statusBits.push(`<span class="badge deployable" title="有可用 ${escapeHtml(deployKind || '')} checkpoint">可部署</span>`);
+    }
+    const deployBtn = deployable
+      ? `<button type="button" class="ghost compact" data-open-serve="${escapeHtml(run.id)}" aria-label="部署 ${escapeHtml(run.name)}">部署</button>`
+      : '';
+    return `<tr data-run-row="${escapeHtml(run.id)}">
+      <td class="col-name">
+        <button type="button" class="linkish" data-run="${escapeHtml(run.id)}">${escapeHtml(run.name)}</button>
+        <div class="muted row-sub">${escapeHtml(run.scenario || '')}</div>
+      </td>
+      <td class="col-status">${statusBits.join(' ')}</td>
+      <td class="mono">第 ${escapeHtml(String(run.round_index || 1))} 轮</td>
+      <td>${escapeHtml(labelOf(run.current_stage))}</td>
+      <td class="mono col-model" title="${escapeHtml(run.base_model || '')}">${escapeHtml(run.base_model || '—')}</td>
+      <td class="mono muted">${escapeHtml(updated)}</td>
+      <td class="col-actions">
+        <button type="button" class="primary compact" data-run="${escapeHtml(run.id)}">打开</button>
+        ${deployBtn}
+        <button type="button" class="ghost compact" data-delete-run="${escapeHtml(run.id)}" aria-label="删除 ${escapeHtml(run.name)}">删除</button>
+      </td>
+    </tr>`;
   }).join('');
+}
+
+function renderExperimentsPage() {
+  const q = escapeHtml(state.runFilter || '');
+  return `<section class="runs-page">
+    <header class="runs-toolbar">
+      <div>
+        <p class="kicker">实验管理</p>
+        <h1>全部实验</h1>
+        <p class="muted" data-runs-meta></p>
+      </div>
+      <div class="runs-toolbar-actions">
+        <label class="runs-search">
+          <span class="sr-only">筛选实验</span>
+          <input type="search" data-run-filter placeholder="按名称 / 场景 / 底座筛选" value="${q}" />
+        </label>
+        <button type="button" class="primary" id="new-run">新建实验</button>
+      </div>
+    </header>
+    <div class="runs-table-wrap">
+      <table class="runs-table">
+        <thead>
+          <tr>
+            <th scope="col">实验</th>
+            <th scope="col">状态</th>
+            <th scope="col">轮次</th>
+            <th scope="col">当前阶段</th>
+            <th scope="col">底座模型</th>
+            <th scope="col">更新时间</th>
+            <th scope="col">操作</th>
+          </tr>
+        </thead>
+        <tbody data-runs-tbody></tbody>
+      </table>
+    </div>
+  </section>`;
 }
 
 function askConfirm({ title, name = '', body, okLabel = '确定', danger = false }) {
@@ -659,7 +751,6 @@ function askConfirm({ title, name = '', body, okLabel = '确定', danger = false
 async function deleteRun(id) {
   const run = state.runs.find((item) => item.id === id);
   const name = run ? run.name : id;
-  const index = state.runs.findIndex((item) => item.id === id);
   const confirmed = await askConfirm({
     title: '删除实验',
     name,
@@ -670,20 +761,19 @@ async function deleteRun(id) {
   if (!confirmed) return;
   await api(`/api/runs/${id}`, { method: 'DELETE' });
   const wasCurrent = state.view && state.view.run.id === id;
-  const neighbor = state.runs[index + 1] || state.runs[index - 1];
   if (wasCurrent) {
     state.chat = [];
     state.view = null;
-    if (neighbor) await refreshRuns(neighbor.id);
-    else {
-      await refreshRuns();
-      render();
-    }
-  } else {
-    await refreshRuns();
-    render();
+    state.screen = 'list';
   }
+  await refreshRuns();
+  render();
   toast('实验已删除');
+}
+
+function showRunsList() {
+  state.screen = 'list';
+  render();
 }
 
 async function openRun(id, round, keepStage) {
@@ -691,6 +781,7 @@ async function openRun(id, round, keepStage) {
   const query = round ? `?round=${round}` : '';
   const prevId = state.view && state.view.run ? state.view.run.id : null;
   state.view = await api(`/api/runs/${id}${query}`);
+  state.screen = 'workspace';
   if (prevId !== id) state.logCursors = {};
   state.serveDraft = null;
   state.serveDraftRun = null;
@@ -1221,10 +1312,7 @@ function renderStage(stage) {
       ? `下一轮已开。点「前往第 ${nextRound.round_index} 轮」继续；「再次开启下一轮」会作废本轮后续并重新晋级。`
       : '会作废本轮后续并重新晋级。'}</p>`
     : '';
-  return `
-    <section class="panel">
-      <p class="kicker">${kicker}</p>
-      <h2>${escapeHtml(meta.summary)}</h2>
+  const formBody = `
       ${view.mutable ? '' : '<p class="muted">这是历史轮次，只能查看。</p>'}
       ${promote}
       ${state.schema.stage_layouts && state.schema.stage_layouts[stage]
@@ -1235,7 +1323,13 @@ function renderStage(stage) {
         <textarea id="extra-yaml">${escapeHtml((values && values.extra_yaml) || '')}</textarea>
       </details>`}
       ${fetchNote()}
-      <div class="row-actions">
+      <div id="live-command"></div>
+      ${result}
+      ${command}
+      ${charts}
+      ${logs}`;
+  const foot = `
+      <div class="stage-card-foot">
         ${gotoNext}
         <button type="button" class="${runClass}" data-action="run"${tipAttr(mutable ? '' : blockReason)} ${mutable ? '' : 'disabled'}>${buttonLabel}</button>
         ${stop}
@@ -1243,15 +1337,21 @@ function renderStage(stage) {
         ${validate}
         <button type="button" class="ghost" data-action="preview"${viewTip} ${view.mutable ? '' : 'disabled'}>预览命令</button>
         <button type="button" class="ghost" data-action="preset"${viewTip} ${view.mutable ? '' : 'disabled'}>恢复预设</button>
-      </div>
-      ${promoteHint}
-      ${blockReason ? `<p class="muted run-reason">${escapeHtml(blockReason)}</p>` : ''}
-      <div id="live-command"></div>
-      ${result}
-      ${command}
-      ${charts}
-      ${logs}
-    </section>`;
+        ${promoteHint}
+        ${blockReason ? `<p class="muted run-reason">${escapeHtml(blockReason)}</p>` : ''}
+      </div>`;
+  return `
+    <article class="stage-card">
+      <header class="stage-card-head">
+        <div>
+          <p class="kicker">${escapeHtml(meta.label)}</p>
+          <h2>${escapeHtml(meta.summary)}</h2>
+        </div>
+        <span class="stage-card-status badge ${escapeHtml(form.status)}">${kicker}</span>
+      </header>
+      <div class="stage-card-body">${formBody}</div>
+      ${foot}
+    </article>`;
 }
 
 function flowEdgeGeometry(edge, from, to) {
@@ -1326,25 +1426,66 @@ function renderGraph() {
     const tip = node.clickable ? '' : tipAttr(flowNodeTitle(node));
     return `<button type="button" class="flow-node ${node.status} ${selected} ${minor}" data-stage="${node.id}"${tip} ${disabled}${busy} style="left:${node.x}px;top:${node.y}px;width:${node.w}px;height:${node.h}px"><b>${escapeHtml(node.label)}</b><small>${caption}</small></button>`;
   }).join('');
-  // Hide the decide strip once promote already succeeded for this viewing round —
-  // leftover RL/完成/开启下一轮 buttons only no-op or confuse.
-  const promoteDone = ((state.view.forms || {}).promote || {}).status === 'succeeded';
-  const pending = promoteDone ? [] : (flow.actions || []);
-  const actions = pending.map((action) => `<button type="button" class="${action.danger ? 'danger' : 'primary'}" data-decision="${action.id}">${escapeHtml(action.label)}</button>`).join('');
-  const actionBar = actions
-    ? `<div class="flow-actions">${flow.prompt ? `<p class="muted">${escapeHtml(flow.prompt)}</p>` : ''}<div class="row-actions">${actions}</div></div>`
-    : '';
   const canvas = flow.canvas || { width: 860, height: 236 };
   return `<div class="flow-scroll"><div class="flow-canvas" style="width:${canvas.width}px;height:${canvas.height}px">
     <svg viewBox="0 0 ${canvas.width} ${canvas.height}" aria-hidden="true">
       <defs>
-        <marker id="flow-arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#d1d5db"/></marker>
-        <marker id="flow-arrow-live" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6366f1"/></marker>
+        <marker id="flow-arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#cbd5e1"/></marker>
+        <marker id="flow-arrow-live" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#0f766e"/></marker>
       </defs>
       ${paths}
     </svg>
     ${nodes}
-  </div></div>${actionBar}`;
+  </div></div>`;
+}
+
+function flowDecisionBar() {
+  const flow = (state.view && state.view.flow) || {};
+  const promoteDone = ((state.view.forms || {}).promote || {}).status === 'succeeded';
+  const pending = promoteDone ? [] : (flow.actions || []);
+  if (!pending.length) return '';
+  const actions = pending.map((action) => (
+    `<button type="button" class="${action.danger ? 'danger' : 'primary'}" data-decision="${action.id}">${escapeHtml(action.label)}</button>`
+  )).join('');
+  return `<div class="stage-rail-decisions">
+    ${flow.prompt ? `<p class="muted">${escapeHtml(flow.prompt)}</p>` : ''}
+    <div class="row-actions">${actions}</div>
+  </div>`;
+}
+
+function renderStageRail() {
+  const flow = (state.view && state.view.flow) || { nodes: [] };
+  const forms = (state.view && state.view.forms) || {};
+  // Prefer main (non-minor) flow nodes for the stepper; fall back to schema stages.
+  let nodes = (flow.nodes || []).filter((node) => !node.minor);
+  if (!nodes.length && state.schema && state.schema.stages) {
+    nodes = state.schema.stages.map((item) => ({
+      id: item.id,
+      label: item.label,
+      status: (forms[item.id] || {}).status || 'locked',
+      clickable: Boolean(forms[item.id]),
+      verdict: '',
+    }));
+  }
+  const items = nodes.map((node, index) => {
+    const form = forms[node.id] || {};
+    const caption = node.status === 'running'
+      ? runningMarkup(form.started_at)
+      : escapeHtml(node.verdict || statusText(node.status));
+    const disabled = node.clickable ? '' : 'disabled';
+    const selected = flowNodeSelected(node) ? 'selected' : '';
+    const tip = node.clickable ? '' : tipAttr(flowNodeTitle(node));
+    const busy = node.status === 'running' ? ' aria-busy="true"' : '';
+    return `<li><button type="button" class="stage-step ${node.status} ${selected}" data-stage="${node.id}"${tip} ${disabled}${busy}>
+      <span class="stage-idx">${index + 1}</span>
+      <span><b>${escapeHtml(node.label)}</b><small>${caption}</small></span>
+    </button></li>`;
+  }).join('');
+  return `<nav class="stage-rail" aria-label="本轮阶段">
+    <p class="stage-rail-title">本轮阶段</p>
+    <ol class="stage-rail-list">${items}</ol>
+    ${flowDecisionBar()}
+  </nav>`;
 }
 
 function renderTerminal() {
@@ -1357,20 +1498,38 @@ function renderTerminal() {
     template: run.template || '',
   };
   const canNext = completed && (state.view.flow.actions || []).some((item) => item.id === 'next');
-  return `<section class="panel"><h2>${completed ? '实验已完成' : '实验已结束'}</h2>
-    <p>${canNext ? '本轮已标记完成。仍可点「开启下一轮」选出检查点并开下一轮，检查点都还在。' : '本轮到此结束。已有检查点仍留在记录里。'}</p>
-    <div class="infer-form">${renderLockedModelRow([], values)}</div>
-    <div class="row-actions">${canNext ? '<button type="button" class="primary" data-decision="next">开启下一轮</button>' : ''}
+  return `<article class="stage-card">
+    <header class="stage-card-head">
+      <div>
+        <p class="kicker">终点</p>
+        <h2>${completed ? '实验已完成' : '实验已结束'}</h2>
+      </div>
+    </header>
+    <div class="stage-card-body">
+      <p>${canNext ? '本轮已标记完成。仍可点「开启下一轮」选出检查点并开下一轮，检查点都还在。' : '本轮到此结束。已有检查点仍留在记录里。'}</p>
+      <div class="infer-form">${renderLockedModelRow([], values)}</div>
+    </div>
+    <div class="stage-card-foot">
+      ${canNext ? '<button type="button" class="primary" data-decision="next">开启下一轮</button>' : ''}
       <button type="button" class="${canNext ? 'ghost' : 'primary'}" data-action="open-serve">去部署推理服务</button>
-      <button type="button" class="ghost" data-action="open-export">去模型导出</button></div>
-  </section>`;
+      <button type="button" class="ghost" data-action="open-export">去模型导出</button>
+    </div>
+  </article>`;
 }
 
 function renderFlow() {
-  const graph = renderGraph();
-  if (state.stage === 'finish') return graph + renderTerminal();
-  if (!state.view.forms[state.stage]) state.stage = 'sft';
-  return graph + renderStage(state.stage);
+  if (!state.view.forms[state.stage] && state.stage !== 'finish') state.stage = 'sft';
+  const pane = state.stage === 'finish' ? renderTerminal() : renderStage(state.stage);
+  return `<div class="flow-layout">
+    ${renderStageRail()}
+    <div class="stage-pane">
+      ${pane}
+      <details class="flow-map">
+        <summary>流程全景图（可选）</summary>
+        ${renderGraph()}
+      </details>
+    </div>
+  </div>`;
 }
 
 function durationCell(step) {
@@ -2059,11 +2218,13 @@ function renderExport() {
 
 function render() {
   syncLogScrollLock();
-  renderRuns();
+  syncScreenAttr();
   const main = document.getElementById('main');
-  if (!state.view) {
-    main.innerHTML = `<div class="empty"><h1>从一轮可点击的后训练闭环开始</h1>
-      <p>从左边新建实验开始。</p></div>`;
+  if (state.screen !== 'workspace' || !state.view) {
+    state.screen = 'list';
+    syncScreenAttr();
+    main.innerHTML = renderExperimentsPage();
+    renderRuns();
     syncLive();
     syncLogScrollLock();
     return;
@@ -2072,19 +2233,29 @@ function render() {
   const rounds = (view.rounds || []).map((round) => `
     <button type="button" data-round="${round.round_index}" class="${round.round_index === view.round.round_index ? 'active' : ''}">第 ${round.round_index} 轮${round.promoted_kind ? ' · ' + round.promoted_kind : ''}</button>`).join('');
   const body = state.tab === 'audit' ? renderAudit() : state.tab === 'serve' ? renderServe() : state.tab === 'export' ? renderExport() : renderFlow();
+  const baseHtml = baseCaption(view.run.base_model, view.round.base_model);
   main.innerHTML = `
-    <p class="kicker">第 ${view.round.round_index} 轮</p>
-    <h1>${escapeHtml(view.run.name)}</h1>
-    <p>${escapeHtml(view.run.scenario)}</p>
-    <p class="muted">${baseCaption(view.run.base_model, view.round.base_model)}</p>
-    <div class="rounds">${rounds}</div>
-    <div class="tabs">
-      <button type="button" data-tab="flow" class="${state.tab === 'flow' ? 'active' : ''}">流程</button>
-      <button type="button" data-tab="audit" class="${state.tab === 'audit' ? 'active' : ''}">实验记录</button>
-      <button type="button" data-tab="serve" class="${state.tab === 'serve' ? 'active' : ''}">推理服务</button>
-      <button type="button" data-tab="export" class="${state.tab === 'export' ? 'active' : ''}">模型导出</button>
-    </div>
-    ${body}`;
+    <div class="ws">
+      <header class="ws-head">
+        <div class="ws-title">
+          <button type="button" class="ghost compact back-runs" data-action="back-runs">← 实验列表</button>
+          <p class="kicker">第 ${view.round.round_index} 轮</p>
+          <h1>${escapeHtml(view.run.name)}</h1>
+          <p class="scenario">${escapeHtml(view.run.scenario)}</p>
+        </div>
+        <div class="ws-side">
+          <div class="rounds" aria-label="轮次">${rounds}</div>
+          <div class="ws-base muted">${baseHtml}</div>
+        </div>
+      </header>
+      <div class="tabs" role="tablist" aria-label="工作区">
+        <button type="button" data-tab="flow" class="${state.tab === 'flow' ? 'active' : ''}">流程</button>
+        <button type="button" data-tab="audit" class="${state.tab === 'audit' ? 'active' : ''}">实验记录</button>
+        <button type="button" data-tab="serve" class="${state.tab === 'serve' ? 'active' : ''}">推理服务</button>
+        <button type="button" data-tab="export" class="${state.tab === 'export' ? 'active' : ''}">模型导出</button>
+      </div>
+      <div class="ws-body">${body}</div>
+    </div>`;
   syncSource();
   syncEvalPick(false);
   syncRlDataset(false);
@@ -2504,6 +2675,17 @@ document.addEventListener('keydown', (event) => {
 });
 
 document.addEventListener('click', async (event) => {
+  const navRuns = event.target.closest('#nav-runs, [data-nav="runs"]');
+  if (navRuns) {
+    event.preventDefault();
+    showRunsList();
+    return;
+  }
+  const backRuns = event.target.closest('[data-action="back-runs"]');
+  if (backRuns) {
+    showRunsList();
+    return;
+  }
   const chip = event.target.closest('[data-chip-remove]');
   if (chip) {
     event.preventDefault();
@@ -2555,6 +2737,12 @@ document.addEventListener('click', async (event) => {
     }
     if (target.dataset.deleteRun) {
       await deleteRun(target.dataset.deleteRun);
+      return;
+    }
+    if (target.dataset.openServe) {
+      await openRun(target.dataset.openServe, null, false);
+      state.tab = 'serve';
+      render();
       return;
     }
     if (target.dataset.run) {
@@ -3017,6 +3205,11 @@ function rememberServeDraft(event) {
 
 document.addEventListener('input', (event) => {
   const target = event.target;
+  if (target && target.dataset && Object.prototype.hasOwnProperty.call(target.dataset, 'runFilter')) {
+    state.runFilter = target.value || '';
+    renderRuns();
+    return;
+  }
   if (target && target.type === 'range') {
     const num = document.querySelector(`[data-slider-num="${target.dataset.field}"]`);
     if (num) num.value = target.value;
