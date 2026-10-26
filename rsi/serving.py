@@ -2,6 +2,7 @@
 """OpenAI-compatible server used when serving is mocked."""
 import json
 import socket
+import subprocess
 import threading
 import time
 import urllib.error
@@ -9,6 +10,7 @@ import urllib.request
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
 
 def find_free_port() -> int:
@@ -69,10 +71,15 @@ def build_openai_app(model_name: str, api_key: str, scenario: str, checkpoint: s
                 content = message.get('content')
                 user_text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
                 break
-        reply = (f'【mock 推理】已挂载模型 {model_name}。'
-                 f'检查点：{checkpoint}。场景：{scenario}。'
-                 f'针对「{user_text}」，这里返回的是本地 Mock 文本，权重没有加载。'
-                 '在 A100 上把 RSI_SERVE_BACKEND 设为 swift 后，同一条路径会换成 swift deploy。')
+        reply = f'已收到「{user_text}」。当前检查点：{checkpoint}。'
+        if body.get('stream'):
+
+            async def chunks():
+                piece = {'choices': [{'delta': {'content': reply}}]}
+                yield f'data: {json.dumps(piece, ensure_ascii=False)}\n\n'
+                yield 'data: [DONE]\n\n'
+
+            return StreamingResponse(chunks(), media_type='text/event-stream')
         now = int(time.time())
         return {
             'id': f'chatcmpl-mock-{now}',
@@ -99,7 +106,7 @@ def build_openai_app(model_name: str, api_key: str, scenario: str, checkpoint: s
         authorize(request)
         body = await request.json()
         prompt = body.get('prompt') or ''
-        text = f'【mock 推理】{model_name} / {checkpoint} / {prompt}'
+        text = f'{model_name} / {checkpoint} / {prompt}'
         return {
             'id': 'cmpl-mock',
             'object': 'text_completion',
@@ -144,6 +151,22 @@ def wait_http(url: str, timeout: float = 5.0):
     raise TimeoutError(f'服务未就绪：{url} ({last_error})')
 
 
+class _ProcessServer:
+
+    def __init__(self, process: subprocess.Popen):
+        self.process = process
+
+    def stop(self):
+        if self.process.poll() is not None:
+            return
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=5)
+
+
 class ServeManager:
 
     def __init__(self):
@@ -163,6 +186,12 @@ class ServeManager:
             raise
         with self._lock:
             self._handles[run_id] = server
+
+    def track(self, run_id: str, process: subprocess.Popen):
+        """Remember a real `swift deploy` process so stop can terminate it."""
+        self.stop(run_id)
+        with self._lock:
+            self._handles[run_id] = _ProcessServer(process)
 
     def stop(self, run_id: str):
         with self._lock:

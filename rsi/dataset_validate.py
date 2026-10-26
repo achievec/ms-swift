@@ -13,7 +13,6 @@ import json
 import re
 from pathlib import Path
 
-MAX_BYTES = 20 * 1024 * 1024
 ROLES = {'system', 'user', 'assistant', 'tool', 'tool_call'}
 PUBLIC_ID_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*(?:#[0-9]+)?$')
 
@@ -104,7 +103,7 @@ def classify_row(row: dict):
     if row.get('query') and (row.get('response') is not None or row.get('solution') is not None
                              or row.get('answer') is not None):
         return 'query', None
-    return '', '无法识别为 ms-swift 数据（需要 messages / conversation / instruction+output / query+response）'
+    return '', '无法识别数据格式（需要 messages / conversation / instruction+output / query+response）'
 
 
 def validate_rows(rows: list) -> dict:
@@ -122,7 +121,7 @@ def validate_rows(rows: list) -> dict:
         if kind == 'messages-prompt':
             prompt_only += 1
     if prompt_only and prompt_only == len(rows) - len(errors):
-        warnings.append('全部样本都没有 assistant / solution。SFT 无法计算回答部分的 loss，只适合纯 prompt 或另行提供 solution。')
+        warnings.append('全部样本都没有 assistant / solution。')
     preview = []
     for row in rows[:2]:
         try:
@@ -141,19 +140,6 @@ def validate_rows(rows: list) -> dict:
 
 
 def validate_text(text: str, filename: str = 'data.jsonl') -> dict:
-    if len(text.encode('utf-8')) > MAX_BYTES:
-        return {
-            'ok': False,
-            'num_rows': 0,
-            'formats': {},
-            'errors': [{
-                'row': 0,
-                'error': '文件超过 20MB'
-            }],
-            'error_count': 1,
-            'warnings': [],
-            'preview': [],
-        }
     try:
         rows = parse_rows(text, filename)
     except ValueError as exc:
@@ -197,20 +183,6 @@ def validate_file(path: Path) -> dict:
             'preview': [],
             'dataset': str(path),
         }
-    if path.stat().st_size > MAX_BYTES:
-        return {
-            'ok': False,
-            'num_rows': 0,
-            'formats': {},
-            'errors': [{
-                'row': 0,
-                'error': '文件超过 20MB'
-            }],
-            'error_count': 1,
-            'warnings': [],
-            'preview': [],
-            'dataset': str(path),
-        }
     text = path.read_text(encoding='utf-8')
     report = validate_text(text, path.name)
     report['dataset'] = str(path.resolve())
@@ -236,10 +208,10 @@ def validate_public_id(dataset_id: str) -> dict:
     return {
         'ok': True,
         'num_rows': None,
-        'formats': {'ms-swift-ref': 1},
+        'formats': {'dataset': 1},
         'errors': [],
         'error_count': 0,
-        'warnings': ['公开数据集不在本地解析。真实训练时由 ms-swift AutoPreprocessor 下载并转换。Mock 模式不会下载数据。'],
+        'warnings': ['公开数据集 id 已记录，训练时再下载。'],
         'preview': [],
         'dataset': dataset_id,
     }

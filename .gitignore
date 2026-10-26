@@ -114,6 +114,9 @@ venv.bak/
 # custom
 # RSI app local state (sqlite, uploads, mock checkpoints)
 rsi/workspace/
+rsi/.rsi.pid
+rsi/.rsi.lock
+rsi/.venv/
 *.pkl
 *.pkl.json
 *.log.json

@@ -1,0 +1,67 @@
+/* Workbench sits beside the training page and reuses the same tokens. */
+body { margin: 0; }
+.top { align-items: center; }
+.top a { color: var(--accent-ink); text-decoration: none; font-weight: 600; }
+main { max-width: 960px; margin: 0 auto; padding: 24px 20px 48px; display: grid; gap: 16px; }
+.intro h1 { margin: 0 0 8px; font-size: 22px; line-height: 1.35; }
+.intro p { margin: 0; color: var(--muted); }
+.panel h2 { margin: 0 0 6px; font-size: 16px; }
+.panel > .muted { margin-top: 0; }
+.steps { display: grid; gap: 12px; margin-top: 12px; }
+@media (min-width: 800px) {
+  .steps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+.step {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: var(--bg);
+  min-width: 0;
+}
+.step h3 { margin: 0 0 6px; font-size: 14px; }
+.step p { margin: 0; color: var(--muted); font-size: 13px; }
+.muted { color: var(--muted); }
+textarea, input, select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #fff;
+}
+textarea { min-height: 88px; }
+details { margin-top: 12px; }
+details summary { cursor: pointer; color: var(--muted); }
+.sample {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-top: 8px;
+  background: #fff;
+}
+.sample b { display: block; margin-bottom: 6px; }
+.sample p { margin: 4px 0; }
+.tag { display: inline-block; margin: 6px 6px 0 0; padding: 2px 8px; border-radius: 999px; background: var(--green-soft); font-size: 12px; }
+.tag.miss { background: var(--red-soft); }
+.pager { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.row-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+button { border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 7px 12px; }
+button.primary { background: var(--accent); color: white; border-color: var(--accent); }
+button:disabled { opacity: 0.6; }
+.result { margin-top: 10px; }
+.result .muted { white-space: pre-wrap; }
+.result pre { white-space: pre-wrap; word-break: break-word; background: var(--bg); padding: 10px; border-radius: 8px; margin: 0; }
+.path-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+.path-row code { flex: 1; overflow-wrap: anywhere; }
+label { display: grid; gap: 4px; margin-top: 10px; font-size: 13px; font-weight: 600; }
+.log-panel { margin-top: 14px; }
+.log-panel h3 { margin: 0; font-size: 14px; }
+.log-panel.log-fullscreen .result { flex: 1; overflow: auto; }

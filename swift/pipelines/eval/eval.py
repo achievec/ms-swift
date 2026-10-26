@@ -15,6 +15,21 @@ from ..infer import run_deploy
 logger = get_logger()
 
 
+def openai_compatible_eval_type(eval_type_cls=None):
+    """eval_type for the local OpenAI-compatible server started by swift deploy.
+
+    evalscope 1.0-1.10 names it ``EvalType.SERVICE`` and the value is already
+    ``'openai_api'``. 1.5 adds ``EvalType.OPENAI_API`` with the same value.
+    1.11 removes ``SERVICE``. The plain string is used when neither name exists.
+    """
+    eval_type_cls = EvalType if eval_type_cls is None else eval_type_cls
+    for name in ('OPENAI_API', 'SERVICE'):
+        value = getattr(eval_type_cls, name, None)
+        if value:
+            return value
+    return 'openai_api'
+
+
 class SwiftEval(SwiftPipeline):
     args_class = EvalArguments
     args: args_class
@@ -93,7 +108,7 @@ class SwiftEval(SwiftPipeline):
         work_dir = os.path.join(args.eval_output_dir, 'native')
         return TaskConfig(
             model=args.model_suffix,
-            eval_type=EvalType.SERVICE,
+            eval_type=openai_compatible_eval_type(),
             api_url=url,
             api_key=args.api_key or 'EMPTY',
             datasets=dataset,

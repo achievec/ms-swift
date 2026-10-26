@@ -3,9 +3,13 @@ import importlib.util
 import logging
 import os
 from contextlib import contextmanager
-from modelscope.utils.logger import get_logger as get_ms_logger
 from types import MethodType
 from typing import Optional
+
+try:
+    from modelscope.utils.logger import get_logger as get_ms_logger
+except ImportError:  # modelscope is optional when models are already on local disk
+    get_ms_logger = None
 
 
 # Avoid circular reference
@@ -128,14 +132,20 @@ def get_logger(log_file: Optional[str] = None, log_level: Optional[int] = None, 
 
 
 logger = get_logger()
-ms_logger = get_ms_logger()
-
 logger.handlers[0].setFormatter(logger_format)
-ms_logger.handlers[0].setFormatter(logger_format)
-if _is_local_master():
-    ms_logger.setLevel(_get_log_level())
+if get_ms_logger is None:
+
+    def get_ms_logger(log_file: Optional[str] = None, log_level: Optional[int] = None, file_mode: str = 'w'):
+        return get_logger(log_file, log_level, file_mode)
+
+    ms_logger = logger
 else:
-    ms_logger.setLevel(logging.ERROR)
+    ms_logger = get_ms_logger()
+    ms_logger.handlers[0].setFormatter(logger_format)
+    if _is_local_master():
+        ms_logger.setLevel(_get_log_level())
+    else:
+        ms_logger.setLevel(logging.ERROR)
 
 
 @contextmanager

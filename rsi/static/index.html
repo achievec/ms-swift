@@ -3,45 +3,70 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ms-swift RSI 闭环</title>
+  <title>大模型微调工作台</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=Montserrat:wght@400;600;700&amp;family=Noto+Sans+SC:wght@400;600;700&amp;display=swap" />
   <link rel="stylesheet" href="/static/app.css" />
 </head>
 <body>
   <header class="top">
     <div class="brand">
-      <span class="mark">RSI</span>
-      <div>
-        <strong>递归自改进闭环</strong>
-        <small>建在 ms-swift 之上 · 数据 → SFT → 评测 → 在线 RL → 评测 → 晋级 → 下一轮 → 推理</small>
-      </div>
+      <strong>大模型微调工作台</strong>
     </div>
     <div class="top-meta">
-      <span id="hardware-pill">1× A100-80G · 18 核 · 约 60GB 可用内存</span>
-      <span id="backend-pill">后端</span>
+      <a class="pill" href="/tools">数据与运维</a>
+      <span id="backend-pill" hidden></span>
     </div>
   </header>
   <div class="shell">
     <aside>
       <button id="new-run" class="primary block" type="button">新建实验</button>
-      <p class="aside-note">每一轮都是人工点下一步。Mock 模式不占用 GPU，审计写在 SQLite。</p>
       <div id="run-list"></div>
     </aside>
     <main id="main"></main>
   </div>
   <div id="toast" hidden></div>
-  <dialog id="create-dialog">
-    <form id="create-form" method="dialog">
-      <h2>新建 RSI 实验</h2>
-      <p class="muted">从一块基座模型开始。每一轮用场景数据做 SFT，再用在线 RL 拉开和基座的差距，最后由你决定哪个检查点晋级。</p>
-      <label>实验名称<input name="name" required maxlength="80" value="IT 运维助手" /></label>
-      <label>场景说明<textarea name="scenario" required maxlength="500">企业内部 IT 工单分诊与处理建议。目标是从通用基座迭代出能按步骤处理工单的模型。</textarea></label>
-      <label>基座模型 id 或路径<input name="base_model" required maxlength="300" value="Qwen/Qwen2.5-7B-Instruct" /></label>
+  <div id="busy-note">正在提交…</div>
+  <dialog id="confirm-dialog">
+    <form id="confirm-form">
+      <h2 id="confirm-title">确认</h2>
+      <p id="confirm-name" hidden></p>
+      <p id="confirm-body" class="muted"></p>
       <div class="row-actions">
-        <button type="button" id="create-cancel" class="ghost">取消</button>
-        <button type="submit" class="primary">创建并进入数据阶段</button>
+        <button type="button" id="confirm-cancel" class="ghost">取消</button>
+        <button type="button" id="confirm-ok" class="danger">确定</button>
       </div>
     </form>
   </dialog>
+  <dialog id="create-dialog">
+    <form id="create-form" method="dialog">
+      <h2>新建实验</h2>
+      <label>实验名称<input name="name" required maxlength="80" placeholder="实验名称" value="" /></label>
+      <label>场景说明<textarea name="scenario" required maxlength="500" placeholder="场景说明"></textarea></label>
+      <div id="create-model"></div>
+      <div class="row-actions">
+        <button type="button" id="create-cancel" class="ghost">取消</button>
+        <button type="submit" class="primary">创建并进入 SFT</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="eval-compare-dialog">
+    <form id="eval-compare-form" method="dialog">
+      <h2>对比评测报告</h2>
+      <p class="muted eval-compare-sub">勾选同实验里已有的评测报告，再点对比。可选本轮或全部轮次（含历史重跑）。</p>
+      <div class="eval-picker-toolbar">
+        <label class="eval-picker-scope"><input type="radio" name="eval-picker-scope" value="round" data-action="eval-picker-scope"/> 本轮</label>
+        <label class="eval-picker-scope"><input type="radio" name="eval-picker-scope" value="all" data-action="eval-picker-scope"/> 全部轮次</label>
+        <button type="button" class="ghost" data-action="eval-picker-refresh">刷新列表</button>
+      </div>
+      <div class="eval-picker-list" data-eval-picker-list="1"><p class="muted">加载评测报告…</p></div>
+      <div class="row-actions">
+        <button type="button" class="ghost" data-action="eval-picker-close" value="cancel">取消</button>
+        <button type="button" class="primary" data-action="eval-picker-compare">对比</button>
+      </div>
+    </form>
+  </dialog>
+  <script src="/static/time.js"></script>
+  <script src="/static/log-tools.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>
