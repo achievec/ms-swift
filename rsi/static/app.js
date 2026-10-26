@@ -31,6 +31,9 @@ const state = {
   metricsCache: {},
   // stage|round → { next, start, truncated } for incremental /stages/.../log follow.
   logCursors: {},
+  expert: false,
+  dockOpen: true,
+  switchOpen: false,
   // Flexible same-run eval report picker (GET /api/runs/{id}/eval-reports).
   evalPicker: {
     runId: null,
@@ -597,15 +600,29 @@ async function refreshRuns(selectId) {
   }
 }
 
-function renderRuns() {
-  const root = document.getElementById('run-list');
+function renderSwitchList() {
+  const root = document.getElementById('switch-list');
+  if (!root) return;
   if (!state.runs.length) {
-    root.innerHTML = '<div class="empty-list"><p class="muted">还没有实验。</p><p class="muted aside-hint">创建后会按轮次和阶段记在这里。</p></div>';
+    root.innerHTML = '<p class="muted switch-empty">还没有实验。</p>';
     return;
   }
-  root.innerHTML = state.runs.map((run) => {
-    const code = listStatusOf(run);
-    return `
+  root.innerHTML = state.runs.map((run) => `
+    <button type="button" class="switch-item ${state.view && state.view.run.id === run.id ? 'active' : ''}" data-run="${run.id}">
+      <b>${escapeHtml(run.name)}</b>
+      <small>第 ${run.round_index} 轮 · ${escapeHtml(labelOf(run.current_stage))}</small>
+    </button>`).join('');
+}
+
+function renderRuns() {
+  const root = document.getElementById('run-list');
+  if (root) {
+    if (!state.runs.length) {
+      root.innerHTML = '<div class="empty-list"><p class="muted">还没有实验。</p><p class="muted aside-hint">创建后会按轮次和阶段记在这里。</p></div>';
+    } else {
+      root.innerHTML = state.runs.map((run) => {
+        const code = listStatusOf(run);
+        return `
     <div class="run-card ${state.view && state.view.run.id === run.id ? 'active' : ''}">
       <button type="button" class="run-open" data-run="${run.id}">
         <b>${escapeHtml(run.name)}</b>
@@ -618,7 +635,10 @@ function renderRuns() {
         <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M6.2 2.2h3.6l.4.8H13v1.3H3V3h2.8l.4-.8zM4.2 5.2h7.6l-.5 8.1a1 1 0 0 1-1 .9H5.7a1 1 0 0 1-1-.9l-.5-8.1z"/></svg>
       </button>
     </div>`;
-  }).join('');
+      }).join('');
+    }
+  }
+  renderSwitchList();
 }
 
 function askConfirm({ title, name = '', body, okLabel = '确定', danger = false }) {
@@ -699,6 +719,7 @@ async function openRun(id, round, keepStage) {
   state.exportLog = '';
   if (prevId !== id) clearServeExportOverride();
   state.round = state.view.round.round_index;
+  state.switchOpen = false;
   if (!keepStage) {
     const current = state.view.run.current_stage;
     state.stage = state.view.mutable || current === 'finish' ? current : 'sft';
@@ -1149,6 +1170,8 @@ async function fetchStageMetrics(stage, round) {
   }
 }
 
+let stageConsoleHtml = '';
+
 function nextRoundAfter(view) {
   const index = view && view.round ? view.round.round_index : null;
   if (index == null) return null;
@@ -1221,6 +1244,8 @@ function renderStage(stage) {
       ? `下一轮已开。点「前往第 ${nextRound.round_index} 轮」继续；「再次开启下一轮」会作废本轮后续并重新晋级。`
       : '会作废本轮后续并重新晋级。'}</p>`
     : '';
+  const consoleLogs = logs || '<p class="muted dock-empty">这一步还没有日志。运行之后会写在这里。</p>';
+  stageConsoleHtml = `<div id="live-command"></div>${consoleLogs}${charts}${command}`;
   return `
     <section class="panel stage-sheet">
       <div class="stage-head">
@@ -1253,11 +1278,7 @@ function renderStage(stage) {
         <textarea id="extra-yaml">${escapeHtml((values && values.extra_yaml) || '')}</textarea>
       </details>`}
       ${fetchNote()}
-      <div id="live-command"></div>
       ${result}
-      ${command}
-      ${charts}
-      ${logs}
     </section>`;
 }
 
@@ -1373,11 +1394,165 @@ function renderTerminal() {
   </section>`;
 }
 
+const LOOP_IDS = ['sft', 'sft_eval', 'rl', 'rl_eval'];
+
+function paintActivity() {
+  const current = !state.view || state.tab === 'deck' ? 'deck' : state.tab;
+  document.querySelectorAll('#activity [data-tab]').forEach((button) => {
+    const on = button.dataset.tab === current;
+    button.classList.toggle('active', on);
+    if (on) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  });
+}
+
+function nextCue() {
+  const view = state.view;
+  if (!view) return '';
+  const form = (view.forms || {})[state.stage] || {};
+  const meta = (state.schema.stages || []).find((item) => item.id === state.stage);
+  const label = meta ? meta.label : labelOf(state.stage);
+  if (!view.mutable) return '正在查看历史轮次';
+  if (form.status === 'running' || form.status === 'syncing') return `${label} 进行中，日志在下方控制台`;
+  if (form.status === 'locked') return `${label} 还没解锁`;
+  if (form.status === 'failed') return `${label} 失败了，可以重试`;
+  if (form.status === 'succeeded' && state.stage === 'sft') return 'SFT 已完成，下一步做评测';
+  if (form.status === 'succeeded' && state.stage === 'sft_eval') return '评测结束。可以进入 RL，或从分支开启下一轮';
+  if (form.status === 'succeeded' && state.stage === 'rl') return 'RL 已完成，下一步做 RL 评测';
+  if (form.status === 'succeeded' && state.stage === 'rl_eval') return 'RL 评测结束。可以推理、导出，或开启下一轮';
+  if (state.stage === 'promote') return '选出检查点，开启下一轮';
+  if (state.stage === 'finish') return '本轮已结束';
+  return `当前步骤：${label}`;
+}
+
+function renderDeck() {
+  const viewing = state.view
+    ? `<p class="deck-current">当前打开 <b>${escapeHtml(state.view.run.name)}</b></p>`
+    : '';
+  return `<section class="deck">
+    <header class="deck-hero">
+      <p class="kicker">实验库</p>
+      <h1>选一条闭环，或从零开始</h1>
+      <p class="muted">顺序是 SFT、评测、RL、再评测，然后推理或导出。模型、类型和模板只在创建时填写。SFT 数据集没有默认值。</p>
+      ${viewing}
+    </header>
+    <div class="deck-layout">
+      <button type="button" id="new-run" class="deck-create">
+        <svg width="18" height="18" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 1.5v11M1.5 7h11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <b>新建实验</b>
+        <span>名称、场景和模型</span>
+      </button>
+      <div id="run-list" class="deck-cards"></div>
+    </div>
+  </section>`;
+}
+
+function renderContext() {
+  const root = document.getElementById('context-body');
+  if (!root) return;
+  document.body.classList.toggle('expert-on', Boolean(state.expert));
+  if (!state.view) {
+    root.innerHTML = `<div class="context-idle">
+      <strong>实验库</strong>
+      <span class="muted">还没进入实验。选一张卡片，或新建。</span>
+      <button type="button" class="primary" id="context-new">新建实验</button>
+    </div>`;
+    return;
+  }
+  const view = state.view;
+  const rounds = (view.rounds || []).map((round) => `
+    <option value="${round.round_index}" ${round.round_index === view.round.round_index ? 'selected' : ''}>第 ${round.round_index} 轮${round.promoted_kind ? ' · ' + escapeHtml(round.promoted_kind) : ''}</option>`).join('');
+  const stageForm = (view.forms || {})[state.stage] || {};
+  const headStatus = stageForm.status
+    ? `<span class="badge ${escapeHtml(stageForm.status)}">${escapeHtml(statusText(stageForm.status))}</span>`
+    : '';
+  const readOnly = view.mutable ? '' : '<span class="badge locked">只读 · 历史轮次</span>';
+  const expertLabel = state.expert ? '进阶已开' : '进阶参数';
+  root.innerHTML = `<div class="context-bar">
+    <div class="context-switch">
+      <button type="button" id="switch-toggle" aria-expanded="${state.switchOpen ? 'true' : 'false'}">${escapeHtml(view.run.name)}</button>
+      <div id="switch-pop" class="switch-pop" ${state.switchOpen ? '' : 'hidden'}>
+        <button type="button" class="ghost" id="context-new">新建实验</button>
+        <div id="switch-list"></div>
+      </div>
+    </div>
+    <label class="round-select">轮次<select id="round-select">${rounds}</select></label>
+    <p class="context-model muted">${baseCaption(view.run.base_model, view.round.base_model)}</p>
+    <div class="context-flags">${headStatus}${readOnly}</div>
+    <button type="button" class="ghost expert-toggle ${state.expert ? 'on' : ''}" data-action="expert-toggle">${expertLabel}</button>
+  </div>`;
+  renderSwitchList();
+}
+
+function renderMission() {
+  const view = state.view;
+  const flow = view.flow || { nodes: [], actions: [], prompt: '' };
+  const byId = {};
+  (flow.nodes || []).forEach((node) => { byId[node.id] = node; });
+  stageConsoleHtml = '';
+  if (state.stage === 'finish') return renderTerminal();
+  if (state.stage !== 'promote' && !view.forms[state.stage]) state.stage = 'sft';
+  const rail = LOOP_IDS.map((id, index) => {
+    const node = byId[id] || { id, label: labelOf(id), status: 'locked', clickable: false };
+    const current = state.stage === id;
+    const disabled = node.clickable ? '' : 'disabled';
+    const tip = node.clickable ? '' : tipAttr(flowNodeTitle(node));
+    const form = (view.forms || {})[id] || {};
+    const caption = node.status === 'running'
+      ? runningMarkup(form.started_at)
+      : escapeHtml(node.verdict || statusText(node.status));
+    return `<li class="loop-step ${escapeHtml(node.status)} ${current ? 'current' : ''}">
+      <button type="button" data-stage="${escapeHtml(id)}" ${disabled}${tip}>
+        <span class="loop-index">0${index + 1}</span>
+        <b>${escapeHtml(node.label)}</b>
+        <small>${caption}</small>
+      </button>
+    </li>`;
+  }).join('');
+  const openNode = byId[state.stage];
+  const stations = openNode && LOOP_IDS.includes(state.stage)
+    ? `<article class="station open ${escapeHtml(openNode.status)}"><div class="station-body">${renderStage(state.stage)}</div></article>`
+    : '';
+  const promoteOpen = state.stage === 'promote'
+    ? `<article class="station open promote"><div class="station-body">${renderStage('promote')}</div></article>`
+    : '';
+  const branches = ['sft_fail', 'sft_next', 'sft_finish', 'rl_fail', 'rl_next', 'rl_finish'].map((id) => {
+    const node = byId[id];
+    if (!node) return '';
+    const disabled = node.clickable ? '' : 'disabled';
+    const tip = node.clickable ? '' : tipAttr(flowNodeTitle(node));
+    return `<button type="button" class="branch ${escapeHtml(node.status)}" data-stage="${escapeHtml(id)}" ${disabled}${tip}><b>${escapeHtml(node.label)}</b><small>${escapeHtml(statusText(node.status))}</small></button>`;
+  }).join('');
+  const promoteDone = ((view.forms || {}).promote || {}).status === 'succeeded';
+  const pending = promoteDone ? [] : (flow.actions || []);
+  const actions = pending.map((action) => `<button type="button" class="${action.danger ? 'danger' : 'primary'}" data-decision="${action.id}">${escapeHtml(action.label)}</button>`).join('');
+  const actionBar = actions
+    ? `<div class="branch-actions">${flow.prompt ? `<p class="muted">${escapeHtml(flow.prompt)}</p>` : ''}<div class="row-actions">${actions}</div></div>`
+    : '';
+  return `<section class="mission">
+    <header class="mission-hero">
+      <div>
+        <p class="kicker">闭环</p>
+        <h1>${escapeHtml(view.run.name)}</h1>
+        <p class="scenario">${escapeHtml(view.run.scenario || '')}</p>
+      </div>
+      <p class="mission-next">${escapeHtml(nextCue())}</p>
+    </header>
+    <ol class="loop-rail" aria-label="闭环">${rail}</ol>
+    <section class="branch-board">
+      <div>
+        <h2>分支</h2>
+        <p class="muted">评测之后可以选择不通过、完成，或开启下一轮。灰色还不能点。</p>
+      </div>
+      <div class="branch-row">${branches}</div>
+      ${actionBar}
+    </section>
+    <div class="stations">${stations}${promoteOpen}</div>
+  </section>`;
+}
+
 function renderFlow() {
-  const graph = `<section class="panel pipeline"><div class="panel-head"><h2>阶段轨</h2><p class="muted">当前轮次的闭环。点亮的节点可以进入；灰色节点还没解锁。</p></div>${renderGraph()}</section>`;
-  if (state.stage === 'finish') return graph + renderTerminal();
-  if (!state.view.forms[state.stage]) state.stage = 'sft';
-  return graph + renderStage(state.stage);
+  return renderMission();
 }
 
 function durationCell(step) {
@@ -1900,8 +2075,11 @@ function renderBlock(block, values) {
       const layout = state.schema.stage_layouts && state.schema.stage_layouts[state.stage];
       return renderDatasetSettings((layout && layout.dataset_fields) || [], values);
     }
+    const label = String(block.label || '');
+    const namedAdvanced = /超参数|更多|奖励|Rollout|rollout|其他参数/.test(label);
+    const advanced = block.open === false || namedAdvanced ? ' is-advanced' : '';
     const open = block.open ? ' open' : '';
-    return `<details class="infer-runtime"${open}><summary>${escapeHtml(block.label || '设置')}</summary><div class="body">${renderBlocks(block.blocks, values)}</div></details>`;
+    return `<details class="infer-runtime${advanced}"${open}><summary>${escapeHtml(block.label || '设置')}</summary><div class="body">${renderBlocks(block.blocks, values)}</div></details>`;
   }
   if (block.kind === 'tabs') {
     let opened = false;
@@ -2073,52 +2251,40 @@ function renderExport() {
 
 function render() {
   syncLogScrollLock();
-  renderRuns();
+  paintActivity();
+  renderContext();
   const main = document.getElementById('main');
-  if (!state.view) {
-    main.innerHTML = `<div class="empty">
-      <div class="empty-mark" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 18 18" fill="none"><path d="M9 2.2a6.8 6.8 0 1 1-2.4 13.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M4.2 12.2 2.4 15.2l3.2-.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="9" cy="9" r="1.6" fill="currentColor"/></svg></div>
-      <p class="kicker">工作台</p>
-      <h1>从左侧进入实验</h1>
-      <p class="muted">选择已有实验，或新建一轮。模型、类型和模板只在创建时填写；SFT 数据集没有默认值，需要自己选。表单按实验、轮次和阶段记住。</p>
-      <ol class="empty-steps">
-        <li><div><b>SFT</b><span>配置数据集并训练，随后做 SFT 评测。</span></div></li>
-        <li><div><b>RL</b><span>在线强化学习，再做 RL 评测。</span></div></li>
-        <li><div><b>推理与导出</b><span>部署推理服务，或导出合并后的模型。</span></div></li>
-      </ol>
-      <button type="button" class="primary" id="empty-new">新建实验</button>
-    </div>`;
+  const dock = document.getElementById('dock');
+  const dockBody = document.getElementById('dock-body');
+  const dockTitle = document.getElementById('dock-title');
+  const showDeck = !state.view || state.tab === 'deck';
+  if (showDeck) {
+    main.innerHTML = renderDeck();
+    if (dock) dock.hidden = true;
+    if (dockBody) dockBody.innerHTML = '';
+    renderRuns();
     syncLive();
     syncLogScrollLock();
     return;
   }
-  const view = state.view;
-  const rounds = (view.rounds || []).map((round) => `
-    <button type="button" data-round="${round.round_index}" class="${round.round_index === view.round.round_index ? 'active' : ''}">第 ${round.round_index} 轮${round.promoted_kind ? ' · ' + round.promoted_kind : ''}</button>`).join('');
-  const body = state.tab === 'audit' ? renderAudit() : state.tab === 'serve' ? renderServe() : state.tab === 'export' ? renderExport() : renderFlow();
-  const stageForm = (view.forms || {})[state.stage] || {};
-  const headStatus = stageForm.status
-    ? `<span class="badge ${escapeHtml(stageForm.status)}">${escapeHtml(statusText(stageForm.status))}</span>`
-    : '';
-  const readOnly = view.mutable ? '' : '<span class="badge locked">只读 · 历史轮次</span>';
-  main.innerHTML = `
-    <header class="workspace-head">
-      <div class="workspace-copy">
-        <p class="kicker">第 ${view.round.round_index} 轮</p>
-        <h1>${escapeHtml(view.run.name)}</h1>
-        <p class="scenario">${escapeHtml(view.run.scenario)}</p>
-        <p class="muted base-line">${baseCaption(view.run.base_model, view.round.base_model)}</p>
-      </div>
-      <div class="workspace-flags">${headStatus}${readOnly}</div>
-    </header>
-    <div class="rounds" role="tablist" aria-label="轮次">${rounds}</div>
-    <div class="tabs" role="tablist" aria-label="工作区">
-      <button type="button" data-tab="flow" class="${state.tab === 'flow' ? 'active' : ''}">流程</button>
-      <button type="button" data-tab="audit" class="${state.tab === 'audit' ? 'active' : ''}">实验记录</button>
-      <button type="button" data-tab="serve" class="${state.tab === 'serve' ? 'active' : ''}">推理服务</button>
-      <button type="button" data-tab="export" class="${state.tab === 'export' ? 'active' : ''}">模型导出</button>
-    </div>
-    <div class="workspace-body">${body}</div>`;
+  const body = state.tab === 'audit'
+    ? renderAudit()
+    : state.tab === 'serve'
+      ? renderServe()
+      : state.tab === 'export'
+        ? renderExport()
+        : renderFlow();
+  main.innerHTML = body;
+  const showDock = state.tab === 'flow' && state.stage !== 'finish' && Boolean(stageConsoleHtml);
+  if (dock && dockBody) {
+    dock.hidden = !showDock;
+    dock.classList.toggle('is-collapsed', !state.dockOpen);
+    dockBody.innerHTML = showDock ? stageConsoleHtml : '';
+    const meta = (state.schema.stages || []).find((item) => item.id === state.stage);
+    if (dockTitle) dockTitle.textContent = meta ? `${meta.label} · 控制台` : '控制台';
+    const toggle = dock.querySelector('[data-action="dock-toggle"]');
+    if (toggle) toggle.textContent = state.dockOpen ? '收起' : '展开';
+  }
   syncSource();
   syncEvalPick(false);
   syncRlDataset(false);
@@ -2538,6 +2704,13 @@ document.addEventListener('keydown', (event) => {
 });
 
 document.addEventListener('click', async (event) => {
+  if (state.switchOpen && !event.target.closest('#switch-pop') && !event.target.closest('#switch-toggle')) {
+    state.switchOpen = false;
+    const pop = document.getElementById('switch-pop');
+    if (pop) pop.hidden = true;
+    const toggle = document.getElementById('switch-toggle');
+    if (toggle) toggle.setAttribute('aria-expanded', 'false');
+  }
   const chip = event.target.closest('[data-chip-remove]');
   if (chip) {
     event.preventDefault();
@@ -2576,11 +2749,32 @@ document.addEventListener('click', async (event) => {
   const target = event.target.closest('button');
   if (!target || target.disabled || state.busy) return;
   try {
-    if (target.id === 'new-run' || target.id === 'empty-new') {
+    if (target.id === 'new-run' || target.id === 'empty-new' || target.id === 'context-new') {
       const form = document.getElementById('create-form');
       form.name.value = '';
       form.scenario.value = '';
       document.getElementById('create-dialog').showModal();
+      return;
+    }
+    if (target.id === 'switch-toggle') {
+      state.switchOpen = !state.switchOpen;
+      const pop = document.getElementById('switch-pop');
+      if (pop) pop.hidden = !state.switchOpen;
+      target.setAttribute('aria-expanded', state.switchOpen ? 'true' : 'false');
+      return;
+    }
+    if (target.dataset.action === 'expert-toggle') {
+      state.expert = !state.expert;
+      document.body.classList.toggle('expert-on', state.expert);
+      target.classList.toggle('on', state.expert);
+      target.textContent = state.expert ? '进阶已开' : '进阶参数';
+      return;
+    }
+    if (target.dataset.action === 'dock-toggle') {
+      state.dockOpen = !state.dockOpen;
+      const dock = document.getElementById('dock');
+      if (dock) dock.classList.toggle('is-collapsed', !state.dockOpen);
+      target.textContent = state.dockOpen ? '收起' : '展开';
       return;
     }
     if (target.id === 'create-cancel') {
@@ -2600,8 +2794,14 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (target.dataset.tab) {
+      const next = target.dataset.tab;
+      if (!state.view && next !== 'deck') {
+        toast('先选择或新建一个实验');
+        return;
+      }
       await flushDraft();
-      state.tab = target.dataset.tab;
+      state.tab = next;
+      state.switchOpen = false;
       render();
       return;
     }
@@ -3076,6 +3276,11 @@ document.addEventListener('input', (event) => {
 });
 
 document.addEventListener('change', async (event) => {
+  if (event.target.id === 'round-select' && state.view) {
+    const round = Number(event.target.value);
+    if (round) await openRun(state.view.run.id, round, true);
+    return;
+  }
   const media = event.target.dataset && event.target.dataset.media;
   if (media && event.target.files && event.target.files[0]) {
     state.mediaFiles = state.mediaFiles || { image: null, video: null, audio: null };
