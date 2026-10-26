@@ -600,7 +600,7 @@ async function refreshRuns(selectId) {
 function renderRuns() {
   const root = document.getElementById('run-list');
   if (!state.runs.length) {
-    root.innerHTML = '<p class="muted">还没有实验。</p>';
+    root.innerHTML = '<div class="empty-list"><p class="muted">还没有实验。</p><p class="muted aside-hint">创建后会按轮次和阶段记在这里。</p></div>';
     return;
   }
   root.innerHTML = state.runs.map((run) => {
@@ -1222,19 +1222,18 @@ function renderStage(stage) {
       : '会作废本轮后续并重新晋级。'}</p>`
     : '';
   return `
-    <section class="panel">
-      <p class="kicker">${kicker}</p>
-      <h2>${escapeHtml(meta.summary)}</h2>
+    <section class="panel stage-sheet">
+      <div class="stage-head">
+        <div>
+          <p class="kicker">${kicker}</p>
+          <h2>${escapeHtml(meta.summary)}</h2>
+        </div>
+        <span class="badge ${escapeHtml(form.status)}">${escapeHtml(statusText(form.status))}</span>
+      </div>
       ${view.mutable ? '' : '<p class="muted">这是历史轮次，只能查看。</p>'}
       ${promote}
-      ${state.schema.stage_layouts && state.schema.stage_layouts[stage]
-        ? `<div class="infer-form stage-form">${renderBlocks(state.schema.stage_layouts[stage].blocks, values)}</div>`
-        : renderGroups(fields, values)}
-      ${state.schema.stage_layouts && state.schema.stage_layouts[stage] ? '' : `<details class="yaml">
-        <summary>高级参数 YAML</summary>
-        <textarea id="extra-yaml">${escapeHtml((values && values.extra_yaml) || '')}</textarea>
-      </details>`}
-      ${fetchNote()}
+      <div class="stage-actions">
+      ${blockReason ? `<p class="muted run-reason" role="status">${escapeHtml(blockReason)}</p>` : ''}
       <div class="row-actions">
         ${gotoNext}
         <button type="button" class="${runClass}" data-action="run"${tipAttr(mutable ? '' : blockReason)} ${mutable ? '' : 'disabled'}>${buttonLabel}</button>
@@ -1245,7 +1244,15 @@ function renderStage(stage) {
         <button type="button" class="ghost" data-action="preset"${viewTip} ${view.mutable ? '' : 'disabled'}>恢复预设</button>
       </div>
       ${promoteHint}
-      ${blockReason ? `<p class="muted run-reason">${escapeHtml(blockReason)}</p>` : ''}
+      </div>
+      ${state.schema.stage_layouts && state.schema.stage_layouts[stage]
+        ? `<div class="infer-form stage-form">${renderBlocks(state.schema.stage_layouts[stage].blocks, values)}</div>`
+        : renderGroups(fields, values)}
+      ${state.schema.stage_layouts && state.schema.stage_layouts[stage] ? '' : `<details class="yaml">
+        <summary>高级参数 YAML</summary>
+        <textarea id="extra-yaml">${escapeHtml((values && values.extra_yaml) || '')}</textarea>
+      </details>`}
+      ${fetchNote()}
       <div id="live-command"></div>
       ${result}
       ${command}
@@ -1338,8 +1345,8 @@ function renderGraph() {
   return `<div class="flow-scroll"><div class="flow-canvas" style="width:${canvas.width}px;height:${canvas.height}px">
     <svg viewBox="0 0 ${canvas.width} ${canvas.height}" aria-hidden="true">
       <defs>
-        <marker id="flow-arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#d1d5db"/></marker>
-        <marker id="flow-arrow-live" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6366f1"/></marker>
+        <marker id="flow-arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#64748b"/></marker>
+        <marker id="flow-arrow-live" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#60a5fa"/></marker>
       </defs>
       ${paths}
     </svg>
@@ -1367,7 +1374,7 @@ function renderTerminal() {
 }
 
 function renderFlow() {
-  const graph = renderGraph();
+  const graph = `<section class="panel pipeline"><div class="panel-head"><h2>阶段轨</h2><p class="muted">当前轮次的闭环。点亮的节点可以进入；灰色节点还没解锁。</p></div>${renderGraph()}</section>`;
   if (state.stage === 'finish') return graph + renderTerminal();
   if (!state.view.forms[state.stage]) state.stage = 'sft';
   return graph + renderStage(state.stage);
@@ -1407,12 +1414,19 @@ function renderAudit() {
       <td>${durationCell(step)}</td>
     </tr>${detail}`;
   }).join('');
-  return `<section class="panel">
-    <h2>实验记录</h2>
+  return `<section class="panel audit-panel">
+    <div class="panel-head">
+      <div>
+        <h2>实验记录</h2>
+        <p class="muted">各轮步骤。点一行展开参数、结果和日志。</p>
+      </div>
+    </div>
+    <div class="table-scroll">
     <table>
       <thead><tr><th>ID</th><th>轮</th><th>阶段</th><th>状态</th><th>开始</th><th>结束</th><th>耗时</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="7">还没有步骤。</td></tr>'}</tbody>
     </table>
+    </div>
   </section>`;
 }
 
@@ -2062,8 +2076,18 @@ function render() {
   renderRuns();
   const main = document.getElementById('main');
   if (!state.view) {
-    main.innerHTML = `<div class="empty"><h1>从一轮可点击的后训练闭环开始</h1>
-      <p>从左边新建实验开始。</p></div>`;
+    main.innerHTML = `<div class="empty">
+      <div class="empty-mark" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 18 18" fill="none"><path d="M9 2.2a6.8 6.8 0 1 1-2.4 13.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M4.2 12.2 2.4 15.2l3.2-.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="9" cy="9" r="1.6" fill="currentColor"/></svg></div>
+      <p class="kicker">工作台</p>
+      <h1>从左侧进入实验</h1>
+      <p class="muted">选择已有实验，或新建一轮。模型、类型和模板只在创建时填写；SFT 数据集没有默认值，需要自己选。表单按实验、轮次和阶段记住。</p>
+      <ol class="empty-steps">
+        <li><div><b>SFT</b><span>配置数据集并训练，随后做 SFT 评测。</span></div></li>
+        <li><div><b>RL</b><span>在线强化学习，再做 RL 评测。</span></div></li>
+        <li><div><b>推理与导出</b><span>部署推理服务，或导出合并后的模型。</span></div></li>
+      </ol>
+      <button type="button" class="primary" id="empty-new">新建实验</button>
+    </div>`;
     syncLive();
     syncLogScrollLock();
     return;
@@ -2072,19 +2096,29 @@ function render() {
   const rounds = (view.rounds || []).map((round) => `
     <button type="button" data-round="${round.round_index}" class="${round.round_index === view.round.round_index ? 'active' : ''}">第 ${round.round_index} 轮${round.promoted_kind ? ' · ' + round.promoted_kind : ''}</button>`).join('');
   const body = state.tab === 'audit' ? renderAudit() : state.tab === 'serve' ? renderServe() : state.tab === 'export' ? renderExport() : renderFlow();
+  const stageForm = (view.forms || {})[state.stage] || {};
+  const headStatus = stageForm.status
+    ? `<span class="badge ${escapeHtml(stageForm.status)}">${escapeHtml(statusText(stageForm.status))}</span>`
+    : '';
+  const readOnly = view.mutable ? '' : '<span class="badge locked">只读 · 历史轮次</span>';
   main.innerHTML = `
-    <p class="kicker">第 ${view.round.round_index} 轮</p>
-    <h1>${escapeHtml(view.run.name)}</h1>
-    <p>${escapeHtml(view.run.scenario)}</p>
-    <p class="muted">${baseCaption(view.run.base_model, view.round.base_model)}</p>
-    <div class="rounds">${rounds}</div>
-    <div class="tabs">
+    <header class="workspace-head">
+      <div class="workspace-copy">
+        <p class="kicker">第 ${view.round.round_index} 轮</p>
+        <h1>${escapeHtml(view.run.name)}</h1>
+        <p class="scenario">${escapeHtml(view.run.scenario)}</p>
+        <p class="muted base-line">${baseCaption(view.run.base_model, view.round.base_model)}</p>
+      </div>
+      <div class="workspace-flags">${headStatus}${readOnly}</div>
+    </header>
+    <div class="rounds" role="tablist" aria-label="轮次">${rounds}</div>
+    <div class="tabs" role="tablist" aria-label="工作区">
       <button type="button" data-tab="flow" class="${state.tab === 'flow' ? 'active' : ''}">流程</button>
       <button type="button" data-tab="audit" class="${state.tab === 'audit' ? 'active' : ''}">实验记录</button>
       <button type="button" data-tab="serve" class="${state.tab === 'serve' ? 'active' : ''}">推理服务</button>
       <button type="button" data-tab="export" class="${state.tab === 'export' ? 'active' : ''}">模型导出</button>
     </div>
-    ${body}`;
+    <div class="workspace-body">${body}</div>`;
   syncSource();
   syncEvalPick(false);
   syncRlDataset(false);
@@ -2542,7 +2576,7 @@ document.addEventListener('click', async (event) => {
   const target = event.target.closest('button');
   if (!target || target.disabled || state.busy) return;
   try {
-    if (target.id === 'new-run') {
+    if (target.id === 'new-run' || target.id === 'empty-new') {
       const form = document.getElementById('create-form');
       form.name.value = '';
       form.scenario.value = '';
@@ -3653,7 +3687,21 @@ window.addEventListener('pagehide', () => {
   }
 });
 
+async function paintRuntime() {
+  const pill = document.getElementById('backend-pill');
+  if (!pill) return;
+  try {
+    const health = await api('/api/health');
+    const backend = health && health.backend ? String(health.backend) : '';
+    pill.textContent = backend ? `后端 ${backend}` : '';
+    pill.hidden = !backend;
+  } catch (_err) {
+    pill.hidden = true;
+  }
+}
+
 async function boot() {
+  paintRuntime();
   state.schema = await api('/api/schema');
   try {
     state.workbenchFiles = (await api('/api/workbench/files')).files || [];

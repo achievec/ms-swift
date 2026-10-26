@@ -4,13 +4,23 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>大模型微调工作台</title>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=Montserrat:wght@400;600;700&amp;family=Noto+Sans+SC:wght@400;600;700&amp;display=swap" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;family=Noto+Sans+SC:wght@400;500;600;700&amp;display=swap" />
   <link rel="stylesheet" href="/static/app.css" />
 </head>
 <body>
   <header class="top">
     <div class="brand">
-      <strong>大模型微调工作台</strong>
+      <span class="mark" aria-hidden="true">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+          <path d="M9 2.2a6.8 6.8 0 1 1-2.4 13.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+          <path d="M4.2 12.2 2.4 15.2l3.2-.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="9" cy="9" r="1.6" fill="currentColor"/>
+        </svg>
+      </span>
+      <div>
+        <strong>大模型微调工作台</strong>
+        <small>闭环训练控制台</small>
+      </div>
     </div>
     <div class="top-meta">
       <a class="pill" href="/tools">数据与运维</a>
@@ -19,13 +29,19 @@
   </header>
   <div class="shell">
     <aside>
-      <button id="new-run" class="primary block" type="button">新建实验</button>
+      <div class="aside-head">
+        <span class="aside-label">实验</span>
+        <button id="new-run" class="primary block" type="button">
+          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 1.5v11M1.5 7h11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          新建实验
+        </button>
+      </div>
       <div id="run-list"></div>
     </aside>
     <main id="main"></main>
   </div>
-  <div id="toast" hidden></div>
-  <div id="busy-note">正在提交…</div>
+  <div id="toast" role="status" hidden></div>
+  <div id="busy-note" role="status">正在提交…</div>
   <dialog id="confirm-dialog">
     <form id="confirm-form">
       <h2 id="confirm-title">确认</h2>
@@ -39,9 +55,11 @@
   </dialog>
   <dialog id="create-dialog">
     <form id="create-form" method="dialog">
+      <p class="kicker">新实验</p>
       <h2>新建实验</h2>
-      <label>实验名称<input name="name" required maxlength="80" placeholder="实验名称" value="" /></label>
-      <label>场景说明<textarea name="scenario" required maxlength="500" placeholder="场景说明"></textarea></label>
+      <p class="muted dialog-lead">名称和场景写入实验记录。模型、类型和模板只在这里可改，创建后各阶段只读展示。SFT 数据集没有默认值，进入后再选。</p>
+      <label>实验名称<input name="name" required maxlength="80" placeholder="例如：客服工单一轮" value="" /></label>
+      <label>场景说明<textarea name="scenario" required maxlength="500" placeholder="这一轮要解决什么问题"></textarea></label>
       <div id="create-model"></div>
       <div class="row-actions">
         <button type="button" id="create-cancel" class="ghost">取消</button>
