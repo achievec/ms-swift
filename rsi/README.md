@@ -160,13 +160,16 @@ pip3 install hope==3.6.6 --no-cache-dir -i https://pypi.sankuai.com/simple
 
 公开数据集在 hope 下会先 clone 到 `data_root`，SFT 的 `--dataset` 用那个本地目录。ModelScope id 用 `https://www.modelscope.cn/datasets/<org>/<name>.git`，Hugging Face 的 `org/name` 仍用 `huggingface.co/datasets`。上传文件和服务器本地路径不走 hope。模型 id 若是 `modelscope/...` 仍提示不能在当前网络下载。内置评测 jsonl 仍走本地 `general_qa`。其它评测集放到 `$RSI_DATA_ROOT/benchmarks/<名字>`，或在 `eval_dataset_args` 里写 `local_path`。
 
-在 Mac 的这份仓库里，把分支 `cursor/rsi-diag-card-ui-20261019-4ed3` 同步到内网：
+在 Mac 的这份仓库里，把分支 `cursor/rsi-diag-card-ui-20261019-4ed3` 在 GitHub 与内网之间同步：
 
 ```bash
-rsi/scripts/sync-to-sankuai.sh
+rsi/scripts/sync-to-sankuai.sh              # 双边：拉 GitHub → 合入 sankuai 独有提交 → 推 GitHub → 推 sankuai
+rsi/scripts/sync-to-sankuai.sh --github-only  # 只推到 GitHub（日常把内网进度同步到 GitHub）
+rsi/scripts/sync-to-sankuai.sh --sankuai-only # 只推到 sankuai
+rsi/scripts/sync-to-sankuai.sh --force-sankuai  # sankuai 非快进时用 --force-with-lease 覆盖
 ```
 
-脚本从自己所在的仓库找根目录。工作区有未提交改动会直接退出。然后从 GitHub `origin` 快进拉取该分支。若 `sankuai`（`ssh://git@git.sankuai.com/~liyuhao03/ms-swift.git`，没有这个远程时会加上）有当前分支没有的提交，按从旧到新 cherry-pick，先推 GitHub，再推 sankuai。cherry-pick 会换成新哈希，推 sankuai 可能不是快进；默认不强推，打印原因后以非 0 退出。确认覆盖内网分支时再执行 `rsi/scripts/sync-to-sankuai.sh --force-sankuai`（只对 sankuai 使用 `--force-with-lease`）。
+脚本从自己所在的仓库找根目录。工作区有未提交改动会直接退出。远程按 **URL** 识别（`github.com` → GitHub，`git.sankuai.com` → sankuai），不假定 `origin` 一定是 GitHub；你这边常见是 `origin`/`sankuai` 指向美团仓、`github` 指向 `git@github.com:achievec/ms-swift.git`，缺哪个会按固定 URL 补上。默认从 GitHub 快进拉取该分支；若 sankuai 有当前分支没有的提交，按从旧到新 cherry-pick，先推 GitHub，再推 sankuai。cherry-pick 会换成新哈希，推 sankuai 可能不是快进；默认不强推。确认覆盖内网分支时再加 `--force-sankuai`（只动 sankuai，不动 GitHub）。
 
 ## 硬件预设
 
