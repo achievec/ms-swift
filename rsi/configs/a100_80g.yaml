@@ -1,0 +1,166 @@
+# Preset for the documented RSI box:
+#   GPU: 1x NVIDIA A100 80GB
+#   CPU: 18 cores
+#   RAM: ~92GB installed, ~60GB usable after OS / cache
+#
+# These values are the form defaults. They mirror ms-swift CLI flags
+# (swift sft / swift rlhf / swift eval / swift deploy) and the Gradio Web-UI.
+#
+# Memory notes for this box:
+# - 7B LoRA bf16 is the loop that fits SFT and GRPO+vLLM colocate together.
+# - Full-parameter Adam on 7B needs ~80GB+ of optimizer state and will not fit
+#   in ~60GB usable RAM. Stay on LoRA / QLoRA.
+# - 14B QLoRA (quant_method: bnb, quant_bits: 4) is a reasonable SFT upgrade.
+#   GRPO on 14B with a colocated vLLM is tight: lower max_completion_length
+#   and num_generations before trying it.
+# - 32B online RL is out of range for a single 80GB GPU.
+# - dataset_num_proc 8 and dataloader_num_workers 4 leave cores for vLLM.
+# - GRPO uses vLLM colocate + sleep_level 1 so training and rollout share the
+#   one GPU instead of reserving a second card.
+
+hardware:
+  gpu: "1x NVIDIA A100-80G"
+  cpu: "18 cores"
+  ram: "92GB (~60GB usable)"
+  label: "1× A100-80G · 18 核 CPU · 约 60GB 可用内存"
+
+data:
+  source: bundled
+  bundled: itops_mix
+  max_length: 2048
+  split_dataset_ratio: 0
+  dataset_num_proc: 8
+  dataloader_num_workers: 4
+  padding_free: false
+  val_dataset: ""
+
+sft:
+  template: qwen2_5
+  system: "你是企业内部 IT 运维助手。先给出判断，再给出可执行的排查步骤。不要编造未提供的系统状态。"
+  torch_dtype: bfloat16
+  seed: 42
+  tuner_type: lora
+  lora_rank: 8
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules: all-linear
+  use_dora: false
+  use_rslora: false
+  num_train_epochs: 1
+  learning_rate: "1e-4"
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 16
+  gradient_checkpointing: true
+  warmup_ratio: 0.05
+  lr_scheduler_type: cosine
+  weight_decay: 0.1
+  max_length: 2048
+  logging_steps: 5
+  eval_steps: 50
+  save_steps: 50
+  save_total_limit: 2
+  neftune_noise_alpha: 0
+  attn_impl: sdpa
+  use_liger_kernel: false
+  deepspeed: ""
+  sequence_parallel_size: 1
+  dataset_num_proc: 8
+  dataloader_num_workers: 4
+  load_from_cache_file: true
+  quant_method: ""
+  quant_bits: 4
+  split_dataset_ratio: 0
+  padding_free: false
+
+sft_eval:
+  eval_backend: Native
+  eval_dataset: itops-heldout
+  eval_limit: 20
+  temperature: 0
+  eval_num_proc: 4
+  max_new_tokens: 512
+  infer_backend: transformers
+  verbose: false
+  custom_eval_config: rsi/examples/itops_eval.jsonl
+
+rl:
+  rlhf_type: grpo
+  template: qwen2_5
+  system: "你是企业内部 IT 运维助手。把处理要点写进回复，覆盖工单里的关键对象。"
+  torch_dtype: bfloat16
+  seed: 42
+  tuner_type: lora
+  lora_rank: 8
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules: all-linear
+  num_train_epochs: 1
+  learning_rate: "1e-6"
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 8
+  gradient_checkpointing: true
+  warmup_ratio: 0.05
+  max_length: 2048
+  max_completion_length: 1024
+  logging_steps: 1
+  save_steps: 50
+  save_total_limit: 2
+  dataset_num_proc: 8
+  dataloader_num_workers: 4
+  load_from_cache_file: true
+  split_dataset_ratio: 0
+  num_generations: 4
+  num_iterations: 1
+  temperature: 1.0
+  top_p: 0.9
+  top_k: 50
+  beta: 0.04
+  epsilon: 0.2
+  epsilon_high: 0.28
+  reward_funcs: itops_checklist format
+  reward_weights: "1.0 0.5"
+  external_plugins: rsi/examples/itops_reward.py
+  use_vllm: true
+  vllm_mode: colocate
+  vllm_gpu_memory_utilization: 0.45
+  vllm_tensor_parallel_size: 1
+  vllm_max_model_len: 4096
+  vllm_enable_lora: true
+  vllm_max_lora_rank: 8
+  sleep_level: 1
+  offload_model: true
+  offload_optimizer: true
+  log_completions: true
+  deepspeed: ""
+  quant_method: ""
+  quant_bits: 4
+  ref_model: ""
+  loss_scale: ""
+
+rl_eval:
+  eval_backend: Native
+  eval_dataset: itops-heldout
+  eval_limit: 20
+  temperature: 0
+  eval_num_proc: 4
+  max_new_tokens: 512
+  infer_backend: transformers
+  verbose: false
+  custom_eval_config: rsi/examples/itops_eval.jsonl
+
+serve:
+  infer_backend: vllm
+  host: 127.0.0.1
+  port: 8000
+  api_key: ""
+  template: qwen2_5
+  torch_dtype: bfloat16
+  max_new_tokens: 512
+  temperature: 0.3
+  vllm_gpu_memory_utilization: 0.9
+  vllm_max_model_len: 8192
+
+next_round:
+  reuse_dataset: true
+  note: ""
